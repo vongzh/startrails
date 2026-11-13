@@ -65,7 +65,7 @@ node src/server/index.ts
 - tag 与 `package.json` 版本不一致直接失败，不会产出半成品镜像。
 - 仓库是公开的，GHCR 包默认就是 public，`docker pull` 免登录（实测匿名 token 可列 tags）。只有仓库改成私有、又想让别人能拉时，才需要去 Packages → Package settings 手动改可见性。
 - 想同时推 Docker Hub：配 `DOCKERHUB_USERNAME`（Variable）与 `DOCKERHUB_TOKEN`（Secret，Read & write 的 PAT），工作流会自动追加 `docker.io/<账号>/startrails`。
-- 用 podman 本地构建要加 `--format docker`：默认 OCI 格式会**静默丢弃 `HEALTHCHECK`**，镜像看着正常但没有健康检查。CI 侧同理，所以工作流显式写了 `oci-mediatypes=false`。
+- 用 podman 本地构建要加 `--format docker`：默认 OCI 格式会**静默丢弃 `HEALTHCHECK`**，镜像看着正常但没有健康检查。CI 侧同理，工作流显式写了 `oci-mediatypes=false`，并因此必须同时 `provenance: false` —— attestation 只能挂在 OCI image index 上，两个一起开会直接报 `cannot export attestations with "oci-mediatypes=false"` 中断导出。
 
 ## 部署
 
