@@ -132,7 +132,11 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ env.SHOULD_PUSH == 'true' }}
+          # 必须显式退回 Docker media type：buildx 默认按 OCI 输出，而 HEALTHCHECK
+          # 是 Docker config 的扩展字段，OCI 清单会把它丢掉 —— 镜像看着正常，但
+          # podman/docker inspect 拿到的 healthcheck 是 null，编排层不会做存活探测。
+          # push 也放进 outputs：同时给 push: 与 outputs: 时后者优先，容易看错。
+          outputs: type=image,push=${{ env.SHOULD_PUSH == 'true' }},oci-mediatypes=false
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             org.opencontainers.image.title=Startrails
