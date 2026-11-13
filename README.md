@@ -63,16 +63,26 @@ node src/server/index.ts
 | Actions → Docker → Run workflow | 同上但不移动 `latest`；勾选 `push` 才真的推送 |
 
 - tag 与 `package.json` 版本不一致直接失败，不会产出半成品镜像。
-- **首次推送后**去 Packages → `startrails` → Package settings 把可见性改成 Public，别人才能免登录 `docker pull`。
+- 仓库是公开的，GHCR 包默认就是 public，`docker pull` 免登录（实测匿名 token 可列 tags）。只有仓库改成私有、又想让别人能拉时，才需要去 Packages → Package settings 手动改可见性。
 - 想同时推 Docker Hub：配 `DOCKERHUB_USERNAME`（Variable）与 `DOCKERHUB_TOKEN`（Secret，Read & write 的 PAT），工作流会自动追加 `docker.io/<账号>/startrails`。
-- 用 podman 本地构建要加 `--format docker`：默认 OCI 格式会**静默丢弃 `HEALTHCHECK`**，镜像看着正常但没有健康检查。
+- 用 podman 本地构建要加 `--format docker`：默认 OCI 格式会**静默丢弃 `HEALTHCHECK`**，镜像看着正常但没有健康检查。CI 侧同理，所以工作流显式写了 `oci-mediatypes=false`。
 
 ## 部署
 
+两种入口，按需选一个：
+
 ```bash
+# 用已发布镜像部署（不需要源码与构建环境）
+docker compose -f docker-compose.release.yml up -d
+```
+
+```bash
+# 从本地源码构建
 cp .env.example .env      # 可选：预填密钥 / 管理令牌；留空则首次进入 UI 设置
 docker compose up -d
 ```
+
+`docker-compose.release.yml` 里 `TZ` 写的是 `CST-8` 而不是 `Asia/Shanghai`：alpine 基础镜像没有 zoneinfo，写时区名会静默退回 UTC。
 
 反代的关键是这两句；走 TLS 时**必须设** `STARTRAILS_PUBLIC_BASE_URL=https://sub.example.com`，否则二维码与规则集改写里的地址会按请求 Host 拼，容易出错。
 

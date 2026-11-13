@@ -1,0 +1,83 @@
+# 用已发布镜像部署（不需要源码、不需要 Docker 构建环境）。
+#
+#   docker compose -f docker-compose.release.yml up -d
+#
+# 想自己从本地源码构建，用根目录的 docker-compose.yml（带 build: .）。
+# 两者共用同一个数据卷名，先起一个再起另一个即可，数据不丢。
+
+services:
+  startrails:
+    # 钉版本而不是 latest：升级是显式动作，回滚也只是改这一行。
+    # 想跟随最新发布就换成 ghcr.io/vongzh/startrails:latest。
+    image: ghcr.io/vongzh/startrails:0.1.0
+    container_name: startrails
+    restart: unless-stopped
+
+    # 只发布到回环。公网访问必须在前置一个 TLS 反向代理，
+    # 因为订阅 URL 里的 token 本身就是凭据，明文暴露等于把配置送人。
+    ports:
+      - "127.0.0.1:8787:8787"
+
+    environment:
+      # 容器内必须监听 0.0.0.0，否则 -p 映射不进来。安全边界交给上面的 ports。
+      STARTRAILS_HOST: 0.0.0.0
+      STARTRAILS_PORT: "8787"
+      STARTRAILS_DATA_DIR: /app/data
+      STARTRAILS_DB_PATH: /app/data/startrails.db
+      STARTRAILS_WEB_ROOT: /app/web/dist
+      # 时区只能用 POSIX 形式：alpine 基础镜像没有 zoneinfo，写 Asia/Shanghai
+      # 会静默退回 UTC（实测 date 仍打印 UTC）。CST-8 是 musl 直接认的字面量。
+      TZ: CST-8
+
+      # 数据加密密钥：可选，但一旦有数据就必须长期不变（换了旧正文解不开）。
+      # 留空则首次进 UI 时设置并落盘到 /app/data/secret.key，随数据卷一起持久化。
+      # 想用环境变量固定：在 .env 里写 STARTRAILS_TOKEN_SECRET=<openssl rand -hex 32>，
+      # compose 会自动读取同目录 .env 做变量替换。
+      STARTRAILS_TOKEN_SECRET: ${STARTRAILS_TOKEN_SECRET:-}
+
+      # 管理令牌：同样留空即可，首次进 UI 设定（库里只存 hash）。
+      # 但**不要**把这一行写成 `STARTRAILS_ADMIN_TOKEN: ${X:-}` 这种空值形式：
+      # 注入空字符串会占住这个键，反而屏蔽掉回退逻辑。
+      # STARTRAILS_ADMIN_TOKEN: ${STARTRAILS_ADMIN_TOKEN}
+
+      # 走 TLS 反代时**必须**设：二维码与规则集改写里的地址要按它拼，
+      # 否则会退化成按请求 Host 猜，Host 带端口或换了域名就会拼错。
+      # STARTRAILS_PUBLIC_BASE_URL: https://sub.example.com
+
+      # 上游是内网自建服务（192.168.x / 10.x）时才打开；默认关闭以防 SSRF。
+      # STARTRAILS_ALLOW_PRIVATE: "1"
+
+      # 可选通知：构建失败/成功推送到 Telegram 或 Bark。
+      # STARTRAILS_TG_BOT_TOKEN: ""
+      # STARTRAILS_TG_CHAT_ID: ""
+      # STARTRAILS_BARK_URL: ""
+
+    volumes:
+      # SQLite WAL 要求所有进程在同一主机，不能挂 NFS/CIFS 之类的网络卷。
+      # 也因此只能单实例：副本数 > 1 会各写各的库。
+      - startrails-data:/app/data
+
+    # 镜像的 Dockerfile 里有 HEALTHCHECK，但 0.1.0 这个包**没带上** ——
+    # CI 用 buildx 默认的 OCI media type 输出，而 healthcheck 是 Docker 的 config
+    # 扩展字段，OCI 输出会丢掉它（podman inspect 看到的是 null）。所以这里显式声明一次。
+    # 等 CI 侧改成 Docker media type 后重新发版，这一段就可以删掉。
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+    # 常驻服务的日志不限长会把盘吃满，默认按 10MB × 3 轮转。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 进程内不需要提权，禁掉 setuid 提权面。
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  startrails-data: {}
