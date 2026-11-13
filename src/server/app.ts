@@ -55,6 +55,12 @@ import type { WebDavConfig } from './backup.ts';
 import { probeAll } from './probe.ts';
 import { RuleSetCache } from './ruleset.ts';
 import type { ProbeTarget } from './probe.ts';
+import {
+  MIN_TOKEN_SECRET_LENGTH,
+  commitSecretFile,
+  discardSecretFile,
+  stageSecretFile,
+} from './secret.ts';
 
 export interface AppOptions {
   readonly store: Store;
@@ -67,6 +73,13 @@ export interface AppOptions {
   readonly dataDir: string;
   readonly webRoot?: string;
   readonly allowPrivate?: boolean;
+  /**
+   * 数据加密密钥是否已配置（环境变量或 `<data>/secret.key`）。false = 本次启动使用临时密钥，
+   * 所有管理写入在 UI 设置密钥前都会被拒绝。
+   */
+  readonly secretConfigured?: boolean;
+  /** UI 首次设置的密钥落盘路径；未提供时只允许由环境变量 / 既有文件提供密钥。 */
+  readonly secretFile?: string;
   /** 运维通知（Telegram / Bark）；未配置时全部 send 走空实现。 */
   readonly notify?: NotifyConfig;
   /** WebDAV 远端备份目标；未配置时 /api/backup/remote 回 501。 */
@@ -178,18 +191,50 @@ const UA_TARGETS: readonly { readonly pattern: RegExp; readonly target: ClientTa
   { pattern: /clash|mihomo|verge/i, target: 'mihomo' },
 ];
 
+/** 可预期的请求错误：外层统一转成 4xx，而不是把解析失败当成服务端 500。 */
+class HttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+  }
+}
+
+/** 所有响应都带的最小安全头；不引入 CSP，避免误伤现有界面与内联样式。 */
+const SECURITY_HEADERS: Readonly<Record<string, string>> = {
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY',
+  'referrer-policy': 'same-origin',
+};
+
 const send = (
   res: ServerResponse,
   status: number,
-  body: string,
+  body: string | Buffer,
   headers: Record<string, string> = {},
 ): void => {
-  res.writeHead(status, { 'content-length': Buffer.byteLength(body), ...headers });
+  res.writeHead(status, {
+    ...SECURITY_HEADERS,
+    'content-length': Buffer.byteLength(body),
+    ...headers,
+  });
   res.end(body);
 };
 
 const sendJson = (res: ServerResponse, status: number, value: unknown): void => {
   send(res, status, JSON.stringify(value), { 'content-type': 'application/json; charset=utf-8' });
+};
+
+/** If-None-Match 允许 `*`、逗号分隔与弱校验；只比字符串会让合法的条件请求全部落空。 */
+const ifNoneMatch = (header: string | undefined, etag: string): boolean => {
+  if (header === undefined) return false;
+  if (header.trim() === '*') return true;
+  return header.split(',').some((candidate) => {
+    const value = candidate.trim();
+    return value === etag || value === `W/${etag}` || value.replace(/^W\//, '') === etag.replace(/^W\//, '');
+  });
 };
 
 const readBody = async (req: IncomingMessage): Promise<string> => {
@@ -198,16 +243,22 @@ const readBody = async (req: IncomingMessage): Promise<string> => {
   for await (const chunk of req) {
     const buffer = chunk as Buffer;
     size += buffer.length;
-    if (size > MAX_BODY_BYTES) throw new Error('request-body-too-large');
+    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'request-body-too-large');
     chunks.push(buffer);
   }
   return Buffer.concat(chunks).toString('utf8');
 };
 
 const readJson = async (req: IncomingMessage): Promise<Record<string, unknown>> => {
-  const parsed: unknown = JSON.parse(await readBody(req)) as unknown;
+  const raw = await readBody(req);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new HttpError(400, 'invalid-json-body');
+  }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('body-must-be-object');
+    throw new HttpError(400, 'body-must-be-object');
   }
   return parsed as Record<string, unknown>;
 };
@@ -402,6 +453,14 @@ export function createApp(options: AppOptions): App {
     return hash === undefined || hash.length === 0 ? undefined : hash;
   };
   const setupRequired = (): boolean => activeAdminHash() === undefined;
+
+  /**
+   * 加密密钥是否已配置。false 时启动用的是临时密钥：所有管理面请求（除初始化端点）
+   * 一律 503，避免用户把正文写进一个重启后必然解不开的库。
+   */
+  let secretConfigured = options.secretConfigured !== false;
+  const secretFile = options.secretFile;
+  const secretSetupRequired = (): boolean => !secretConfigured;
 
   /**
    * 通知渠道：环境变量只作「部署默认值」，界面配过之后存 app_setting 覆盖之。
@@ -938,7 +997,13 @@ export function createApp(options: AppOptions): App {
       return;
     }
     const base = resolve(root);
-    const requested = pathname === '/' ? 'index.html' : decodeURIComponent(pathname).replace(/^\//, '');
+    let requested: string;
+    try {
+      requested = pathname === '/' ? 'index.html' : decodeURIComponent(pathname).replace(/^\//, '');
+    } catch {
+      send(res, 400, 'invalid-url-encoding', { 'content-type': 'text/plain; charset=utf-8' });
+      return;
+    }
     let file = resolve(join(base, requested));
     if (file !== base && !file.startsWith(base + sep)) {
       send(res, 403, 'forbidden', { 'content-type': 'text/plain; charset=utf-8' });
@@ -951,7 +1016,8 @@ export function createApp(options: AppOptions): App {
       send(res, 404, 'UI bundle not built', { 'content-type': 'text/plain; charset=utf-8' });
       return;
     }
-    send(res, 200, readFileSync(file, 'utf8'), {
+    // 必须按字节读：图片 / 字体等二进制资源按 utf8 解码会损坏。
+    send(res, 200, readFileSync(file), {
       'content-type': MIME[extname(file)] ?? 'application/octet-stream',
     });
   };
@@ -1143,29 +1209,100 @@ export function createApp(options: AppOptions): App {
 
     // 首次设置必须在统一 401 之前分流：此时还没有任何凭据可供校验。
     if (method === 'GET' && pathname === '/api/setup/status') {
-      sendJson(res, 200, { required: setupRequired() });
+      sendJson(res, 200, {
+        required: setupRequired(),
+        secretRequired: secretSetupRequired(),
+      });
       return;
     }
     if (method === 'POST' && pathname === '/api/setup') {
-      if (!setupRequired()) {
-        sendJson(res, 409, { error: 'admin-already-initialized' });
-        return;
-      }
       let body: Record<string, unknown>;
       try {
         body = await readJson(req);
-      } catch {
-        // 这是唯一面向未认证用户的写端点，坏 body 必须给 400 而不是落到外层 500。
-        sendJson(res, 400, { error: 'invalid-json-body' });
+      } catch (error) {
+        // 这是唯一面向未认证用户的写端点，坏 body 必须给 400 / 413 而不是落到外层 500。
+        const status = error instanceof HttpError ? error.status : 400;
+        sendJson(res, status, { error: status === 413 ? 'request-body-too-large' : 'invalid-json-body' });
+        return;
+      }
+      // 先读完 body 再判定：Node 单线程下，从这里到写库/写文件之间没有 await，
+      // 并发首次提交只会有一个请求看到「仍待初始化」。
+      const adminMissing = setupRequired();
+      const secretMissing = secretSetupRequired();
+      if (!adminMissing && !secretMissing) {
+        sendJson(res, 409, { error: 'already-initialized' });
+        return;
+      }
+      // 管理令牌已存在、只缺加密密钥时，必须先通过管理面鉴权。
+      if (!adminMissing && !isAdmin(req)) {
+        sendJson(res, 401, { error: 'admin-auth-required' });
         return;
       }
       const token = typeof body['token'] === 'string' ? body['token'].trim() : '';
-      if (token.length < MIN_ADMIN_TOKEN_LENGTH) {
+      const nextSecret = typeof body['secret'] === 'string' ? body['secret'].trim() : '';
+      if (adminMissing && token.length < MIN_ADMIN_TOKEN_LENGTH) {
         sendJson(res, 400, { error: 'admin-token-too-short', minLength: MIN_ADMIN_TOKEN_LENGTH });
         return;
       }
+      if (secretMissing) {
+        if (nextSecret.length < MIN_TOKEN_SECRET_LENGTH) {
+          sendJson(res, 400, {
+            error: 'secret-too-short',
+            minLength: MIN_TOKEN_SECRET_LENGTH,
+          });
+          return;
+        }
+        if (secretFile === undefined) {
+          sendJson(res, 500, { error: 'secret-file-unavailable' });
+          return;
+        }
+        let staged: string | null = null;
+        let rollback: (() => void) | undefined;
+        try {
+          // 先重加密数据库（可回滚），再原子替换密钥文件；两步之间失败都不会留下
+          // 「文件是新密钥、库是旧密钥」的半成品。
+          staged = stageSecretFile(secretFile, nextSecret);
+          rollback = store.rotateSecret(nextSecret);
+          commitSecretFile(secretFile, staged);
+          staged = null;
+          secretConfigured = true;
+        } catch (error) {
+          if (staged !== null) discardSecretFile(staged);
+          // 密钥文件没提交成功（rename 撞上文件占用、磁盘满、只读挂载）时数据库已经换成新密钥，
+          // 此时必须退回旧密钥，否则重启后按盘上的旧密钥解不开任何正文。
+          let reverted = true;
+          if (rollback !== undefined) {
+            try {
+              rollback();
+            } catch {
+              reverted = false;
+            }
+          }
+          const reason = error instanceof Error ? error.message : 'unknown';
+          if (/unable to authenticate|bad decrypt|wrong final block length/i.test(reason)) {
+            sendJson(res, 422, {
+              error: 'payload-undecryptable',
+              hint: '已有正文无法用新密钥解密：请先用原 STARTRAILS_TOKEN_SECRET 启动，或从备份恢复',
+            });
+          } else if (!reverted) {
+            // 这条路径比普通写入失败严重：库已经用新密钥，盘上还是旧密钥，
+            // 重启就会解不开。用独立错误码，别让前端按「检查目录权限」轻描淡写。
+            sendJson(res, 500, {
+              error: 'secret-file-desync',
+              reason: redact(reason).slice(0, 160),
+              hint: '数据库已切到新密钥但密钥文件未写入：重启前把密钥文件内容改成刚才设置的密钥，或用 STARTRAILS_TOKEN_SECRET 启动，否则已有正文将无法解密',
+            });
+          } else {
+            sendJson(res, 500, {
+              error: 'secret-persist-failed',
+              reason: redact(reason).slice(0, 160),
+            });
+          }
+          return;
+        }
+      }
       // 原子写入：并发首次提交只有一个赢家，已初始化后重复提交也不会覆盖既有令牌。
-      if (!store.claimSetting(ADMIN_TOKEN_SETTING_KEY, hashToken(token))) {
+      if (adminMissing && !store.claimSetting(ADMIN_TOKEN_SETTING_KEY, hashToken(token))) {
         sendJson(res, 409, { error: 'admin-already-initialized' });
         return;
       }
@@ -1175,6 +1312,15 @@ export function createApp(options: AppOptions): App {
 
     if (!isAdmin(req)) {
       sendJson(res, 401, { error: 'admin-auth-required' });
+      return;
+    }
+
+    // 没有持久密钥时，临时密钥写下的任何正文都会在重启后丢失：先让用户完成密钥设置。
+    if (secretSetupRequired()) {
+      sendJson(res, 503, {
+        error: 'secret-setup-required',
+        hint: '先在登录页设置数据加密密钥（或部署 STARTRAILS_TOKEN_SECRET）',
+      });
       return;
     }
 
@@ -2150,12 +2296,6 @@ export function createApp(options: AppOptions): App {
       sendJson(res, 404, { error: 'profile-not-found' });
       return;
     }
-    // 未变化直接 304：Ingest / Plan / Emit 全都不跑。
-    if (req.headers['if-none-match'] === state.etag) {
-      res.writeHead(304, { ETag: state.etag, 'Cache-Control': 'no-cache' });
-      res.end();
-      return;
-    }
 
     // 参数化订阅：include / exclude / prefix / limit 只作用于本次响应，不改库、不进缓存。
     const include = url.searchParams.getAll('include').flatMap((value) => value.split(',')).filter((value) => value.trim().length > 0);
@@ -2171,6 +2311,33 @@ export function createApp(options: AppOptions): App {
             ...(Number.isFinite(limitRaw) && limitRaw > 0 ? { limit: Math.floor(limitRaw) } : {}),
           }
         : undefined;
+
+    /**
+     * ETag 必须标识「这次真正返回的表示」，而不只是上游状态：
+     * 同一个 token 的自适应 Surge / mihomo、带过滤与不带过滤、诊断 JSON 与订阅正文
+     * 都是不同表示。只拿 state.etag 比较会让客户端拿 304 却保留另一份内容。
+     */
+    const responseEtag = `"${sha256(
+      JSON.stringify({
+        state: state.etag,
+        target,
+        suffix: diagnosticsSuffix ?? 'subscription',
+        filter: queryFilter ?? null,
+      }),
+    ).slice(0, 32)}"`;
+
+    // 订阅正文可以 304；诊断 JSON 里有 `upstream-stale:45s` 这类随时间变化的年龄字段，
+    // 同一份 state.etag 不能代表它，所以诊断请求总是重新生成（仍返回 ETag 供客户端参考）。
+    if (diagnosticsSuffix === undefined && ifNoneMatch(req.headers['if-none-match'], responseEtag)) {
+      res.writeHead(304, {
+        ...SECURITY_HEADERS,
+        ETag: responseEtag,
+        Vary: 'User-Agent',
+        'Cache-Control': 'no-cache',
+      });
+      res.end();
+      return;
+    }
 
     const cachedBuild = queryFilter === undefined ? buildCache.getL2(state.etag, target) : undefined;
     let output: BuildOutput;
@@ -2221,7 +2388,8 @@ export function createApp(options: AppOptions): App {
     const staleCount = state.diagnostics.filter((item) => item.reason.startsWith('upstream-stale:')).length;
     const summary = `nodes=${output.report.passed} skipped=${output.report.skipped} sources=${state.snapshots.length} stale=${staleCount}`;
     const headers: Record<string, string> = {
-      ETag: state.etag,
+      ETag: responseEtag,
+      Vary: 'User-Agent',
       'Cache-Control': 'no-cache',
       'X-Startrails-Build-Id': buildId,
       'X-Startrails-Skipped': String(output.report.skipped),
@@ -2230,15 +2398,18 @@ export function createApp(options: AppOptions): App {
     };
 
     if (diagnosticsSuffix !== undefined) {
-      sendJson(res, 200, {
+      send(res, 200, JSON.stringify({
         buildId,
         target,
-        etag: state.etag,
+        etag: responseEtag,
         summary,
         report: {
           ...output.report,
           diagnostics: redacted([...extraDiagnostics, ...output.report.diagnostics]),
         },
+      }), {
+        ...headers,
+        'content-type': 'application/json; charset=utf-8',
       });
       return;
     }
@@ -2345,7 +2516,15 @@ export function createApp(options: AppOptions): App {
       send(res, 403, 'forbidden', { 'content-type': 'text/plain; charset=utf-8' });
       return;
     }
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    // Host 头是客户端可控的：用它拼 base 可能让 new URL 抛错。这个回调在 try 之外，
+    // 未捕获的同步异常会直接打崩进程，所以坏 URL 必须在这里就地变成 400。
+    let url: URL;
+    try {
+      url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    } catch {
+      sendJson(res, 400, { error: 'invalid-request-url' });
+      return;
+    }
     const pathname = url.pathname;
     void (async () => {
       try {
@@ -2363,6 +2542,15 @@ export function createApp(options: AppOptions): App {
           serveStatic(pathname, res);
         }
       } catch (error) {
+        if (error instanceof HttpError) {
+          sendJson(res, error.status, { error: error.message });
+          return;
+        }
+        // 路径里的 % 编码不合法（例如 %E0%A4%A）是客户端错误，不是服务端 500。
+        if (error instanceof URIError) {
+          sendJson(res, 400, { error: 'invalid-url-encoding' });
+          return;
+        }
         const reason = error instanceof Error ? error.message : String(error);
         sendJson(res, 500, { error: 'internal-error', reason: redact(reason) });
       }

@@ -31,7 +31,7 @@ COPY src ./src
 COPY scripts ./scripts
 COPY --from=ui /app/web/dist ./web/dist
 
-# 以非 root 运行。SQLite 只需 /app/data 可写（库文件 + data/cache 规则集镜像）。
+# 以非 root 运行。SQLite / 规则集缓存 / UI 设置的 secret.key 都只需 /app/data 可写。
 RUN mkdir -p /app/data && chown -R node:node /app/data
 USER node
 

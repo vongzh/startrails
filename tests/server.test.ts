@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { openStore } from '../src/store/sqlite.ts';
 import { createApp } from '../src/server/app.ts';
-import { assertPublicUrl, isPublicAddress } from '../src/server/url-guard.ts';
+import { assertPublicUrl, fetchSnapshot, isPublicAddress } from '../src/server/url-guard.ts';
 import { redact } from '../src/server/redact.ts';
 
 const subscription = readFileSync(
@@ -50,13 +50,15 @@ test('SQLite Store：配置态持久化、正文加密、WAL 快照可恢复', a
       dedupe: 'nodeKey',
       order: 0,
     });
-    store.putAnnotation({ nodeKey: 'k1', excluded: true, alias: 'Renamed', order: 2 });
+    store.putAnnotation({ nodeKey: 'k1', excluded: true, alias: 'Renamed', order: 2, region: 'JP' });
     const row = readFileSync(join(dir, 'state.db'));
     assert.ok(!row.toString('latin1').includes('top-secret'), '源正文不应以明文出现在数据库文件');
     assert.equal(store.listSources()[0]?.kind, 'inline');
     assert.match(store.readSourcePayload('a') ?? '', /ss\.example\.invalid/);
     assert.equal(store.listCollections()[0]?.members.length, 1);
     assert.equal(store.listAnnotations()[0]?.alias, 'Renamed');
+    // 手动覆盖地区必须落库：端口合同里有 region，适配器漏写会让「改地区」变成假动作。
+    assert.equal(store.listAnnotations()[0]?.region, 'JP');
     const backup = join(dir, 'backup', 'snapshot.db');
     await store.backup(backup);
     assert.ok(existsSync(backup));
@@ -67,6 +69,28 @@ test('SQLite Store：配置态持久化、正文加密、WAL 快照可恢复', a
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('上游正文超过上限立即中止，不把整份响应读进内存', async (t) => {
+  const upstream = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+    // 分块发送且不声明 content-length，确保走流式上限而不是只看响应头。
+    res.write('x'.repeat(512));
+    res.end('x'.repeat(512));
+  });
+  await new Promise<void>((done) => upstream.listen(0, '127.0.0.1', done));
+  t.after(async () => {
+    await new Promise<void>((done) => upstream.close(() => done()));
+  });
+  const port = (upstream.address() as AddressInfo).port;
+  await assert.rejects(
+    () =>
+      fetchSnapshot(`http://127.0.0.1:${port}/sub`, null, {
+        allowPrivate: true,
+        maxBytes: 512,
+      }),
+    /upstream-body-too-large/,
+  );
 });
 
 test('HTTP 契约：鉴权 / 订阅 URL / 304 / 诊断 / 撤销 / 备份', async (t) => {
@@ -113,6 +137,37 @@ test('HTTP 契约：鉴权 / 订阅 URL / 304 / 诊断 / 撤销 / 备份', async
   const stateBody = (await (await get('/api/state', { headers: auth })).json()) as { coreVersion: string };
   assert.equal(stateBody.coreVersion, '0.1.0');
 
+  // 坏 body / 超大 body 是客户端错误：不能落到外层 catch 变成 500。
+  const malformed = await get('/api/sources', {
+    method: 'POST',
+    headers: auth,
+    body: '{not-json',
+  });
+  assert.equal(malformed.status, 400);
+  assert.equal(((await malformed.json()) as { error: string }).error, 'invalid-json-body');
+  const oversized = await get('/api/sources', {
+    method: 'POST',
+    headers: auth,
+    body: 'x'.repeat(8 * 1024 * 1024 + 1),
+  });
+  assert.equal(oversized.status, 413);
+  assert.equal(((await oversized.json()) as { error: string }).error, 'request-body-too-large');
+
+  // Host 头由客户端控制；用它拼 URL 失败时必须是 400，而不是让请求回调同步抛错打崩进程。
+  const port = Number(new URL(base).port);
+  const badHostStatus = await new Promise<number>((resolve, reject) => {
+    const req = request(
+      { hostname: '127.0.0.1', port, path: '/health', headers: { host: 'bad host' } },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+  assert.equal(badHostStatus, 400);
+
   assert.equal((await post('/api/sources', { id: 'a', url: `http://127.0.0.1:${upstreamPort}/sub` })).status, 201);
   assert.equal((await post('/api/profiles', { name: 'default', sourceIds: ['a'] })).status, 201);
   const tokenResponse = await post('/api/tokens', { profile: 'default', target: 'surge' });
@@ -134,9 +189,18 @@ test('HTTP 契约：鉴权 / 订阅 URL / 304 / 诊断 / 撤销 / 备份', async
 
   const diagnostics = await fetch(`${created.url}/diagnostics`);
   assert.equal(diagnostics.status, 200);
+  const diagnosticsEtag = diagnostics.headers.get('etag');
+  assert.ok(diagnosticsEtag !== null && diagnosticsEtag.length > 0);
   const report = (await diagnostics.json()) as { report: { diagnostics: { reason: string }[] }; buildId: string };
   assert.ok(report.report.diagnostics.length > 0);
   assert.ok(report.buildId.length > 0);
+
+  // 诊断 JSON 含 `upstream-stale:45s` 这类随时间变化的字段，不能凭同一份 state.etag 回 304。
+  const diagnosticsAgain = await fetch(`${created.url}/diagnostics`, {
+    headers: { 'if-none-match': diagnosticsEtag },
+  });
+  assert.equal(diagnosticsAgain.status, 200, '诊断请求必须重新生成，不能 304');
+  await diagnosticsAgain.text();
 
   const byBuild = await get(`/api/diagnostics?buildId=${report.buildId}`, { headers: auth });
   assert.equal(byBuild.status, 200);
@@ -301,10 +365,31 @@ test('文件源 / 组合订阅 / UA 自适应 / 参数化订阅', async (t) => {
   const surge = await fetch(auto.url, { headers: { 'user-agent': 'Surge iOS/3389' } });
   assert.equal(surge.status, 200);
   assert.match(surge.headers.get('content-type') ?? '', /text\/plain/);
+  const surgeEtag = surge.headers.get('etag');
+  assert.ok(surgeEtag !== null && surgeEtag.length > 0);
+  assert.match(surge.headers.get('vary') ?? '', /user-agent/i, '自适应响应必须按 UA 区分缓存');
   assert.match(await surge.text(), /A-HK-01/);
   const clash = await fetch(auto.url, { headers: { 'user-agent': 'ClashMetaForAndroid/2.10.1' } });
   assert.equal(clash.status, 200);
+  const clashEtag = clash.headers.get('etag');
+  assert.ok(clashEtag !== null && clashEtag.length > 0);
+  assert.notEqual(clashEtag, surgeEtag, '不同客户端方言必须是不同表示');
   assert.match(await clash.text(), /type: ss/);
+
+  // 拿 Surge 的 ETag 去请求 mihomo：表示不同，绝不能回 304 让客户端保留旧格式。
+  const crossTarget = await fetch(auto.url, {
+    headers: { 'user-agent': 'ClashMetaForAndroid/2.10.1', 'if-none-match': surgeEtag },
+  });
+  assert.equal(crossTarget.status, 200, 'ETag 不能跨客户端复用');
+  await crossTarget.text();
+
+  // 诊断 JSON 与订阅正文也是不同表示：共用 state.etag 时这里会错误地 304。
+  const wrongDiagnostics = await fetch(`${auto.url}/diagnostics`, {
+    headers: { 'user-agent': 'Surge iOS/3389', 'if-none-match': surgeEtag },
+  });
+  assert.equal(wrongDiagnostics.status, 200, '诊断 JSON 不能命中订阅正文的 ETag');
+  await wrongDiagnostics.text();
+
   const unknown = await fetch(auto.url, { headers: { 'user-agent': 'curl/8.0' } });
   assert.equal(unknown.status, 400, '认不出客户端时明确拒绝，不猜格式');
 
@@ -313,9 +398,24 @@ test('文件源 / 组合订阅 / UA 自适应 / 参数化订阅', async (t) => {
     headers: { 'user-agent': 'Surge iOS/3389' },
   });
   assert.equal(filtered.status, 200);
+  const filteredEtag = filtered.headers.get('etag');
+  assert.ok(filteredEtag !== null && filteredEtag.length > 0);
+  assert.notEqual(filteredEtag, surgeEtag, '过滤后的正文不能复用未过滤的 ETag');
   const text = await filtered.text();
   assert.match(text, /M-A-HK-01/);
   assert.ok(!text.includes('JP-01'));
+
+  const filteredCached = await fetch(`${auto.url}?include=HK&prefix=M-`, {
+    headers: { 'user-agent': 'Surge iOS/3389', 'if-none-match': filteredEtag },
+  });
+  assert.equal(filteredCached.status, 304, '同一过滤表示应能正常命中 304');
+  await filteredCached.text();
+
+  const filteredCross = await fetch(`${auto.url}?include=HK&prefix=M-`, {
+    headers: { 'user-agent': 'Surge iOS/3389', 'if-none-match': surgeEtag },
+  });
+  assert.equal(filteredCross.status, 200, '过滤表示不能命中未过滤表示的 ETag');
+  await filteredCross.text();
 
   // 源被删除后组合订阅仍可构建，只是少一段并留下诊断。
   assert.equal((await call(`/api/sources/${sourceB.id}`, { method: 'DELETE', headers: auth })).status, 200);

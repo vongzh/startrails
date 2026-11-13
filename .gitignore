@@ -20,6 +20,8 @@ data/
 .env
 .env.*
 !.env.example
+# UI 设置的加密密钥（默认在 data/ 下，这里兜底自定义 STARTRAILS_SECRET_FILE）。
+*.key
 
 # ---- 测试与工具缓存 ----
 coverage/
@@ -31,8 +33,9 @@ yarn-error.log*
 .cache/
 
 # ---- 本地草稿 ----
-# 设计评审稿（标志/配色/版式对比页）是过程产物，不随代码分发。
-logo-review.html
+# 设计审核稿（scratch/*.html）属于过程产物，README 不引用它，别人 clone 下来只会困惑，
+# 因此不入库；文件仍留在本机，`git clean -fd` 不会删被忽略的路径（只有 -x 才会）。
+scratch/
 
 # ---- 编辑器与操作系统 ----
 .vscode/

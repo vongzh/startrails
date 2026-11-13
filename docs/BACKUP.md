@@ -1,6 +1,6 @@
 # 备份与恢复
 
-备份的目标只有一个：**一个文件装下全部状态**。所以订阅源正文、标注、订阅 Token 哈希、管理面令牌哈希、构建历史都在 SQLite 里，加密字段靠 `STARTRAILS_TOKEN_SECRET` 解密，不需要同步任何目录。
+备份的目标只有一个：**一个文件装下全部业务状态**。订阅源正文、标注、订阅 Token 哈希、管理面令牌哈希、构建历史都在 SQLite 里；加密字段的密钥来自环境变量 `STARTRAILS_TOKEN_SECRET` 或 `<data>/secret.key`，密钥本身不在 `.db` 里，必须单独保存。
 
 ## 备份里有什么
 
@@ -14,8 +14,9 @@
 | 构建历史与诊断 | ✅ | 最近 200 次，可裁剪 |
 | `web/dist` 前端产物 | ❌ | 由 `npm run build:ui` 重新生成 |
 | `data/cache/`（上游快照、规则集缓存） | ❌ | 可重建产物 |
+| `data/secret.key`（UI 设置的加密密钥） | ❌ | **必须与 `.db` 分开单独备份**；用环境变量提供密钥时不需要 |
 
-下载回的 `.db` 是**全量**的，恢复后不需要重填任何订阅。
+下载回的 `.db` 是**全量业务数据**，但恢复后仍需要原来的密钥才能读出加密正文。
 
 ## 本地备份
 
@@ -56,7 +57,7 @@ curl -X POST -H "Authorization: Bearer $STARTRAILS_ADMIN_TOKEN" \
 1. **停服务**（`docker compose stop` 或 `systemctl stop startrails`），确保没有进程持有数据库。
 2. 备份现有库（哪怕它坏了）：`mv data/startrails.db data/startrails.db.broken`，同时删掉 `startrails.db-wal` / `startrails.db-shm`——它们属于旧库，混用会损坏新库。
 3. 把远端那份 `.db` 下载到 `data/startrails.db`。
-4. **用同一个 `STARTRAILS_TOKEN_SECRET` 启动**。换了密钥，加密字段全部解不开，表现是「源列表还在、正文读不出来」。
+4. **用原来的密钥启动**：设置 `STARTRAILS_TOKEN_SECRET`，或把备份的 `secret.key` 放回 `data/secret.key`（自定义 `STARTRAILS_SECRET_FILE` 时放回对应路径）。换了密钥，加密字段全部解不开，表现是「源列表还在、正文读不出来」。
 5. 启动后自检：
    - `/health` 返回 `ok`；
    - 「订阅源」里每个源都有节点数，`lastError` 为空；
@@ -73,9 +74,9 @@ npm run drill:backup
 
 ## 密钥轮换
 
-`STARTRAILS_TOKEN_SECRET` 不是可选项。轮换意味着旧库里的加密字段无法解密，只有两条路：
+`STARTRAILS_TOKEN_SECRET` 可以留空（首次在 UI 设置并落盘），但一旦已有加密数据就必须长期保留同一份密钥。轮换意味着旧库里的加密字段无法解密，只有两条路：
 
 - 有旧密钥：用它启动，把每个文件源 / 粘贴源的内容重新保存一次（走新密钥加密），再换新密钥启动；
 - 没有旧密钥：删除这些源后重新添加。
 
-因此**密钥要跟备份一起存**（例如放密码管理器），但不要跟备份放在同一个存储里。
+因此**密钥要跟备份一起存**（例如放密码管理器），但不要跟备份放在同一个存储里。用环境变量提供密钥时，记得把它写进部署侧的 secret 管理；用 UI 设置时，额外备份 `data/secret.key`。

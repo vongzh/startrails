@@ -112,6 +112,15 @@ export interface Store {
   readSourcePayload(id: string): string | undefined;
   writeSourcePayload(id: string, content: string): void;
   sourcePayloadInfo(id: string): { readonly bytes: number; readonly updatedAt: string } | undefined;
+  /**
+   * 用新密钥重加密全部已落盘正文。任何一行解不开都会抛错并回滚，
+   * 因此调用方可以安全地在设置新密钥失败时继续使用旧密钥。
+   *
+   * 返回「撤销本次轮换」的函数：换密钥要同时改数据库和磁盘上的密钥文件，
+   * 第二步失败时调用方必须把数据库退回旧密钥，否则重启后全部正文解不开。
+   * 撤销函数自己失败时抛错，由调用方决定如何告知用户。
+   */
+  rotateSecret(secret: string): () => void;
 
   listCollections(): readonly PersistedCollection[];
   getCollection(id: string): PersistedCollection | undefined;

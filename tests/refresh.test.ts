@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,7 +10,7 @@ import { applyMemberFilter } from '../src/core/collections/index.ts';
 import { ingest } from '../src/core/index.ts';
 import { createApp } from '../src/server/app.ts';
 import { dueSourceIds, parseRefreshPolicy } from '../src/server/schedule.ts';
-import { parseProxyUrl } from '../src/server/proxy-fetch.ts';
+import { fetchThroughProxy, parseProxyUrl } from '../src/server/proxy-fetch.ts';
 import { openStore } from '../src/store/sqlite.ts';
 
 const subscription = readFileSync(new URL('../testdata/fixtures/subscription.txt', import.meta.url), 'utf8');
@@ -68,10 +69,54 @@ test('源级代理 URL 解析：只接受 http / https / socks5，协议不认�
   assert.equal(parseProxyUrl('https://proxy.example.invalid:443')?.protocol, 'https:');
   assert.equal(parseProxyUrl('socks5://10.0.0.1')?.port, 1080, 'socks5 缺省端口 1080');
   assert.equal(parseProxyUrl('http://10.0.0.1')?.port, 8080, 'http 缺省端口 8080');
+  assert.equal(parseProxyUrl('socks5://[::1]:1080')?.host, '::1', 'IPv6 代理 host 不能带方括号');
   assert.equal(parseProxyUrl('ftp://10.0.0.1:21'), null);
   assert.equal(parseProxyUrl('not-a-url'), null);
+  assert.equal(parseProxyUrl('socks5://user%zz@10.0.0.1:1080'), null, '坏 % 编码按无效代理处理，不能抛错');
   assert.equal(parseProxyUrl(null), null);
   assert.equal(parseProxyUrl('   '), null);
+});
+
+test('SOCKS5 对端提前关闭：按错误返回而不是挂住整次拉取', async (t) => {
+  const proxy = createNetServer((socket) => {
+    socket.once('data', () => {
+      // 只回半个 greeting 就断开：旧实现会一直等 'readable'，请求挂到外层超时之外。
+      socket.write(Buffer.from([0x05]));
+      socket.end();
+    });
+  });
+  await new Promise<void>((done) => proxy.listen(0, '127.0.0.1', done));
+  t.after(async () => {
+    await new Promise<void>((done) => proxy.close(() => done()));
+  });
+  const port = (proxy.address() as AddressInfo).port;
+  const spec = parseProxyUrl(`socks5://127.0.0.1:${port}`);
+  assert.ok(spec !== null);
+  const started = Date.now();
+  await assert.rejects(
+    () =>
+      fetchThroughProxy({
+        url: new URL('http://example.invalid/sub'),
+        proxy: spec,
+        timeoutMs: 300,
+      }),
+    /proxy-(socket-closed|read-timeout)/,
+  );
+  assert.ok(Date.now() - started < 2_000, '必须尽快失败，不能挂住');
+});
+
+test('代理请求头含非法字符：在建隧道前拒绝，不能把进程打崩', async () => {
+  const spec = parseProxyUrl('socks5://127.0.0.1:1');
+  assert.ok(spec !== null);
+  await assert.rejects(
+    () =>
+      fetchThroughProxy({
+        url: new URL('http://example.invalid/sub'),
+        proxy: spec,
+        headers: { 'User-Agent': 'bad\r\nX-Injected: 1' },
+      }),
+    /Invalid character|ERR_INVALID_CHAR/i,
+  );
 });
 
 test('P1 运维闭环：代理入参 / 部分更新 / 手动刷新 / 流量信息透传', async (t) => {

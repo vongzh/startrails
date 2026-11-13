@@ -16,7 +16,8 @@ services:
       STARTRAILS_DATA_DIR: /app/data
       STARTRAILS_DB_PATH: /app/data/startrails.db
       STARTRAILS_WEB_ROOT: /app/web/dist
-      STARTRAILS_TOKEN_SECRET: ${STARTRAILS_TOKEN_SECRET:?set STARTRAILS_TOKEN_SECRET}
+      # 可留空：首次访问在 Web UI 设置，写入 /app/data/secret.key；设置后环境变量优先。
+      STARTRAILS_TOKEN_SECRET: ${STARTRAILS_TOKEN_SECRET:-}
       # 默认不注入（注入空值会占住这个键，屏蔽项目根 .env 的回退）：
       # 首次访问在 Web UI 设定管理令牌，写入 /app/data/startrails.db，重启后仍有效。
       # 需要固定令牌时取消下行注释；设置后环境变量优先，数据库里的令牌不再生效。

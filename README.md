@@ -1,5 +1,10 @@
 # Startrails · 星迹
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="web/public/brand/logo-on-dark.svg">
+  <img src="web/public/brand/logo-on-light.svg" alt="Startrails · 星迹" width="224">
+</picture>
+
 **一份订阅源，扇出成 19 个客户端各自能吃的订阅地址。** 自托管的常驻服务，不把订阅交给第三方转换。
 
 ![控制台概览](docs/screenshots/overview.png)
@@ -23,28 +28,28 @@
 需要 Docker（镜像方式）或 Node ≥ 22.18（源码方式）。
 
 ```bash
-openssl rand -hex 32      # 生成一次，存进密码管理器；换机器、重建容器都要用它
+# 可选：预先生成加密密钥。不生成也行，首次打开 Web UI 时会要求设置。
+openssl rand -hex 32
 ```
 
 ```bash
 docker run -d --name startrails \
   -p 127.0.0.1:8787:8787 \
-  -e STARTRAILS_TOKEN_SECRET=<上一步的值> \
   -v startrails-data:/app/data \
   --restart unless-stopped \
   ghcr.io/vongzh/startrails:latest
 ```
 
-打开 `http://127.0.0.1:8787`，首次进入会要求设定管理令牌。源码方式：
+打开 `http://127.0.0.1:8787`，首次进入会要求设定管理令牌与数据加密密钥。想用环境变量预置密钥，在 `docker run` 里加一行 `-e STARTRAILS_TOKEN_SECRET=<上一步的值>`；不预置则密钥落盘到 `data/secret.key`。源码方式：
 
 ```bash
 npm ci && npm run build:ui
-STARTRAILS_TOKEN_SECRET=<同样的值> node src/server/index.ts
+node src/server/index.ts
 ```
 
 三条要知道的：
 
-1. **`STARTRAILS_TOKEN_SECRET` 必填且长期不变**。它加密源正文，换了旧数据就解不开；没设会直接启动失败，不是默认值兜底。
+1. **`STARTRAILS_TOKEN_SECRET` 可选但长期不变**。它加密源正文；优先级为环境变量 > `STARTRAILS_SECRET_FILE` 指向的文件（默认 `<data>/secret.key`）> 首次进入 UI 设置。已有数据的实例换密钥后旧正文解不开，必须继续用原密钥。
 2. **管理令牌两种来源**：环境变量 `STARTRAILS_ADMIN_TOKEN`（优先级高、界面不可改）或首次访问时在界面设定。库里只存 hash。
 3. **默认只监听 `127.0.0.1`**。对外请配反向代理；镜像里已默认 `STARTRAILS_HOST=0.0.0.0`，安全边界交给「宿主机发布成哪个地址」。
 
@@ -65,7 +70,7 @@ STARTRAILS_TOKEN_SECRET=<同样的值> node src/server/index.ts
 ## 部署
 
 ```bash
-cp .env.example .env      # 填 STARTRAILS_TOKEN_SECRET
+cp .env.example .env      # 可选：预填密钥 / 管理令牌；留空则首次进入 UI 设置
 docker compose up -d
 ```
 
@@ -114,7 +119,7 @@ ReadWritePaths=/var/lib/startrails
 WantedBy=multi-user.target
 ```
 
-`/etc/startrails.env` 至少写 `STARTRAILS_TOKEN_SECRET=`、`STARTRAILS_DATA_DIR=/var/lib/startrails`、`STARTRAILS_ADMIN_TOKEN=`，权限 `600`。
+`/etc/startrails.env` 写 `STARTRAILS_DATA_DIR=/var/lib/startrails`、`STARTRAILS_ADMIN_TOKEN=`，权限 `600`；`STARTRAILS_TOKEN_SECRET` 可留空（首次在 UI 设置并落盘到 `<data>/secret.key`），也可在这里预置。
 
 </details>
 
@@ -154,9 +159,10 @@ WantedBy=multi-user.target
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `STARTRAILS_TOKEN_SECRET` | 无（必填） | 加密源正文的密钥，换了旧数据解不开 |
+| `STARTRAILS_TOKEN_SECRET` | 空 | 加密源正文的密钥；环境变量优先，未设置时用 `<data>/secret.key`，都没有则首次 UI 设置。换了密钥后旧数据解不开 |
+| `STARTRAILS_SECRET_FILE` | `<data>/secret.key` | UI 设置的密钥落盘位置 |
 | `STARTRAILS_ADMIN_TOKEN` | 空 | 管理令牌；留空则首次访问在界面设定并存库 |
-| `STARTRAILS_DATA_DIR` | `./data` | 数据目录（库文件 + 规则集缓存） |
+| `STARTRAILS_DATA_DIR` | `./data` | 数据目录（库文件 + 规则集缓存 + 可选 `secret.key`） |
 | `STARTRAILS_DB_PATH` | `<data>/startrails.db` | 库文件位置 |
 | `STARTRAILS_HOST` / `STARTRAILS_PORT` | `127.0.0.1` / `8787` | 监听地址 |
 | `STARTRAILS_PUBLIC_BASE_URL` | 空 | 对外基地址，TLS 反代时必设 |
@@ -172,7 +178,7 @@ WantedBy=multi-user.target
 ```bash
 npm run serve         # 构建前端 + 起服务（http://127.0.0.1:8787）
 npm run dev:ui        # 只跑前端 dev server（后端另开 dev:server）
-npm test              # 156 个用例
+npm test              # 164 个用例
 npm run verify        # 提交前跑这个：版本一致 → tsc → 绑定检查 → 构建 → 用例 → 备份演练
 ```
 
@@ -191,7 +197,7 @@ npm run verify        # 提交前跑这个：版本一致 → tsc → 绑定检�
 
 **某个客户端少节点？** 这是判定结果，不是 bug。去「能力」页看该客户端对这条特性是 `unverified` 还是 `reject`。
 
-**容器起来了但界面打不开？** 多半是 `STARTRAILS_TOKEN_SECRET` 没设（进程直接退出），或卷的属主不是 uid 1000。
+**容器起来了但界面打不开？** 多半是卷的属主不是 uid 1000，或 `data/secret.key` 不可写。密钥没设置不会导致启动失败：首次进入 UI 设置即可。
 
 **能多副本吗？** 不能。SQLite WAL 要求所有进程在同一主机。
 

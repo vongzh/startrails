@@ -1,8 +1,8 @@
-import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openStore } from '../store/sqlite.ts';
 import { ADMIN_TOKEN_SETTING_KEY, createApp } from './app.ts';
+import { resolveTokenSecret } from './secret.ts';
 
 // 本地开发：优先加载项目根目录的 .env（不存在则静默跳过），使 secret 跨会话一致。
 // 生产部署仍由编排器注入环境变量，此处不覆盖已存在的同名变量（loadEnvFile 不覆盖）。
@@ -20,14 +20,23 @@ const port = Number(process.env['STARTRAILS_PORT'] ?? 8787);
 const host = process.env['STARTRAILS_HOST'] ?? '127.0.0.1';
 const webRoot = process.env['STARTRAILS_WEB_ROOT'] ?? join(projectRoot, 'web', 'dist');
 
-const secret = process.env['STARTRAILS_TOKEN_SECRET'];
-if (secret === undefined || secret.length === 0) {
-  console.warn('[startrails] STARTRAILS_TOKEN_SECRET 未设置：本次使用临时密钥，重启后加密字段将无法解密。生产必须设置。');
+const secretFile =
+  process.env['STARTRAILS_SECRET_FILE']?.trim() || join(dataDir, 'secret.key');
+const resolvedSecret = resolveTokenSecret({
+  envSecret: process.env['STARTRAILS_TOKEN_SECRET'],
+  file: secretFile,
+});
+if (resolvedSecret.source === 'ephemeral') {
+  console.warn(
+    '[startrails] STARTRAILS_TOKEN_SECRET 未设置：本次使用临时密钥。首次打开 Web UI 时设置数据加密密钥；已有数据的实例请用原密钥启动，否则正文无法解密。',
+  );
+} else if (resolvedSecret.source === 'file') {
+  console.log('[startrails] 使用数据目录中的加密密钥文件；设置 STARTRAILS_TOKEN_SECRET 可覆盖。');
 }
 // 管理面令牌：环境变量优先；没配就回退到数据库里首次设置时落下的哈希。
 // trim 同时处理「未设置」与「设成空字符串」，避免空令牌把管理面锁死。
 const adminToken = process.env['STARTRAILS_ADMIN_TOKEN']?.trim() ?? '';
-const store = openStore(dbPath, secret ?? randomBytes(32).toString('hex'));
+const store = openStore(dbPath, resolvedSecret.secret);
 const adminConfigured = adminToken.length > 0 || store.getSetting(ADMIN_TOKEN_SETTING_KEY) !== undefined;
 
 // 通知与远端备份都是「可选能力」：没配就整块不启用，不因为缺配置而拒绝启动。
@@ -57,6 +66,8 @@ const app = createApp({
   dataDir,
   webRoot,
   allowPrivate: process.env['STARTRAILS_ALLOW_PRIVATE'] === '1',
+  secretConfigured: resolvedSecret.configured,
+  secretFile,
   // 无状态转换默认关闭：它让匿名请求借服务器身份去拉任意公网 URL。要开必须显式表态。
   allowStateless: process.env['STARTRAILS_ALLOW_STATELESS'] === '1',
   ...(publicBaseUrl === undefined || publicBaseUrl.length === 0 ? {} : { publicBaseUrl }),
@@ -83,6 +94,9 @@ app.server.listen(port, host, () => {
   console.log(`  diagnostics   GET  /api/diagnostics?buildId=...`);
   if (!adminConfigured) {
     console.log('  admin setup   首次访问请打开 Web UI 设置管理令牌（写入数据库，重启后仍有效）');
+  }
+  if (!resolvedSecret.configured) {
+    console.log(`  secret setup  首次访问请设置数据加密密钥（写入 ${resolvedSecret.file}）`);
   }
 });
 

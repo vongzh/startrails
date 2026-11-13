@@ -1,10 +1,9 @@
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, validateHeaderName, validateHeaderValue } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { Agent } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import type { Socket } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { once } from 'node:events';
 
 /**
  * 代理拉取：部分机场按来源 IP 限区，必须换出口才能拿到正确内容。
@@ -32,22 +31,39 @@ export function parseProxyUrl(raw: string | undefined | null): ProxySpec | null 
   } catch {
     return null;
   }
+  // userinfo 里的 % 编码可能不合法（URL 解析器不会拒绝 `%zz`），
+  // decodeURIComponent 会抛 URIError。代理地址是用户输入，必须按「无效」处理而不是抛错。
+  const decodePart = (value: string): string | null => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return null;
+    }
+  };
+  const username = url.username.length === 0 ? undefined : decodePart(url.username);
+  if (username === null) return null;
+  const password = url.password.length === 0 ? undefined : decodePart(url.password);
+  if (password === null) return null;
+  const credentials = {
+    ...(username === undefined ? {} : { username }),
+    ...(password === undefined ? {} : { password }),
+  };
+  // URL.hostname 对 IPv6 保留方括号，而 net.connect / TLS 的 host 不能带括号。
+  const host = url.hostname.replace(/^\[|\]$/g, '');
   if (url.protocol === 'socks5:' || url.protocol === 'socks5h:') {
     return {
       protocol: 'socks5:',
-      host: url.hostname,
+      host,
       port: url.port.length === 0 ? 1080 : Number(url.port),
-      ...(url.username.length === 0 ? {} : { username: decodeURIComponent(url.username) }),
-      ...(url.password.length === 0 ? {} : { password: decodeURIComponent(url.password) }),
+      ...credentials,
     };
   }
   if (url.protocol === 'http:' || url.protocol === 'https:') {
     return {
       protocol: url.protocol,
-      host: url.hostname,
+      host,
       port: url.port.length === 0 ? (url.protocol === 'https:' ? 443 : 8080) : Number(url.port),
-      ...(url.username.length === 0 ? {} : { username: decodeURIComponent(url.username) }),
-      ...(url.password.length === 0 ? {} : { password: decodeURIComponent(url.password) }),
+      ...credentials,
     };
   }
   return null;
@@ -120,20 +136,50 @@ async function httpConnectTunnel(
 }
 
 /** 逐步读够 n 字节；SOCKS5 的应答是定长或带长度前缀的，必须精确读。 */
-async function readExactly(socket: Socket, n: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  while (total < n) {
-    const chunk = socket.read() as Buffer | null;
+interface SocketReader {
+  readonly socket: Socket;
+  readonly timeoutMs: number;
+  buffer: Buffer;
+}
+
+/** 等可读、关闭或超时三者之一；不能只等 `readable`，否则对端提前关闭会永久挂住。 */
+const waitForReadable = (socket: Socket, timeoutMs: number): Promise<void> =>
+  new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      socket.off('readable', onReadable);
+      socket.off('close', onClose);
+      socket.off('error', onError);
+      clearTimeout(timer);
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+    const onReadable = (): void => finish();
+    const onClose = (): void => finish(new Error('proxy-socket-closed'));
+    const onError = (error: Error): void => finish(error);
+    const timer = setTimeout(() => finish(new Error('proxy-read-timeout')), timeoutMs);
+    socket.once('readable', onReadable);
+    socket.once('close', onClose);
+    socket.once('error', onError);
+  });
+
+async function readExactly(reader: SocketReader, n: number): Promise<Buffer> {
+  while (reader.buffer.length < n) {
+    const chunk = reader.socket.read() as Buffer | null;
     if (chunk !== null) {
-      chunks.push(chunk);
-      total += chunk.length;
+      reader.buffer = reader.buffer.length === 0 ? chunk : Buffer.concat([reader.buffer, chunk]);
       continue;
     }
-    await once(socket, 'readable');
+    if (reader.socket.destroyed || reader.socket.readableEnded) {
+      throw new Error('proxy-socket-closed');
+    }
+    await waitForReadable(reader.socket, reader.timeoutMs);
   }
-  const merged = Buffer.concat(chunks);
-  return merged.subarray(0, n);
+  const out = reader.buffer.subarray(0, n);
+  reader.buffer = reader.buffer.subarray(n);
+  return out;
 }
 
 async function socks5Tunnel(
@@ -143,37 +189,72 @@ async function socks5Tunnel(
   timeoutMs: number,
 ): Promise<Socket> {
   const socket = await connectWithTimeout(proxy.host, proxy.port, timeoutMs);
-  socket.setTimeout(timeoutMs);
-  const wantsAuth = proxy.username !== undefined;
-  socket.write(Buffer.from(wantsAuth ? [0x05, 0x02, 0x00, 0x02] : [0x05, 0x01, 0x00]));
-  const greeting = await readExactly(socket, 2);
-  if (greeting[0] !== 0x05) throw new Error('socks5-version-mismatch');
-  if (greeting[1] === 0x02) {
-    if (!wantsAuth) throw new Error('socks5-auth-required');
-    const user = Buffer.from(proxy.username ?? '', 'utf8');
-    const pass = Buffer.from(proxy.password ?? '', 'utf8');
-    socket.write(Buffer.concat([Buffer.from([0x01, user.length]), user, Buffer.from([pass.length]), pass]));
-    const authReply = await readExactly(socket, 2);
-    if (authReply[1] !== 0x00) throw new Error('socks5-auth-failed');
-  } else if (greeting[1] !== 0x00) {
-    throw new Error('socks5-method-rejected');
-  }
+  // 之前只在 socket 上 setTimeout，却从不监听 timeout / close：对端提前关闭时
+  // `once(socket, 'readable')` 永远等不到，整次拉取会挂到调用方超时之外。
+  const reader: SocketReader = { socket, timeoutMs, buffer: Buffer.alloc(0) };
+  try {
+    const wantsAuth = proxy.username !== undefined;
+    socket.write(Buffer.from(wantsAuth ? [0x05, 0x02, 0x00, 0x02] : [0x05, 0x01, 0x00]));
+    const greeting = await readExactly(reader, 2);
+    if (greeting[0] !== 0x05) throw new Error('socks5-version-mismatch');
+    if (greeting[1] === 0x02) {
+      if (!wantsAuth) throw new Error('socks5-auth-required');
+      const user = Buffer.from(proxy.username ?? '', 'utf8');
+      const pass = Buffer.from(proxy.password ?? '', 'utf8');
+      if (user.length > 255 || pass.length > 255) throw new Error('socks5-credentials-too-long');
+      socket.write(Buffer.concat([Buffer.from([0x01, user.length]), user, Buffer.from([pass.length]), pass]));
+      const authReply = await readExactly(reader, 2);
+      if (authReply[1] !== 0x00) throw new Error('socks5-auth-failed');
+    } else if (greeting[1] !== 0x00) {
+      throw new Error('socks5-method-rejected');
+    }
 
-  const hostBytes = Buffer.from(host, 'utf8');
-  const request = Buffer.concat([
-    Buffer.from([0x05, 0x01, 0x00, 0x03, hostBytes.length]),
-    hostBytes,
-    Buffer.from([(port >> 8) & 0xff, port & 0xff]),
-  ]);
-  socket.write(request);
-  const head = await readExactly(socket, 4);
-  if (head[0] !== 0x05 || head[1] !== 0x00) throw new Error(`socks5-connect-failed:${head[1] ?? 0}`);
-  const addressType = head[3];
-  const addressLength = addressType === 0x01 ? 4 : addressType === 0x04 ? 16 : (await readExactly(socket, 1))[0] ?? 0;
-  await readExactly(socket, addressLength + 2);
-  socket.setTimeout(0);
-  return socket;
+    const hostBytes = Buffer.from(host, 'utf8');
+    const request = Buffer.concat([
+      Buffer.from([0x05, 0x01, 0x00, 0x03, hostBytes.length]),
+      hostBytes,
+      Buffer.from([(port >> 8) & 0xff, port & 0xff]),
+    ]);
+    socket.write(request);
+    const head = await readExactly(reader, 4);
+    if (head[0] !== 0x05 || head[1] !== 0x00) throw new Error(`socks5-connect-failed:${head[1] ?? 0}`);
+    const addressType = head[3];
+    const addressLength = addressType === 0x01 ? 4 : addressType === 0x04 ? 16 : (await readExactly(reader, 1))[0] ?? 0;
+    await readExactly(reader, addressLength + 2);
+    // 一次 read 可能把 SOCKS 应答与后续数据一起读出来：多出来的字节必须塞回流里。
+    if (reader.buffer.length > 0) socket.unshift(reader.buffer);
+    return socket;
+  } catch (error) {
+    socket.destroy();
+    throw error;
+  }
 }
+
+/** TLS 握手也可能一直不返回；同样需要显式超时，否则隧道建成后仍会挂住。 */
+const waitForSecureConnect = (
+  secure: ReturnType<typeof tlsConnect>,
+  timeoutMs: number,
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const onConnect = (): void => {
+      clearTimeout(timer);
+      secure.off('error', onError);
+      resolve();
+    };
+    const onError = (error: Error): void => {
+      clearTimeout(timer);
+      secure.off('secureConnect', onConnect);
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      secure.off('secureConnect', onConnect);
+      secure.off('error', onError);
+      secure.destroy();
+      reject(new Error('proxy-tls-timeout'));
+    }, timeoutMs);
+    secure.once('secureConnect', onConnect);
+    secure.once('error', onError);
+  });
 
 async function openTunnel(
   proxy: ProxySpec,
@@ -188,7 +269,7 @@ async function openTunnel(
       : await httpConnectTunnel(proxy, host, port, timeoutMs);
   if (target.protocol !== 'https:') return tunnel;
   const secure = tlsConnect({ socket: tunnel, servername: host });
-  await once(secure, 'secureConnect');
+  await waitForSecureConnect(secure, timeoutMs);
   return secure;
 }
 
@@ -203,10 +284,20 @@ export interface ProxiedRequest {
   readonly proxy: ProxySpec;
   readonly headers?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
+  /** 响应正文上限；超过即中止连接，避免代理链路把整个进程内存吃满。 */
+  readonly maxBytes?: number;
 }
 
 export async function fetchThroughProxy(request: ProxiedRequest): Promise<ProxiedResponse> {
   const timeoutMs = request.timeoutMs ?? 10_000;
+  const maxBytes = request.maxBytes ?? 8 * 1024 * 1024;
+  const headers = { host: request.url.host, connection: 'close', ...(request.headers ?? {}) };
+  // 源级 UA / If-None-Match 是用户或上游可控的。带换行等非法字符时 http.request
+  // 会同步抛错；必须在建隧道前校验，否则 Promise executor 抛错后定时器还会引用未初始化的 req。
+  for (const [name, value] of Object.entries(headers)) {
+    validateHeaderName(name);
+    validateHeaderValue(name, value);
+  }
   const socket = await openTunnel(request.proxy, request.url, timeoutMs);
   const secure = request.url.protocol === 'https:';
   const agent = secure
@@ -218,9 +309,18 @@ export async function fetchThroughProxy(request: ProxiedRequest): Promise<Proxie
       });
 
   const port = request.url.port.length === 0 ? (secure ? 443 : 80) : Number(request.url.port);
-  const headers = { host: request.url.host, connection: 'close', ...(request.headers ?? {}) };
 
   return new Promise<ProxiedResponse>((resolve, reject) => {
+    let settled = false;
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      req.destroy();
+      socket.destroy();
+      reject(error);
+    };
+    const timer = setTimeout(() => fail(new Error('proxy-request-timeout')), timeoutMs);
     const req = (secure ? httpsRequest : httpRequest)({
       host: request.url.hostname.replace(/^\[|\]$/g, ''),
       port,
@@ -230,19 +330,36 @@ export async function fetchThroughProxy(request: ProxiedRequest): Promise<Proxie
       agent: agent as Agent,
       servername: secure ? request.url.hostname.replace(/^\[|\]$/g, '') : undefined,
     } as unknown as Parameters<typeof httpsRequest>[0]);
-    const timer = setTimeout(() => {
-      req.destroy(new Error('proxy-request-timeout'));
-      socket.destroy();
-    }, timeoutMs);
     req.once('error', (error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       socket.destroy();
       reject(error);
     });
     req.once('response', (response) => {
+      const lengthHeader = response.headers['content-length'];
+      if (lengthHeader !== undefined) {
+        const declared = Number(lengthHeader);
+        if (Number.isFinite(declared) && declared > maxBytes) {
+          fail(new Error('upstream-body-too-large'));
+          return;
+        }
+      }
       const chunks: Buffer[] = [];
-      response.on('data', (chunk: Buffer) => chunks.push(chunk));
+      let total = 0;
+      response.on('data', (chunk: Buffer) => {
+        if (settled) return;
+        total += chunk.length;
+        if (total > maxBytes) {
+          fail(new Error('upstream-body-too-large'));
+          return;
+        }
+        chunks.push(chunk);
+      });
       response.once('end', () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         socket.destroy();
         const collected: Record<string, string> = {};
@@ -256,11 +373,10 @@ export async function fetchThroughProxy(request: ProxiedRequest): Promise<Proxie
           body: Buffer.concat(chunks).toString('utf8'),
         });
       });
-      response.once('error', (error: Error) => {
-        clearTimeout(timer);
-        socket.destroy();
-        reject(error);
-      });
+      // 代理提前断开时 Node 不一定触发 error；必须显式把 aborted 当作失败，
+      // 否则调用方会一直等到整个请求超时。
+      response.once('aborted', () => fail(new Error('proxy-response-aborted')));
+      response.once('error', (error: Error) => fail(error));
     });
     req.end();
   });

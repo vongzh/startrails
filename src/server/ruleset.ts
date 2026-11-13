@@ -93,6 +93,7 @@ export class RuleSetCache {
       try {
         const fetched = await fetchSnapshot(url, cached?.etag ?? null, {
           timeoutMs: 15_000,
+          maxBytes: MAX_BYTES,
           allowPrivate: this.allowPrivate,
         });
         if (fetched.notModified && cached !== null) {

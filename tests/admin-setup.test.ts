@@ -71,7 +71,7 @@ test('未配置环境变量：首次设置落库、只存 hash，重启后仍有
     cleanup(dir);
   });
 
-  assert.deepEqual(await setupStatus(instance.base), { required: true });
+  assert.deepEqual(await setupStatus(instance.base), { required: true, secretRequired: false });
   assert.equal(await stateStatus(instance.base, 'anything'), 401);
 
   const badBody = await fetch(`${instance.base}/api/setup`, {
@@ -88,13 +88,13 @@ test('未配置环境变量：首次设置落库、只存 hash，重启后仍有
   assert.equal((await postSetup(instance.base, 'other-token')).status, 409, '重复设置不能覆盖');
   assert.equal(await stateStatus(instance.base, 'first-admin-token'), 200);
   assert.equal(await stateStatus(instance.base, 'other-token'), 401);
-  assert.deepEqual(await setupStatus(instance.base), { required: false });
+  assert.deepEqual(await setupStatus(instance.base), { required: false, secretRequired: false });
 
   // 关库重开，模拟进程重启：令牌来自数据库而不是启动期内存。
   await stop(instance);
   instance = await start(dir, dbPath);
   assert.equal(await stateStatus(instance.base, 'first-admin-token'), 200);
-  assert.deepEqual(await setupStatus(instance.base), { required: false });
+  assert.deepEqual(await setupStatus(instance.base), { required: false, secretRequired: false });
 });
 
 test('环境变量优先于数据库，且存在时禁用首次设置', async (t) => {
@@ -110,7 +110,7 @@ test('环境变量优先于数据库，且存在时禁用首次设置', async (t
     cleanup(dir);
   });
 
-  assert.deepEqual(await setupStatus(instance.base), { required: false });
+  assert.deepEqual(await setupStatus(instance.base), { required: false, secretRequired: false });
   assert.equal(await stateStatus(instance.base, 'env-token'), 200);
   assert.equal(await stateStatus(instance.base, 'db-token'), 401, '数据库令牌不得覆盖环境变量');
   assert.equal((await postSetup(instance.base, 'new-token')).status, 409);
@@ -124,7 +124,7 @@ test('环境变量为空白字符串时按未配置处理，不把管理面锁�
     cleanup(dir);
   });
 
-  assert.deepEqual(await setupStatus(instance.base), { required: true });
+  assert.deepEqual(await setupStatus(instance.base), { required: true, secretRequired: false });
   assert.equal((await postSetup(instance.base, 'blank-env-token')).status, 201);
   assert.equal(await stateStatus(instance.base, 'blank-env-token'), 200);
 });
@@ -161,7 +161,7 @@ test('库里残留空哈希时可重新初始化，不会永久锁死', async (t
     cleanup(dir);
   });
 
-  assert.deepEqual(await setupStatus(instance.base), { required: true });
+  assert.deepEqual(await setupStatus(instance.base), { required: true, secretRequired: false });
   assert.equal((await postSetup(instance.base, 'recovered-token')).status, 201);
   assert.equal(await stateStatus(instance.base, 'recovered-token'), 200);
 });

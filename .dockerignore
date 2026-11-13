@@ -25,6 +25,7 @@ data
 .editorconfig
 .gitattributes
 docs
+scratch
 tests
 testdata
 coverage

@@ -36,11 +36,16 @@ export interface SafeFetchOptions {
   readonly allowPrivate?: boolean;
   readonly timeoutMs?: number;
   readonly maxRedirects?: number;
+  /** 单份上游正文上限；超过即中止，避免一个坏链接把进程内存打满。 */
+  readonly maxBytes?: number;
   /** 上游按 UA 返回不同格式（Clash / Surge / base64）时，按源的设置伪装。 */
   readonly ua?: string | null;
   /** 源级代理（http / https / socks5），用于机场按出口 IP 限区的场景。 */
   readonly proxy?: string | null;
 }
+
+/** 与请求体上限保持一致：正常订阅远小于这个量级。 */
+export const MAX_UPSTREAM_BYTES = 8 * 1024 * 1024;
 
 export async function assertPublicUrl(raw: string, options: SafeFetchOptions = {}): Promise<URL> {
   let url: URL;
@@ -110,6 +115,37 @@ export interface FetchedSnapshot {
 
 const EMPTY_META = { userinfo: null, suggestedRefreshHours: null } as const;
 
+/**
+ * 流式读取并在超过上限时立刻取消，而不是 `response.text()` 读完再检查。
+ * 后者对「无限输出」的上游没有防护意义：内存已经被打满。
+ */
+async function readCappedText(response: Response, maxBytes: number): Promise<string> {
+  const lengthHeader = response.headers.get('content-length');
+  if (lengthHeader !== null) {
+    const declared = Number(lengthHeader);
+    if (Number.isFinite(declared) && declared > maxBytes) throw new Error('upstream-body-too-large');
+  }
+  if (response.body === null) return '';
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error('upstream-body-too-large');
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export async function fetchSnapshot(
   raw: string,
   etag: string | null,
@@ -124,10 +160,11 @@ export async function fetchSnapshot(
     headers['User-Agent'] = options.ua;
   }
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const maxBytes = options.maxBytes ?? MAX_UPSTREAM_BYTES;
   const proxy = parseProxyUrl(options.proxy);
 
   if (proxy !== null) {
-    const response = await fetchThroughProxy({ url, proxy, headers, timeoutMs });
+    const response = await fetchThroughProxy({ url, proxy, headers, timeoutMs, maxBytes });
     if (response.status === 304) {
       return { body: null, etag, notModified: true, ...EMPTY_META };
     }
@@ -171,7 +208,7 @@ export async function fetchSnapshot(
     throw new Error(`upstream-status:${response.status}`);
   }
   return {
-    body: await response.text(),
+    body: await readCappedText(response, maxBytes),
     etag: response.headers.get('etag'),
     notModified: false,
     userinfo: parseUserinfo(response.headers.get('subscription-userinfo')),

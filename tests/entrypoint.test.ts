@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,6 +77,8 @@ function baseEnv(dir: string, port: number): NodeJS.ProcessEnv {
     STARTRAILS_TOKEN_SECRET: 'entry-secret',
     STARTRAILS_DATA_DIR: dir,
     STARTRAILS_DB_PATH: join(dir, 'state.db'),
+    // 隔离宿主机上的 STARTRAILS_SECRET_FILE，避免测试读写真实部署的密钥文件。
+    STARTRAILS_SECRET_FILE: join(dir, 'secret.key'),
   };
 }
 
@@ -123,7 +125,7 @@ test('真实进程入口：未配置管理令牌时进入首次设置，且日�
   });
 
   const base = `http://127.0.0.1:${port}`;
-  assert.deepEqual(await (await fetch(`${base}/api/setup/status`)).json(), { required: true });
+  assert.deepEqual(await (await fetch(`${base}/api/setup/status`)).json(), { required: true, secretRequired: false });
   assert.equal((await fetch(`${base}/api/state`)).status, 401);
 
   const created = await fetch(`${base}/api/setup`, {
@@ -139,4 +141,64 @@ test('真实进程入口：未配置管理令牌时进入首次设置，且日�
 
   assert.match(running.output(), /admin setup/);
   assert.doesNotMatch(running.output(), /entry-first-token/);
+});
+
+test('真实进程入口：密钥未配置时首次设置落盘，重启后无需再设置', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'startrails-entry-'));
+  const port = 18901;
+  const env = {
+    ...baseEnv(dir, port),
+    // 显式空值占住两个键：模拟完全没有环境变量与项目 .env 回退的首次启动。
+    STARTRAILS_TOKEN_SECRET: '',
+    STARTRAILS_ADMIN_TOKEN: '',
+  };
+  let running = await spawnServer(env);
+  t.after(async () => {
+    await stopServer(running.child);
+    removeDir(dir);
+  });
+
+  const base = `http://127.0.0.1:${port}`;
+  assert.deepEqual(await (await fetch(`${base}/api/setup/status`)).json(), {
+    required: true,
+    secretRequired: true,
+  });
+  assert.equal((await fetch(`${base}/api/state`)).status, 401);
+
+  const created = await fetch(`${base}/api/setup`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token: 'entry-first-token', secret: 'entry-encryption-secret' }),
+  });
+  assert.equal(created.status, 201);
+  assert.equal(
+    readFileSync(join(dir, 'secret.key'), 'utf8').trim(),
+    'entry-encryption-secret',
+  );
+  assert.equal(
+    (
+      await fetch(`${base}/api/state`, {
+        headers: { authorization: 'Bearer entry-first-token' },
+      })
+    ).status,
+    200,
+  );
+  assert.match(running.output(), /secret setup/);
+  assert.doesNotMatch(running.output(), /entry-encryption-secret/);
+
+  // 重启：密钥文件被复用，不再要求设置，管理令牌也仍来自数据库。
+  await stopServer(running.child);
+  running = await spawnServer(env);
+  assert.deepEqual(await (await fetch(`${base}/api/setup/status`)).json(), {
+    required: false,
+    secretRequired: false,
+  });
+  assert.equal(
+    (
+      await fetch(`${base}/api/state`, {
+        headers: { authorization: 'Bearer entry-first-token' },
+      })
+    ).status,
+    200,
+  );
 });

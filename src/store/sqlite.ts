@@ -46,6 +46,7 @@ interface AnnotationRow {
   excluded: number;
   alias: string | null;
   tag: string | null;
+  region: string | null;
   sort_order: number | null;
 }
 interface TokenRow {
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS annotation (
   excluded INTEGER NOT NULL DEFAULT 0,
   alias TEXT,
   tag TEXT,
+  region TEXT,
   sort_order INTEGER
 );
 CREATE TABLE IF NOT EXISTS subscription_token (
@@ -151,7 +153,7 @@ const DEDUPE_STRATEGIES: readonly DedupeStrategy[] = ['nodeKey', 'name', 'none']
 export function openStore(dbPath: string, secret: string): Store {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
-  const key = deriveKey(secret);
+  let key = deriveKey(secret);
   // WAL 官方限制：所有进程必须在同一主机，且不能放在网络文件系统上。
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
@@ -168,6 +170,8 @@ export function openStore(dbPath: string, secret: string): Store {
   ensureColumn(db, 'source_config', 'userinfo', 'userinfo TEXT');
   ensureColumn(db, 'source_config', 'suggested_hours', 'suggested_hours REAL');
   ensureColumn(db, 'profile_definition', 'items', 'items TEXT');
+  // 手动覆盖地区：早期版本只存 alias / tag，旧库要补这一列才不会在写入时 500。
+  ensureColumn(db, 'annotation', 'region', 'region TEXT');
 
   // 空库冷启动：保证始终存在一个 default profile，否则登录后 /api/nodes、/api/preview 等
   // 因 findProfile('default') 返回 undefined 全部抛 profile-not-found，前端直接「登录失败」。
@@ -207,6 +211,7 @@ export function openStore(dbPath: string, secret: string): Store {
     nodeKey: row.node_key,
     ...(row.alias === null ? {} : { alias: row.alias }),
     ...(row.tag === null ? {} : { tag: row.tag }),
+    ...(row.region === null ? {} : { region: row.region }),
     ...(row.sort_order === null ? {} : { order: row.sort_order }),
     excluded: row.excluded === 1,
   });
@@ -335,6 +340,39 @@ export function openStore(dbPath: string, secret: string): Store {
       return row === undefined ? undefined : { bytes: row.bytes, updatedAt: row.updated_at };
     },
 
+    rotateSecret: (nextSecret) => {
+      const previousKey = key;
+      const nextKey = deriveKey(nextSecret);
+      const rows = db.prepare('SELECT source_id, content FROM source_payload').all() as {
+        source_id: string;
+        content: string;
+      }[];
+      // 整个重加密放在一个事务里：任何一行解不开都回滚，不会留下「一半新密钥、一半旧密钥」。
+      db.transaction(() => {
+        const update = db.prepare('UPDATE source_payload SET content = ? WHERE source_id = ?');
+        for (const row of rows) {
+          update.run(encrypt(decrypt(row.content, key), nextKey), row.source_id);
+        }
+      })();
+      key = nextKey;
+      /* 撤销：把库里刚换成 nextKey 的正文重新用 previousKey 加密回去。
+         重新读行而不是复用上面的 rows——那份是轮换前的旧密文，此时已经失效。
+         事务成功后才切回旧 key：撤销失败时内存里的 key 必须和库里保持一致。 */
+      return () => {
+        const current = db.prepare('SELECT source_id, content FROM source_payload').all() as {
+          source_id: string;
+          content: string;
+        }[];
+        db.transaction(() => {
+          const update = db.prepare('UPDATE source_payload SET content = ? WHERE source_id = ?');
+          for (const row of current) {
+            update.run(encrypt(decrypt(row.content, nextKey), previousKey), row.source_id);
+          }
+        })();
+        key = previousKey;
+      };
+    },
+
     listCollections: () =>
       (
         db.prepare('SELECT * FROM collection_definition ORDER BY sort_order, name').all() as CollectionRow[]
@@ -393,15 +431,17 @@ export function openStore(dbPath: string, secret: string): Store {
       // 写串行化交给 SQLite 事务；单实例单进程，不需要额外的写队列。
       db.transaction(() => {
         db.prepare(
-          `INSERT INTO annotation (node_key, excluded, alias, tag, sort_order)
-           VALUES (?, ?, ?, ?, ?)
+          `INSERT INTO annotation (node_key, excluded, alias, tag, region, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(node_key) DO UPDATE SET excluded=excluded.excluded, alias=excluded.alias,
-             tag=excluded.tag, sort_order=excluded.sort_order`,
+             tag=excluded.tag, region=excluded.region, sort_order=excluded.sort_order`,
         ).run(
           annotation.nodeKey,
           annotation.excluded === true ? 1 : 0,
           annotation.alias ?? null,
           annotation.tag ?? null,
+          // 空串按「没有覆盖」落库：下游 regionOfNode 用 `!== ''` 判断，存 null 语义更准。
+          annotation.region === undefined || annotation.region === '' ? null : annotation.region,
           annotation.order ?? null,
         );
       })();
