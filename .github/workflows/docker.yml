@@ -143,6 +143,7 @@ jobs:
             org.opencontainers.image.description=把订阅源扇出成多个客户端订阅地址的常驻服务
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=MIT
           cache-from: type=gha
           cache-to: type=gha,mode=max

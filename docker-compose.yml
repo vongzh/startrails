@@ -2,7 +2,7 @@ services:
   startrails:
     build: .
     image: startrails
-    # 用已发布的镜像时删掉 build 行，改成：image: ghcr.io/vongzh/startrails:0.1.0（tag 见 README「镜像发布」）
+    # 用已发布的镜像时删掉 build 行，改成：image: ghcr.io/vongzh/startrails:0.1.1（tag 见 README「镜像发布」）
     restart: unless-stopped
     # SQLite WAL 不能跨主机共享；首期固定单实例、节点本地卷。
     deploy:

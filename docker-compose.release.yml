@@ -9,7 +9,7 @@ services:
   startrails:
     # 钉版本而不是 latest：升级是显式动作，回滚也只是改这一行。
     # 想跟随最新发布就换成 ghcr.io/vongzh/startrails:latest。
-    image: ghcr.io/vongzh/startrails:0.1.0
+    image: ghcr.io/vongzh/startrails:0.1.1
     container_name: startrails
     restart: unless-stopped
 
@@ -57,10 +57,9 @@ services:
       # 也因此只能单实例：副本数 > 1 会各写各的库。
       - startrails-data:/app/data
 
-    # 镜像的 Dockerfile 里有 HEALTHCHECK，但 0.1.0 这个包**没带上** ——
-    # CI 用 buildx 默认的 OCI media type 输出，而 healthcheck 是 Docker 的 config
-    # 扩展字段，OCI 输出会丢掉它（podman inspect 看到的是 null）。所以这里显式声明一次。
-    # 等 CI 侧改成 Docker media type 后重新发版，这一段就可以删掉。
+    # 0.1.0 的包丢过 HEALTHCHECK（CI 当时用 buildx 默认的 OCI media type 输出，
+    # healthcheck 是 Docker config 的扩展字段，OCI 会静默丢掉），所以先显式声明一次兜底。
+    # 0.1.1 起 CI 已改回 Docker media type，实测镜像自带后这段会删掉。
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

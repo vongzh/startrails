@@ -59,7 +59,7 @@ node src/server/index.ts
 
 | 触发 | 结果 |
 | --- | --- |
-| `git tag v0.1.0 && git push origin v0.1.0` | 先跑完整 verify，再交叉构建 `linux/amd64` + `linux/arm64`，推 `ghcr.io/vongzh/startrails` 的 `0.1.0`、`latest`、`sha-xxxxxxx` |
+| `git tag v0.1.1 && git push origin v0.1.1` | 先跑完整 verify，再交叉构建 `linux/amd64` + `linux/arm64`，推 `ghcr.io/vongzh/startrails` 的 `0.1.1`、`latest`、`sha-xxxxxxx` |
 | Actions → Docker → Run workflow | 同上但不移动 `latest`；勾选 `push` 才真的推送 |
 
 - tag 与 `package.json` 版本不一致直接失败，不会产出半成品镜像。

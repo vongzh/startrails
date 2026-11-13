@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { CORE_VERSION } from '../src/core/version.ts';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const entrypoint = fileURLToPath(new URL('../src/server/index.ts', import.meta.url));
@@ -97,7 +98,7 @@ test('真实进程入口：按环境变量启动，健康检查与 Web UI 都可
   const base = `http://127.0.0.1:${port}`;
   const health = await fetch(`${base}/health`);
   assert.equal(health.status, 200);
-  assert.equal(((await health.json()) as { coreVersion: string }).coreVersion, '0.1.0');
+  assert.equal(((await health.json()) as { coreVersion: string }).coreVersion, CORE_VERSION);
 
   const page = await fetch(`${base}/`);
   assert.equal(page.status, 200);

@@ -9,6 +9,7 @@ import { openStore } from '../src/store/sqlite.ts';
 import { createApp } from '../src/server/app.ts';
 import { assertPublicUrl, fetchSnapshot, isPublicAddress } from '../src/server/url-guard.ts';
 import { redact } from '../src/server/redact.ts';
+import { CORE_VERSION } from '../src/core/version.ts';
 
 const subscription = readFileSync(
   new URL('../testdata/fixtures/subscription.txt', import.meta.url),
@@ -135,7 +136,7 @@ test('HTTP 契约：鉴权 / 订阅 URL / 304 / 诊断 / 撤销 / 备份', async
   assert.equal((await get('/health')).status, 200);
   assert.equal((await get('/api/state')).status, 401, '管理面未授权必须拒绝');
   const stateBody = (await (await get('/api/state', { headers: auth })).json()) as { coreVersion: string };
-  assert.equal(stateBody.coreVersion, '0.1.0');
+  assert.equal(stateBody.coreVersion, CORE_VERSION);
 
   // 坏 body / 超大 body 是客户端错误：不能落到外层 catch 变成 500。
   const malformed = await get('/api/sources', {
