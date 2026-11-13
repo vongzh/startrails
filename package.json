@@ -47,7 +47,6 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": ">=22.0.0",
     "@vitejs/plugin-vue": "^6.0.10",
-    "echarts": "^6.1.0",
     "jsqr": "^1.4.0",
     "lucide-vue-next": "^0.577.0",
     "naive-ui": "^2.45.3",

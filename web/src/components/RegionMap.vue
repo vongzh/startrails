@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import * as echarts from 'echarts/core';
-import { TreemapChart } from 'echarts/charts';
-import { TooltipComponent } from 'echarts/components';
-import { CanvasRenderer } from 'echarts/renderers';
+import { computed } from 'vue';
 import type { NodeView } from '../api';
 
-echarts.use([TreemapChart, TooltipComponent, CanvasRenderer]);
+/* 地区分布：一条横条，段宽 = 该地区节点占比，点击分段即筛选。
+   刻意不用地图/色块面积：面积比在 3:2:1 时读不出结论，而延迟是可选操作的结果，
+   拿它决定填充色会让「默认状态」变成一堵同色墙。这里延迟降级为段底 2px 状态线，
+   颜色只出现在结论上，符合「中性底 + 单一强调色，颜色只用于结论」。 */
 
 const props = defineProps<{
   nodes: NodeView[];
@@ -23,219 +22,340 @@ const emit = defineEmits<{
   (event: 'clear'): void;
 }>();
 
-/** 地区展示信息：旗帜 + 中文名 + 固定展示顺序（按地理直觉，而非节点数）。 */
 interface RegionMeta {
   flag: string;
+  /** 分段内短名：条宽有限，全名放不下。 */
+  short: string;
+  /** tooltip 与筛选回显用的全名。 */
   label: string;
 }
 
 const REGION_META: Record<string, RegionMeta> = {
-  HK: { flag: '🇭🇰', label: '中国香港' },
-  TW: { flag: '🇹🇼', label: '中国台湾' },
-  JP: { flag: '🇯🇵', label: '日本' },
-  SG: { flag: '🇸🇬', label: '新加坡' },
-  KR: { flag: '🇰🇷', label: '韩国' },
-  CN: { flag: '🇨🇳', label: '中国大陆' },
-  DE: { flag: '🇩🇪', label: '德国' },
-  UK: { flag: '🇬🇧', label: '英国' },
-  US: { flag: '🇺🇸', label: '美国' },
-  OTHER: { flag: '🌐', label: '其他' },
+  HK: { flag: '🇭🇰', short: '香港', label: '中国香港' },
+  TW: { flag: '🇹🇼', short: '台湾', label: '中国台湾' },
+  JP: { flag: '🇯🇵', short: '日本', label: '日本' },
+  SG: { flag: '🇸🇬', short: '新加坡', label: '新加坡' },
+  KR: { flag: '🇰🇷', short: '韩国', label: '韩国' },
+  CN: { flag: '🇨🇳', short: '大陆', label: '中国大陆' },
+  DE: { flag: '🇩🇪', short: '德国', label: '德国' },
+  UK: { flag: '🇬🇧', short: '英国', label: '英国' },
+  US: { flag: '🇺🇸', short: '美国', label: '美国' },
+  OTHER: { flag: '🌐', short: '其他', label: '其他' },
 };
 
-/** 固定展示顺序：东亚 → 东南亚 → 欧洲 → 北美 → 其他。 */
+/** 固定展示顺序：东亚 → 东南亚 → 欧洲 → 北美 → 其他；不按节点数排，避免筛选后段位跳动。 */
 const REGION_ORDER: readonly string[] = ['HK', 'TW', 'CN', 'JP', 'KR', 'SG', 'DE', 'UK', 'US', 'OTHER'];
 
-const el = ref<HTMLDivElement | null>(null);
-let chart: echarts.ECharts | null = null;
+function metaOf(code: string): RegionMeta {
+  return REGION_META[code] ?? { flag: '🌐', short: code, label: code };
+}
 
-/** 地区 → { 节点数, 平均延迟 }；不在地图里的节点归入「其他」。 */
-const buckets = computed(() => {
+interface Row {
+  code: string;
+  flag: string;
+  short: string;
+  label: string;
+  count: number;
+  avg: number | null;
+}
+
+/** 按地区聚合；未测延迟的节点不参与平均（不把「没测过」当成「快」）。 */
+const rows = computed<Row[]>(() => {
   const map = new Map<string, { count: number; latSum: number; latN: number }>();
-  const bump = (region: string, latency: number | null) => {
+  for (const node of props.nodes) {
+    const region = props.regionOf(node);
     const entry = map.get(region) ?? { count: 0, latSum: 0, latN: 0 };
     entry.count += 1;
+    const latency = props.latencyOf(node);
     if (latency !== null) {
       entry.latSum += latency;
       entry.latN += 1;
     }
     map.set(region, entry);
-  };
-  for (const node of props.nodes) {
-    bump(props.regionOf(node), props.latencyOf(node));
   }
-  return map;
-});
-
-/** 按固定顺序排列的非空地区桶；保留节点数用于面积。 */
-const rows = computed(() => {
-  const result: { code: string; count: number; avg: number | null }[] = [];
-  for (const code of REGION_ORDER) {
-    const entry = buckets.value.get(code);
-    if (entry === undefined || entry.count === 0) continue;
+  const result: Row[] = [];
+  const push = (code: string, entry: { count: number; latSum: number; latN: number }): void => {
+    if (entry.count === 0) return;
+    const meta = metaOf(code);
     result.push({
       code,
+      flag: meta.flag,
+      short: meta.short,
+      label: meta.label,
       count: entry.count,
       avg: entry.latN > 0 ? Math.round(entry.latSum / entry.latN) : null,
     });
+  };
+  // 已知地区按固定顺序，「其他」永远收尾。
+  for (const code of REGION_ORDER) {
+    if (code === 'OTHER') continue;
+    const entry = map.get(code);
+    if (entry !== undefined) push(code, entry);
   }
+  // 兜底：注解接口不校验地区码，UI 下拉之外的值（例如通过 API 写入的 'FR'）也必须画出来。
+  // 否则这些节点会在分布条上静默消失，而表格里还在，用户只会觉得数字对不上。
+  const extra = [...map.entries()]
+    .filter(([code]) => !REGION_ORDER.includes(code))
+    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]));
+  for (const [code, entry] of extra) push(code, entry);
+  const other = map.get('OTHER');
+  if (other !== undefined) push('OTHER', other);
   return result;
 });
 
-/** 是否有任何节点带可用延迟（用于决定是否显示色阶图例）。 */
+const totalNodes = computed(() => rows.value.reduce((sum, row) => sum + row.count, 0));
+
+/** 段间距；算段宽时要从 100% 里扣掉，否则最后一条会溢出。 */
+const SEG_GAP = 4;
+
 const hasLatency = computed(() => rows.value.some((row) => row.avg !== null));
+const selectedLabel = computed(() => (props.selected === undefined || props.selected === '' ? '' : metaOf(props.selected).label));
 
-function render(): void {
-  if (chart === null || el.value === null) return;
-
-  const data = rows.value.map((row) => {
-    const meta = REGION_META[row.code] ?? { flag: '🌐', label: row.code };
-    return {
-      name: row.code,
-      value: row.count,
-      avg: row.avg,
-      label: `${meta.flag} ${meta.label}`,
-    };
-  });
-
-  // 一次性读取主题色（echarts 部分字段走 canvas/inline，`var()` 不能直接给到 fillStyle）。
-  const surface = cssVar('--surface', '#ffffff');
-  const surface2 = cssVar('--surface-2', '#fafafb');
-  const divider = cssVar('--divider', '#eff0f3');
-  const text = cssVar('--text', '#141519');
-  const accent = cssVar('--accent', '#5a5ad2');
-
-  chart.setOption({
-    tooltip: {
-      backgroundColor: surface2,
-      borderColor: divider,
-      textStyle: { color: text, fontSize: 12 },
-      formatter: (info: { name: string; value: number; data: { avg: number | null; label: string } }) => {
-        const avg = info.data.avg === null ? '未测' : `${info.data.avg} ms`;
-        const tip = info.name === 'OTHER' ? '' : '<br/><span style="opacity:.6">点击筛选该地区</span>';
-        return `${info.data.label}<br/>节点 ${info.value} 个 · 平均延迟 ${avg}${tip}`;
-      },
-    },
-    series: [
-      {
-        type: 'treemap',
-        roam: false,
-        nodeClick: false,
-        breadcrumb: { show: false },
-        left: 0,
-        right: 0,
-        top: 0,
-        bottom: 0,
-        label: {
-          show: true,
-          formatter: (info: { data: { label: string; value: number } }) => `${info.data.label}\n${info.data.value} 节点`,
-        },
-        upperLabel: { show: false },
-        itemStyle: {
-          borderColor: surface,
-          borderWidth: 2,
-          gapWidth: 2,
-        },
-        emphasis: {
-          label: { show: true, fontWeight: 700 },
-          itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.25)' },
-        },
-        data: data.map((item) => ({
-          ...item,
-          itemStyle: {
-            color: colorOf(item.avg),
-            borderColor: props.selected === item.name ? accent : surface,
-            borderWidth: props.selected === item.name ? 3 : 2,
-          },
-        })),
-      },
-    ],
-  });
+/** 延迟 → 段底状态线；未测则透明，让条本身不靠颜色也成立。 */
+function toneOf(avg: number | null): string {
+  if (avg === null) return 'transparent';
+  if (avg < 100) return 'var(--ok)';
+  if (avg < 250) return 'var(--warn)';
+  return 'var(--danger)';
 }
 
-/** 延迟 → 色阶：绿(快 <100) → 橙(中 <250) → 红(慢) → 灰(未测)。
- *  echarts 用 canvas 绘制，`var(--x)` 字符串无法被 fillStyle 解析，故运行时读取 CSS 变量的
- *  计算值（跟随主题/配色），再喂给 echarts。语义色与延迟文字色（.lat-fast/ok/slow）同源。 */
-function cssVar(name: string, fallback: string): string {
-  if (el.value === null) return fallback;
-  return getComputedStyle(el.value).getPropertyValue(name).trim() || fallback;
+function tipOf(row: Row): string {
+  const latency = row.avg === null ? '延迟未测' : `平均 ${row.avg} ms`;
+  const action = props.selected === row.code ? '点击取消筛选' : '点击筛选该地区';
+  return `${row.label} · ${row.count} 个节点 · ${latency} · ${action}`;
 }
 
-function colorOf(avg: number | null): string {
-  if (avg === null) return cssVar('--text-3', '#9aa4b2');
-  if (avg < 100) return cssVar('--ok', '#2fbf8f');
-  if (avg < 250) return cssVar('--warn', '#e6a23c');
-  return cssVar('--danger', '#e06c6c');
+/* 段宽按占比显式算，不用 flex-grow：
+   `flex-grow` + 水平内边距时，padding 会成为每条的基础宽度（10px×2），
+   10 条 1 节点的段各白拿 20px，3:2:1 就被拉成 2.65:1.83:1。
+   这里把 gap 先扣掉再乘占比，比例严格成立，内边距只影响文字不再影响宽度。 */
+function segStyle(row: Row): Record<string, string> {
+  const gap = Math.max(rows.value.length - 1, 0) * SEG_GAP;
+  const share = totalNodes.value === 0 ? 0 : row.count / totalNodes.value;
+  return { flex: `0 0 calc((100% - ${gap}px) * ${share})`, '--lat': toneOf(row.avg) };
 }
 
-function onChartClick(params: { name?: string }): void {
-  const code = params.name;
-  if (code === undefined) return;
-  if (props.selected === code) {
-    emit('clear');
-  } else {
-    emit('select', code);
-  }
+function pick(code: string): void {
+  if (props.selected === code) emit('clear');
+  else emit('select', code);
 }
-
-onMounted(() => {
-  if (el.value === null) return;
-  chart = echarts.init(el.value);
-  chart.on('click', onChartClick);
-  render();
-});
-
-watch(() => [props.nodes, props.regionOf, props.latencyOf, props.selected], render, { deep: true });
-
-onBeforeUnmount(() => {
-  chart?.dispose();
-  chart = null;
-});
 </script>
 
 <template>
-  <div class="region-map-wrap">
-    <div ref="el" class="region-map"></div>
-    <div v-if="hasLatency" class="region-legend">
-      <span class="legend-item"><i class="swatch" style="background: var(--ok)"></i>&lt;100ms</span>
-      <span class="legend-item"><i class="swatch" style="background: var(--warn)"></i>100–250ms</span>
-      <span class="legend-item"><i class="swatch" style="background: var(--danger)"></i>&gt;250ms</span>
-      <span class="legend-item"><i class="swatch" style="background: var(--text-3)"></i>未测</span>
-      <span class="legend-hint" v-if="selected">已筛选 {{ REGION_META[selected]?.label ?? selected }} · 点击清除</span>
+  <div class="rst">
+    <div class="rst-head">
+      <b>地区分布</b>
+      <em>{{ rows.length }} 个地区 · {{ totalNodes }} 个节点</em>
+      <span class="spacer"></span>
+      <span v-if="hasLatency" class="rst-legend">
+        <span><i class="lg-fast"></i>快</span>
+        <span><i class="lg-mid"></i>一般</span>
+        <span><i class="lg-slow"></i>慢</span>
+      </span>
+      <span v-if="hasLatency && selectedLabel === ''" class="rst-sep"></span>
+      <button v-if="selectedLabel !== ''" type="button" class="rst-clear" @click="emit('clear')">
+        <span class="dot"></span>已筛选 {{ selectedLabel }} · 清除
+      </button>
+      <span v-else class="rst-hint">点击分段筛选</span>
+    </div>
+
+    <div class="rst-segs">
+      <button
+        v-for="row in rows"
+        :key="row.code"
+        type="button"
+        class="seg"
+        :class="{ on: selected === row.code }"
+        :style="segStyle(row)"
+        :title="tipOf(row)"
+        :aria-pressed="selected === row.code"
+        @click="pick(row.code)"
+      >
+        <span class="r"><span class="fl">{{ row.flag }}</span><span class="nm">{{ row.short }}</span></span>
+        <span class="n">{{ row.count }}</span>
+      </button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.region-map-wrap {
+.rst {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
-.region-map {
-  width: 100%;
-  height: 240px;
-}
-.region-legend {
+
+.rst-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  font-size: 12px;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
   color: var(--text-3);
 }
-.legend-item {
+.rst-head b {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.rst-head em {
+  font: 500 11px/1 var(--mono);
+  font-style: normal;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.rst-hint {
+  color: var(--text-3);
+}
+
+/* 图例画的是一段 2px 线，不是色块——编码方式本身要能对上。 */
+.rst-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.rst-legend span {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
-.swatch {
-  width: 10px;
-  height: 10px;
+.rst-legend i {
+  width: 14px;
+  height: 3px;
   border-radius: 2px;
   display: inline-block;
 }
-.legend-hint {
-  margin-left: auto;
+/* 图例与「点击分段筛选」之间需要一道分隔，否则「慢 点击…」连成一句话。 */
+.rst-sep {
+  width: 1px;
+  height: 10px;
+  background: var(--divider);
+}
+.lg-fast {
+  background: var(--ok);
+}
+.lg-mid {
+  background: var(--warn);
+}
+.lg-slow {
+  background: var(--danger);
+}
+
+.rst-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
   color: var(--accent);
+  cursor: pointer;
+}
+.rst-clear:hover {
+  text-decoration: underline;
+}
+.rst-clear .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.rst-segs {
+  display: flex;
+  /* 与脚本里的 SEG_GAP 保持一致：算段宽时要按这个值扣掉间距。 */
+  gap: 4px;
+  height: 42px;
+  min-width: 0;
+}
+
+.seg {
+  position: relative;
+  /* 宽度由脚本按占比算（见 segStyle），这里不参与伸缩。 */
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 10px;
+  background: var(--surface-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  transition: background 0.12s ease;
+}
+.seg:hover {
+  background: var(--surface-hover);
+}
+.seg.on {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
+}
+.seg:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* 延迟只占段底 2px，不挤文字、不决定填充色。 */
+.seg::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--lat, transparent);
+}
+
+.seg .r {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.2;
+  color: var(--text-2);
+}
+.seg .fl {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1;
+}
+.seg .nm {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.seg .n {
+  font: 600 14px/1.1 var(--mono);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.seg.on .n {
+  color: var(--accent);
+}
+
+/* 窄屏：段内只留旗帜与数字，名字进 tooltip；内边距收到 4px，
+   否则 390 宽下 7 段的可用宽度（约 31px）会被 padding 吃掉一半。 */
+@media (max-width: 620px) {
+  .seg {
+    padding: 0 4px;
+    align-items: center;
+  }
+  .seg .nm {
+    display: none;
+  }
+  .seg .r {
+    gap: 0;
+    font-size: 10.5px;
+  }
+  .seg .n {
+    font-size: 13px;
+  }
 }
 </style>

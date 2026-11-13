@@ -350,8 +350,9 @@ export const getActiveProfile = (): string => activeProfile;
 
 export const api = {
   /** 匿名端点：服务端尚未设置管理令牌时返回 required=true，登录页据此切换为初始化形态。 */
-  setupStatus: () => request<{ required: boolean }>('/api/setup/status'),
-  setup: (token: string) => post<{ ok: boolean }>('/api/setup', { token }),
+  setupStatus: () =>
+    request<{ required: boolean; secretRequired: boolean }>('/api/setup/status'),
+  setup: (body: { token?: string; secret?: string }) => post<{ ok: boolean }>('/api/setup', body),
   health: () => request<{ ok: boolean; version: string; coreVersion: string }>('/health'),
   state: () => request<StateView>('/api/state'),
   nodes: (profile = activeProfile) =>

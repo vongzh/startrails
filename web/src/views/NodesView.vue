@@ -189,7 +189,7 @@ async function commitAlias(node: NodeView): Promise<void> {
               地区分布
             </n-button>
           </template>
-          按地区聚合节点（抽象色块，非真实地图）
+          按地区聚合节点，分段宽度即节点占比
         </n-tooltip>
         <n-tooltip trigger="hover">
           <template #trigger>

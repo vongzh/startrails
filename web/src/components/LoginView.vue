@@ -13,21 +13,54 @@ import type { InputInst } from 'naive-ui';
 import { AlertCircle, ArrowRight, KeyRound, Moon, Sun } from 'lucide-vue-next';
 import BrandMark from './BrandMark.vue';
 import { UI_CORE_VERSION } from '../version';
-import { connect, connecting, initialize, loginError, setupChecking, setupRequired, theme, toggleTheme } from '../workspace';
+import {
+  connect,
+  connecting,
+  initialize,
+  loginError,
+  secretRequired,
+  setupChecking,
+  setupRequired,
+  theme,
+  toggleTheme,
+} from '../workspace';
 
 const tokenDraft = ref('');
+const secretDraft = ref('');
 const tokenInput = ref<InputInst | null>(null);
-const isSetup = computed(() => setupRequired.value);
+const secretInput = ref<InputInst | null>(null);
+const isSetup = computed(() => setupRequired.value || secretRequired.value);
+const lede = computed(() => {
+  if (setupRequired.value && secretRequired.value) {
+    return '此实例尚未初始化：设置管理令牌与数据加密密钥后即可使用。';
+  }
+  if (setupRequired.value) return '此实例尚未设置管理令牌，请先完成初始化。';
+  if (secretRequired.value) {
+    return '此实例尚未设置数据加密密钥；请输入管理令牌并为已有数据设置密钥。';
+  }
+  return '此实例受管理令牌保护。';
+});
 
 async function submitLogin(): Promise<void> {
   if (setupChecking.value) return;
   const value = tokenDraft.value.trim();
-  if (value.length === 0) {
-    loginError.value = isSetup.value ? '请设置管理令牌' : '请输入管理令牌';
+  const secret = secretDraft.value.trim();
+  if (setupRequired.value && value.length === 0) {
+    loginError.value = '请设置管理令牌';
     tokenInput.value?.focus();
     return;
   }
-  if (isSetup.value) await initialize(value);
+  if (!setupRequired.value && secretRequired.value && value.length === 0) {
+    loginError.value = '请输入管理令牌';
+    tokenInput.value?.focus();
+    return;
+  }
+  if (secretRequired.value && secret.length < 16) {
+    loginError.value = '加密密钥至少 16 位';
+    secretInput.value?.focus();
+    return;
+  }
+  if (isSetup.value) await initialize(value, secret);
   else await connect(value);
 }
 
@@ -68,7 +101,7 @@ onMounted(() => tokenInput.value?.focus());
           <path class="chart-axis" d="M0 230H560" />
 
           <!-- 背景图纸：四层统一 -24° 倾斜的同心轨道，是「源汇聚成稳定轨道」的示意插画。
-               它是装饰、跟随 --accent；品牌标记的开放扇出则走固定的 --brand，两套语言不混用。
+               它是装饰、跟随 --accent；品牌标记走自己的品牌色（--logo-*），不吃强调色，两套语言不混用。
                外层用中性描边，只有主轨迹与关键节点用强调色。 -->
           <g class="orbit-layer orbit-a">
             <g transform="rotate(-24 280 230)">
@@ -137,11 +170,11 @@ onMounted(() => tokenInput.value?.focus());
       <div class="lp-inner">
         <div class="lp-eyebrow"><span class="lp-eyebrow-line"></span>接入 / 管理面</div>
         <h1>{{ isSetup ? '初始化管理面' : '连接到控制台' }}</h1>
-        <p class="lp-lede">{{ isSetup ? '此实例尚未设置管理令牌，请先完成初始化。' : '此实例受管理令牌保护。' }}</p>
+        <p class="lp-lede">{{ lede }}</p>
 
         <form class="lp-form" novalidate @submit.prevent="submitLogin">
           <div class="lp-field-head">
-            <label for="admin-token">{{ isSetup ? '设置管理令牌' : '管理令牌' }}</label>
+            <label for="admin-token">{{ setupRequired ? '设置管理令牌' : '管理令牌' }}</label>
           </div>
           <n-input
             id="admin-token"
@@ -150,12 +183,31 @@ onMounted(() => tokenInput.value?.focus());
             class="lp-input mono"
             type="password"
             show-password-on="click"
-            :placeholder="isSetup ? '输入要设置的令牌（至少 8 位）' : '粘贴令牌'"
+            :placeholder="setupRequired ? '输入要设置的令牌（至少 8 位）' : '粘贴令牌'"
             size="large"
             :input-props="{ autocomplete: 'off', spellcheck: false, 'aria-label': '管理令牌' }"
           >
             <template #prefix><KeyRound :size="15" :stroke-width="1.8" /></template>
           </n-input>
+
+          <template v-if="secretRequired">
+            <div class="lp-field-head">
+              <label for="encryption-secret">数据加密密钥</label>
+            </div>
+            <n-input
+              id="encryption-secret"
+              ref="secretInput"
+              v-model:value="secretDraft"
+              class="lp-input mono"
+              type="password"
+              show-password-on="click"
+              placeholder="至少 16 位；丢失后旧数据无法解密"
+              size="large"
+              :input-props="{ autocomplete: 'off', spellcheck: false, 'aria-label': '数据加密密钥' }"
+            >
+              <template #prefix><KeyRound :size="15" :stroke-width="1.8" /></template>
+            </n-input>
+          </template>
 
           <!-- 错误区常驻占位，出现时不顶动下方内容 -->
           <div class="lp-error-slot" role="alert" aria-live="assertive">

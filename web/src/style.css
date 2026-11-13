@@ -20,10 +20,16 @@
   --accent: #b05430;
   --accent-hover: #9a4828;
   --accent-on: #ffffff;
-  /* 品牌色：Logo 专用，与 --accent 分家。用户切换 5 套配色时不变，
-     只随明暗提亮（见下方 [data-theme=dark]）；各 palette 块刻意不重写此值。
-     静态资产 web/public/{favicon,logo}.svg 写死同样的两个色值。 */
-  --brand: #b05430;
+  /* 标志品牌色（定稿 F：夜蓝实色 + 琥珀星）。
+     这是本产品自己的品牌色，跟控制台的主题色无关：5 套配色的块刻意不重写它，
+     换配色时标志不动。明暗各一套，由 :root / :root[data-theme=dark] 分别给出。
+     注意别和主题色混淆——陶土 --accent 是主题色，会随设置变，不能进标志。
+     这里只留内联标志用到的两阶（BrandMark 是 22–26px 的双弧形态）；
+     ≥48px 的三弧形态只存在于 brand/*.svg，色值写死在文件里、不读 CSS 变量，
+     所以不放第三个变量，免得改这里却不生效。 */
+  --logo-a1: #1b2138;
+  --logo-a2: #4c5773;
+  --logo-star: #c2821f;
   --ok: #3f6b4a;
   --warn: #8a5a12;
   --danger: #a93b2c;
@@ -67,8 +73,11 @@
   --accent: #d97a56;
   --accent-hover: #e68d6b;
   --accent-on: #1a1008;
-  /* 只提亮品牌色，不改色相；与 --mark-* 同一条纪律。 */
-  --brand: #d97a56;
+  /* 标志品牌色（暗色版）：夜蓝两阶翻成冷白，琥珀星提亮。
+     只提亮不改色相，深底上层次仍然成立。 */
+  --logo-a1: #e8ecf5;
+  --logo-a2: #a5b0c6;
+  --logo-star: #e8ab4c;
   --ok: #6fbf95;
   --warn: #d8a253;
   --danger: #e4796b;
@@ -362,7 +371,7 @@ a:hover { text-decoration: underline; }
 .head-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
 .card-body { padding: 14px 16px; }
 .card-foot { padding: 10px 16px; border-top: 1px solid var(--divider); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.region-map-card { padding: 12px 16px 8px; border-bottom: 1px solid var(--divider); }
+.region-map-card { padding: 12px 16px; border-bottom: 1px solid var(--divider); }
 
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field > label { font-size: 11.5px; color: var(--text-3); font-weight: 500; }

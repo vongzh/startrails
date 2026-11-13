@@ -77,6 +77,8 @@ export const connecting = ref(false);
 export const loginError = ref('');
 /** 服务端处于「首次设置」状态：登录页从「输入令牌」切换为「设置令牌」。 */
 export const setupRequired = ref(false);
+/** 服务端还没有持久加密密钥：登录页需要额外要求设置（或由环境变量提供）。 */
+export const secretRequired = ref(false);
 /** 状态查询未回来前禁用提交，避免首帧按「普通登录」形态把令牌送去 401。 */
 export const setupChecking = ref(true);
 export const busy = ref(0);
@@ -271,6 +273,13 @@ function messageOf(cause: unknown): string {
   if (text.includes('409') && text.includes('admin-already-initialized'))
     return '管理令牌已设置，请刷新页面后直接登录';
   if (text.includes('400') && text.includes('admin-token-too-short')) return '管理令牌至少 8 位';
+  if (text.includes('400') && text.includes('secret-too-short')) return '加密密钥至少 16 位';
+  if (text.includes('secret-setup-required')) return '请先设置数据加密密钥';
+  if (text.includes('payload-undecryptable'))
+    return '已有正文无法用新密钥解密：请用原 STARTRAILS_TOKEN_SECRET 启动，或从备份恢复';
+  if (text.includes('secret-file-desync'))
+    return '密钥文件没写成，但数据库已切到新密钥：重启前把密钥文件内容改成刚才设置的密钥，否则正文解不开';
+  if (text.includes('secret-persist-failed')) return '加密密钥写入失败，已回滚，请检查 data 目录权限';
   if (text.includes('profile-empty')) return '当前 Profile 没有任何内容：先在订阅源页把源加入构成';
   if (text.includes('admin-token-from-env'))
     return '管理令牌由环境变量提供，请在部署侧修改后重启';
@@ -445,27 +454,48 @@ export async function connect(token: string): Promise<void> {
 /** 启动前问一次服务端是否待初始化；请求失败按普通登录处理，不把用户卡在空白页。 */
 export async function checkSetup(): Promise<void> {
   try {
-    setupRequired.value = (await api.setupStatus()).required;
+    const status = await api.setupStatus();
+    setupRequired.value = status.required;
+    secretRequired.value = status.secretRequired;
   } catch {
     setupRequired.value = false;
+    secretRequired.value = false;
   } finally {
     setupChecking.value = false;
   }
 }
 
-/** 首次设置：写库成功后立刻用同一枚令牌进入控制台。 */
-export async function initialize(token: string): Promise<void> {
+/**
+ * 首次设置：管理令牌与加密密钥可能只缺其一。两者都缺时，服务端先重加密数据库
+ * 再原子写入密钥文件，随后写入管理令牌哈希；成功后立刻用同一枚令牌进入控制台。
+ */
+export async function initialize(token: string, secret = ''): Promise<void> {
   loginError.value = '';
-  const trimmed = token.trim();
-  if (trimmed.length === 0) {
+  const trimmedToken = token.trim();
+  const trimmedSecret = secret.trim();
+  if (setupRequired.value && trimmedToken.length === 0) {
     loginError.value = '请设置管理令牌';
+    return;
+  }
+  if (!setupRequired.value && secretRequired.value && trimmedToken.length === 0) {
+    loginError.value = '请输入管理令牌';
+    return;
+  }
+  if (secretRequired.value && trimmedSecret.length < 16) {
+    loginError.value = '加密密钥至少 16 位';
     return;
   }
   connecting.value = true;
   try {
-    await api.setup(trimmed);
+    // 管理令牌已存在、只缺密钥时，setup 端点需要鉴权：先把令牌放进请求头。
+    if (!setupRequired.value && secretRequired.value) setToken(trimmedToken);
+    await api.setup({
+      ...(setupRequired.value ? { token: trimmedToken } : {}),
+      ...(secretRequired.value ? { secret: trimmedSecret } : {}),
+    });
     setupRequired.value = false;
-    setToken(trimmed);
+    secretRequired.value = false;
+    if (trimmedToken.length > 0) setToken(trimmedToken);
     await loadAll();
     connected.value = true;
     tab.value = 'overview';
