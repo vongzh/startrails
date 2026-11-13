@@ -691,7 +691,10 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
   padding-bottom: 22px; border-bottom: 1px solid var(--border);
 }
 .lv-brand { display: flex; align-items: center; gap: 10px; }
-.lv-wordmark { font-size: 13px; font-weight: 640; letter-spacing: 0.16em; }
+/* 英文主标用负字距（拉丁字母本来就窄），中文名跟在后面靠 0.26em 字距撑开，
+   与 brand/logo.svg、控制台侧栏的排法一致。 */
+.lv-wordmark { font-size: 13px; font-weight: 640; letter-spacing: -0.015em; }
+.lv-cn { margin-left: 8px; font-size: 11px; font-weight: 500; letter-spacing: 0.26em; color: var(--text-2); }
 .lv-edition {
   font-size: 9.5px; letter-spacing: 0.14em; color: var(--text-3);
   padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px;

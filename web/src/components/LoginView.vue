@@ -72,9 +72,10 @@ onMounted(() => tokenInput.value?.focus());
     <!-- 左：品牌与图纸。颜色只来自边框/强调两级令牌。 -->
     <section class="login-visual" aria-label="星迹 产品概览">
       <header class="lv-head">
+        <!-- 品牌锁版与控制台侧栏同构：英文主标 + 次级中文名，避免首屏与控制台叫法不一。 -->
         <div class="lv-brand">
           <BrandMark :size="26" />
-          <span class="lv-wordmark">星迹</span>
+          <span class="lv-wordmark">Startrails<span class="lv-cn">星迹</span></span>
         </div>
         <span class="lv-edition">自托管</span>
       </header>
