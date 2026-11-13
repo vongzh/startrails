@@ -762,7 +762,10 @@ const derivedNodes = computed(() =>
               <td class="col-optional" style="width: 1%; white-space: nowrap">
                 <n-tooltip trigger="hover" :disabled="source.lastError === null">
                   <template #trigger>
-                    <span class="row tight" style="gap: 6px">
+                    <!-- .row 默认 flex-wrap: wrap；这一格宽度由「N 节点」的文字撑出来，
+                         一旦允许换行，圆点会单独占一行、行高从 40 涨到 49。状态是单行信号，
+                         这里强制不换行。 -->
+                    <span class="row tight" style="gap: 6px; flex-wrap: nowrap">
                       <span class="dot" :class="sourceStatus(source.id).kind"></span>
                       <span class="text-2" style="font-size: 12px">{{ sourceStatus(source.id).text }}</span>
                     </span>

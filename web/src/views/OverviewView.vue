@@ -23,6 +23,23 @@ import {
 
 const tokens = computed(() => state.value?.tokens ?? []);
 const activeTokens = computed(() => tokens.value.filter((item) => !item.revoked));
+/**
+ * 同一客户端可以签出多条地址（发布弹窗会提示「已有 N 条，再生成不会让旧的失效」），
+ * 所以这里按客户端聚合：6 条 Surge 显示成「Surge ×6」，而不是 6 个一模一样的标签。
+ * 标签本身不可点击，合并不会丢操作。
+ */
+const tokenGroups = computed(() => {
+  const order: string[] = [];
+  const counts = new Map<string, number>();
+  for (const item of activeTokens.value) {
+    if (!counts.has(item.target)) {
+      counts.set(item.target, 0);
+      order.push(item.target);
+    }
+    counts.set(item.target, (counts.get(item.target) ?? 0) + 1);
+  }
+  return order.map((target) => ({ target, count: counts.get(target) ?? 0 }));
+});
 const kinds = computed(() => new Set(nodes.value.map((node) => node.kind)).size);
 const sourceErrors = computed(() => sources.value.filter((item) => item.enabled === false).length);
 const build = computed(() => {
@@ -290,12 +307,13 @@ const pipeline = computed(() => [
               </template>
             </n-empty>
             <div v-else class="row" style="gap: 8px; flex-wrap: wrap; padding: 14px 0">
-              <span v-for="token in activeTokens.slice(0, 6)" :key="token.id" class="client-pill">
-                <ClientIcon :id="token.target" size="xs" />
-                <span>{{ clientNameOf(token.target) }}</span>
+              <span v-for="group in tokenGroups.slice(0, 6)" :key="group.target" class="client-pill">
+                <ClientIcon :id="group.target" size="xs" />
+                <span>{{ clientNameOf(group.target) }}</span>
+                <span v-if="group.count > 1" class="text-3 mono" style="font-size: 11px">×{{ group.count }}</span>
               </span>
-              <span v-if="activeTokens.length > 6" class="text-3" style="font-size: 11.5px">
-                +{{ activeTokens.length - 6 }}
+              <span v-if="tokenGroups.length > 6" class="text-3" style="font-size: 11.5px">
+                +{{ tokenGroups.length - 6 }}
               </span>
             </div>
           </div>

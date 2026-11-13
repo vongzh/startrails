@@ -123,11 +123,11 @@ function sourceOf(item: { source: string }): string {
                   <ClientIcon :id="item.target" size="xs" />
                   <span>{{ clientNameOf(item.target) }}</span>
                 </span>
-                <div class="addr-mobile">{{ item.subject }}<template v-if="item.scope !== 'node'"> · {{ item.scope }}</template></div>
-                <div class="addr-mobile" style="white-space: normal; line-height: 1.5">{{ item.note }}</div>
+                <div class="addr-mobile subject-cell">{{ item.subject }}<template v-if="item.scope !== 'node'"> · {{ item.scope }}</template></div>
+                <div class="addr-mobile" style="white-space: normal; line-height: 1.5; overflow-wrap: anywhere">{{ item.note }}</div>
               </td>
               <td class="text-3 col-optional" style="font-size: 12px">{{ item.scope }}</td>
-              <td class="mono col-wide-only">{{ item.subject }}</td>
+              <td class="mono col-wide-only subject-cell">{{ item.subject }}</td>
               <td>
                 <n-tag size="small" :type="VALUE_TONE[item.value] ?? 'default'" :bordered="false">
                   {{ VALUE_LABELS[item.value] ?? item.value }}
@@ -155,3 +155,15 @@ function sourceOf(item: { source: string }): string {
     </section>
   </div>
 </template>
+
+<style scoped>
+/* 「对象」列装的是斜杠分隔的字段清单（最长 76 个字符，如 hysteria2: password/obfs/
+   obfs-password/up/down/ports/hop-interval），比声明的 190px 宽出一倍多。
+   表格是 auto 布局，一个不可断的长 token 会把整表撑到 1231px，1440 视口下
+   「依据」列被切掉约 100px，而横向滚动条在 56 行之后基本没人会去用。
+   这里允许它在必要处断行：宁可多占两行，也不让依据列被静默裁掉。 */
+.subject-cell {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+</style>
