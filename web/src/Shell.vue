@@ -218,9 +218,11 @@ onMounted(async () => {
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark"><BrandMark :size="22" /></div>
+        <!-- 品牌锁版：上英文标、下中文名，与 brand/logo.svg 的中英双语排法一致。
+             这里不写「订阅配置控制台」这类功能描述 —— 侧栏各分组已经说明了产品是干什么的。 -->
         <div class="brand-text">
           <div class="brand-name">Startrails</div>
-          <div class="brand-sub">订阅配置控制台</div>
+          <div class="brand-sub">星迹</div>
         </div>
       </div>
 
