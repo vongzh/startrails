@@ -135,8 +135,16 @@ jobs:
           # 必须显式退回 Docker media type：buildx 默认按 OCI 输出，而 HEALTHCHECK
           # 是 Docker config 的扩展字段，OCI 清单会把它丢掉 —— 镜像看着正常，但
           # podman/docker inspect 拿到的 healthcheck 是 null，编排层不会做存活探测。
-          # push 也放进 outputs：同时给 push: 与 outputs: 时后者优先，容易看错。
-          outputs: type=image,push=${{ env.SHOULD_PUSH == 'true' }},oci-mediatypes=false
+          #
+          # 但 Docker 清单装不下 attestation，所以 provenance 必须同时关掉：
+          # 开着会直接报 `cannot export attestations with "oci-mediatypes=false"`
+          # 并中断导出（v0.1.1 首次构建就是这么失败的）。代价是少了 SLSA 来源声明，
+          # 换来镜像能自证健康检查；来源信息本来就在公开仓库和 revision label 里。
+          #
+          # push 也要放进 outputs：同时给 push: 与 outputs: 时以后者为准。
+          # 手动触发且没勾 push 时留空 outputs，buildx 退回 cacheonly，只验证能构建。
+          outputs: "${{ env.SHOULD_PUSH == 'true' && 'type=image,push=true,oci-mediatypes=false' || '' }}"
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             org.opencontainers.image.title=Startrails
