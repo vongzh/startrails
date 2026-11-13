@@ -1,0 +1,50 @@
+name: CI
+
+# 与本地 `npm run verify` 完全同一条链，一步不少：
+# 版本号三处一致 → 后端类型 → 前端绑定 → UI 构建 → 全部用例 → 备份恢复演练。
+# 少一步就会出现「本地绿、CI 绿、页面却白屏」。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+
+      - name: 版本号一致性
+        run: npm run check:version
+
+      - name: 后端类型检查
+        run: npm run typecheck
+
+      - name: 前端绑定检查
+        run: npm run typecheck:ui
+
+      - name: 构建 UI
+        run: npm run build:ui
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 备份恢复演练
+        run: npm run drill:backup

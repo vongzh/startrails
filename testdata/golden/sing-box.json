@@ -1,0 +1,73 @@
+{
+  "log": {},
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "Alpha VLESS",
+      "server": "vless.example.invalid",
+      "server_port": 443,
+      "uuid": "00000000-0000-0000-0000-000000000000",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "vless.example.invalid"
+      }
+    },
+    {
+      "type": "vmess",
+      "tag": "Beta VMess WS",
+      "server": "vmess.example.invalid",
+      "server_port": 443,
+      "uuid": "11111111-1111-1111-1111-111111111111",
+      "security": "auto",
+      "alter_id": 0,
+      "transport": {
+        "type": "ws",
+        "path": "/ws",
+        "headers": {
+          "Host": "vmess.example.invalid"
+        }
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "vmess.example.invalid"
+      }
+    },
+    {
+      "type": "trojan",
+      "tag": "Gamma Trojan",
+      "server": "trojan.example.invalid",
+      "server_port": 443,
+      "password": "placeholder-trojan",
+      "tls": {
+        "enabled": true,
+        "server_name": "trojan.example.invalid"
+      }
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "Delta SS",
+      "server": "ss.example.invalid",
+      "server_port": 8388,
+      "method": "aes-128-gcm",
+      "password": "placeholder-ss",
+      "network": "tcp,udp"
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "selector",
+      "tag": "PROXY",
+      "outbounds": [
+        "Alpha VLESS",
+        "Beta VMess WS",
+        "Gamma Trojan",
+        "Delta SS"
+      ]
+    }
+  ],
+  "route": {}
+}

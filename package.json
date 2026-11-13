@@ -1,0 +1,64 @@
+{
+  "name": "startrails",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "把订阅源扇出成多个客户端订阅 URL 的常驻服务：IR + 能力矩阵 + 诊断，不依赖第三方订阅转换。",
+  "license": "MIT",
+  "author": "vongzh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vongzh/startrails.git"
+  },
+  "homepage": "https://github.com/vongzh/startrails#readme",
+  "bugs": {
+    "url": "https://github.com/vongzh/startrails/issues"
+  },
+  "keywords": [
+    "subscription",
+    "proxy",
+    "clash",
+    "sing-box",
+    "surge",
+    "loon",
+    "quantumult-x",
+    "self-hosted"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "node src/cli.ts smoke",
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:ui": "node scripts/check-ui.ts",
+    "golden": "node src/cli.ts golden --write",
+    "build:config": "node src/cli.ts build --input testdata/fixtures/minimal.json --out-dir out",
+    "dev:ui": "vite --config web/vite.config.ts",
+    "build:ui": "vite build --config web/vite.config.ts",
+    "dev:server": "node src/server/index.ts",
+    "serve": "npm run build:ui && node src/server/index.ts",
+    "check:version": "node scripts/check-version.ts",
+    "drill:backup": "node scripts/backup-drill.ts",
+    "shots": "node scripts/shots.mjs",
+    "verify": "npm run check:version && npm run typecheck && npm run typecheck:ui && npm run build:ui && npm test && npm run drill:backup"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": ">=22.0.0",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "echarts": "^6.1.0",
+    "jsqr": "^1.4.0",
+    "lucide-vue-next": "^0.577.0",
+    "naive-ui": "^2.45.3",
+    "typescript": "~6.0.3",
+    "vite": "^7.3.8",
+    "vue": "^3.5.45",
+    "vue-tsc": "^3.3.14"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  }
+}

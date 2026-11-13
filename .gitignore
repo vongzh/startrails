@@ -1,0 +1,49 @@
+# ---- 依赖与构建产物 ----
+node_modules/
+dist/
+web/dist/
+out/
+.vite/
+*.tsbuildinfo
+
+# ---- 运行时数据 ----
+# 库文件与加密后的订阅源正文只在本机/容器卷里，不进版本库。
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ---- 凭据 ----
+# .env 含 STARTRAILS_TOKEN_SECRET 与管理员令牌，只提交模板。
+.env
+.env.*
+!.env.example
+
+# ---- 测试与工具缓存 ----
+coverage/
+.nyc_output/
+*.log
+npm-debug.log*
+yarn-error.log*
+.eslintcache
+.cache/
+
+# ---- 本地草稿 ----
+# 设计评审稿（标志/配色/版式对比页）是过程产物，不随代码分发。
+logo-review.html
+
+# ---- 编辑器与操作系统 ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Agent 工作目录 ----
+# 本地协作记录（含本机路径、临时结论），不随代码分发；
+# 若希望团队共享，删掉这一行即可（不会删除任何已有文件）。
+.workbuddy/

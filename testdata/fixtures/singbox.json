@@ -1,0 +1,25 @@
+{
+  "log": {},
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "shadowsocks",
+      "tag": "SB SS",
+      "server": "ss.example.invalid",
+      "server_port": 8388,
+      "method": "aes-128-gcm",
+      "password": "placeholder-ss"
+    },
+    {
+      "type": "vless",
+      "tag": "SB VLESS",
+      "server": "vless.example.invalid",
+      "server_port": 443,
+      "uuid": "22222222-2222-2222-2222-222222222222",
+      "flow": "xtls-rprx-vision"
+    },
+    { "type": "direct", "tag": "direct" },
+    { "type": "selector", "tag": "PROXY", "outbounds": ["SB SS", "SB VLESS"] }
+  ],
+  "route": {}
+}

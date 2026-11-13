@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="Startrails">
+  <!-- 标签页不加载 CSS 变量，这里写死品牌色陶土；无底色。
+       品牌色不随应用内 5 套强调色变化，只随系统明暗提亮。
+       与 BrandMark.vue / logo.svg 同源，仅把环线 2.2→3.0、opacity 0.9→1 以扛住 16px；
+       改星环骨架时三处一起核。 -->
+  <style>
+    .st { fill: #b05430; }
+    .st-ring { fill: none; stroke: #b05430; }
+    @media (prefers-color-scheme: dark) {
+      .st { fill: #d97a56; }
+      .st-ring { stroke: #d97a56; }
+    }
+  </style>
+
+  <!-- 星环：扁的斜置轨道，中段被星体盖住 -->
+  <ellipse class="st-ring" cx="22" cy="26" rx="13.4" ry="5.8"
+           transform="rotate(-28 22 26)" stroke-width="3.0"/>
+
+  <!-- 星体 -->
+  <circle class="st" cx="22" cy="26" r="7.2"/>
+
+  <!-- 四芒星：停在星环的右上端 -->
+  <path class="st"
+        d="M33.6 8.5c0.77 3.66 2.24 5.13 5.9 5.9-3.66 0.77-5.13 2.24-5.9 5.9-0.77-3.66-2.24-5.13-5.9-5.9 3.66-0.77 5.13-2.24 5.9-5.9Z"/>
+</svg>

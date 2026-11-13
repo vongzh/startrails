@@ -1,0 +1,19 @@
+# 入库统一 LF（Windows 开发、Linux 容器运行）：靠 text=auto 在提交时归一化，
+# 不强制 eol=lf，否则 CRLF 工作区里每个文件都会常年显示为「已修改」。
+* text=auto
+
+# 未来若加 shell 脚本，必须 LF，否则容器里 shebang 直接失效。
+*.sh text eol=lf
+
+# 二进制：不做换行转换，不生成文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+
+# 锁文件体量大、由 npm 生成，折叠进 diff 之外
+package-lock.json -diff linguist-generated=true

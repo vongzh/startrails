@@ -1,0 +1,5 @@
+vless://22222222-2222-2222-2222-222222222222@vless.example.invalid:443?encryption=none&security=tls&sni=vless.example.invalid&flow=xtls-rprx-vision#VLESS%20TLS
+trojan://placeholder-trojan@trojan.example.invalid:443?security=tls&sni=trojan.example.invalid#Trojan%20TLS
+vmess://eyJ2IjoiMiIsInBzIjoiVk1lc3MgV1MiLCJhZGQiOiJ2bWVzcy5leGFtcGxlLmludmFsaWQiLCJwb3J0IjoiNDQzIiwiaWQiOiIxMTExMTExMS0xMTExLTExMTEtMTExMS0xMTExMTExMTExMTEiLCJhaWQiOiIwIiwic2N5IjoiYXV0byIsIm5ldCI6IndzIiwidGxzIjoidGxzIiwic25pIjoidm1lc3MuZXhhbXBsZS5pbnZhbGlkIiwicGF0aCI6Ii93cyIsImhvc3QiOiJ2bWVzcy5leGFtcGxlLmludmFsaWQifQ
+ss://YWVzLTEyOC1nY206cGxhY2Vob2xkZXItc3M@ss.example.invalid:8388#Delta%20SS
+http://example.invalid/not-a-proxy

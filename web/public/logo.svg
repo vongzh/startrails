@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 80" width="240" height="80"
+     role="img" aria-labelledby="st-title st-desc">
+  <title id="st-title">Startrails · 星迹</title>
+  <desc id="st-desc">左下一颗源点扇出四条星轨、轨末带星点的线稿标记，配 Startrails 标准字与中文名「星迹」。</desc>
+  <!--
+    正式横版品牌标志：图标 + 标准字，无底色。
+    图形与 web/src/components/BrandMark.vue、web/public/favicon.svg 同源，改标记形状时三处必须同步。
+    静态 SVG 不加载 CSS 变量，故写死品牌色陶土；品牌色不随应用内 5 套强调色变化，
+    只随系统明暗把陶土提亮为 #d97a56（与 --brand 的 dark 值一致）。
+    用于 README、文档、分享卡。
+  -->
+  <style>
+    .st { fill: #b05430; }
+    .st-trail { fill: none; stroke: #b05430; }
+    .st-word {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 32px; font-weight: 650; letter-spacing: -0.02em; fill: #1a1a1e;
+    }
+    .st-cjk {
+      font-family: "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px; font-weight: 500; letter-spacing: 0.3em; fill: #77716b;
+    }
+    @media (prefers-color-scheme: dark) {
+      .st { fill: #d97a56; }
+      .st-trail { stroke: #d97a56; }
+      .st-word { fill: #f7f5f2; }
+      .st-cjk { fill: #a39c95; }
+    }
+  </style>
+
+  <!-- 图标：BrandMark 的 48×48 原样放大到 56×56，落在 x=8 y=12 -->
+  <g transform="translate(8 12) scale(1.1666667)">
+    <circle class="st" cx="8.5" cy="38" r="3.4"/>
+    <g class="st-trail" stroke-width="2.2" stroke-linecap="round" opacity="0.9">
+      <path d="M10.5 35.5 Q15 12 32 11.5"/>
+      <path d="M10.5 35.5 Q22 14 38.5 18"/>
+      <path d="M10.5 35.5 Q27 20 41 25"/>
+      <path d="M10.5 35.5 Q28 32 41.5 32.5"/>
+    </g>
+    <g class="st">
+      <circle cx="38.5" cy="18" r="1.8"/>
+      <circle cx="41" cy="25" r="1.8"/>
+      <circle cx="41.5" cy="32.5" r="1.8"/>
+    </g>
+    <path class="st"
+          d="M0 -5.9 C0.77 -2.24 2.24 -0.77 5.9 0 C2.24 0.77 0.77 2.24 0 5.9 C-0.77 2.24 -2.24 0.77 -5.9 0 C-2.24 -0.77 -0.77 -2.24 0 -5.9 Z"
+          transform="translate(32 11.5) scale(0.85)"/>
+  </g>
+
+  <text class="st-word" x="72" y="40">Startrails</text>
+  <text class="st-cjk" x="72" y="61">星迹</text>
+</svg>

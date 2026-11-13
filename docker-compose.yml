@@ -1,0 +1,29 @@
+services:
+  startrails:
+    build: .
+    image: startrails
+    # 用已发布的镜像时删掉 build 行，改成：image: ghcr.io/vongzh/startrails:0.1.0（tag 见 README「镜像发布」）
+    restart: unless-stopped
+    # SQLite WAL 不能跨主机共享；首期固定单实例、节点本地卷。
+    deploy:
+      replicas: 1
+    # 只绑定回环：公网访问请在前面加 TLS 反向代理，不要直接暴露 8787。
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      STARTRAILS_HOST: 0.0.0.0
+      STARTRAILS_PORT: 8787
+      STARTRAILS_DATA_DIR: /app/data
+      STARTRAILS_DB_PATH: /app/data/startrails.db
+      STARTRAILS_WEB_ROOT: /app/web/dist
+      STARTRAILS_TOKEN_SECRET: ${STARTRAILS_TOKEN_SECRET:?set STARTRAILS_TOKEN_SECRET}
+      # 默认不注入（注入空值会占住这个键，屏蔽项目根 .env 的回退）：
+      # 首次访问在 Web UI 设定管理令牌，写入 /app/data/startrails.db，重启后仍有效。
+      # 需要固定令牌时取消下行注释；设置后环境变量优先，数据库里的令牌不再生效。
+      # STARTRAILS_ADMIN_TOKEN: ${STARTRAILS_ADMIN_TOKEN}
+      # STARTRAILS_ALLOW_PRIVATE: "0"   # 内网自建上游时才设为 1
+    volumes:
+      - startrails-data:/app/data
+
+volumes:
+  startrails-data: {}

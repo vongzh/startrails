@@ -1,0 +1,17 @@
+root = true
+
+# 代码风格在仓库内保持一致；这里只锁「不因编辑器不同而漂移」的部分。
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Markdown 的硬换行与行尾空格有意义，别自动裁。
+[*.md]
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab

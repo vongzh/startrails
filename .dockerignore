@@ -1,0 +1,35 @@
+# 构建上下文瘦身 + 防止本机凭据进镜像。
+# Dockerfile 只 COPY package*.json / src / scripts / web，其余一律不该上传。
+
+# ---- 依赖与产物（镜像内 npm ci 重新装、UI 分阶段自己构建）----
+node_modules
+**/node_modules
+dist
+web/dist
+out
+.vite
+
+# ---- 本机数据与凭据 ----
+data
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+
+# ---- 与构建无关的内容 ----
+.git
+.github
+.workbuddy
+.nvmrc
+.editorconfig
+.gitattributes
+docs
+tests
+testdata
+coverage
+*.log
+README.md
+LICENSE
+Dockerfile
+docker-compose.yml

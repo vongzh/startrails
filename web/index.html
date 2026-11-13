@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Startrails · 订阅配置控制台</title>
+    <script>
+      /* 首帧前定主题：等 App.vue 挂载再 applyTheme 会先闪一帧浅色。
+         键与配色清单与 web/src/workspace.ts 的 THEME_KEY / PALETTE_KEY / PALETTES 保持一致。 */
+      (function () {
+        try {
+          var mode = localStorage.getItem('startrails_theme_mode') || 'system';
+          var dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+          var palette = localStorage.getItem('startrails_palette') || 'clay';
+          if (['indigo', 'clay', 'graphite', 'celadon', 'ocean'].indexOf(palette) < 0) palette = 'clay';
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+          document.documentElement.dataset.palette = palette;
+        } catch (_) { /* 隐私模式禁用存储时退回默认浅色 */ }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
