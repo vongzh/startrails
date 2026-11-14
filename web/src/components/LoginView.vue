@@ -93,7 +93,7 @@ onMounted(() => tokenInput.value?.focus());
       </div>
 
       <div class="lv-chart">
-        <svg class="orbit-chart" viewBox="0 0 560 460" role="img" aria-label="星迹示意图：订阅源汇聚为一条稳定轨道，再扇出到多个客户端">
+        <svg class="orbit-chart" viewBox="0 0 560 460" role="img" aria-label="星迹示意图：订阅汇聚为一条稳定轨道，再扇出到多个客户端">
           <!-- 技术图纸底纹：正交网格 + 基准轴，只用 1px 边框色 -->
           <g class="chart-grid">
             <path d="M60 30V430 M160 30V430 M260 30V430 M360 30V430 M460 30V430" />
@@ -142,7 +142,7 @@ onMounted(() => tokenInput.value?.focus());
           <text class="chart-label" x="458" y="134">IR</text>
           <text class="chart-label sub" x="458" y="148">归一化</text>
           <path class="chart-leader" d="M160 257H96" />
-          <text class="chart-label" x="90" y="253" text-anchor="end">订阅源</text>
+          <text class="chart-label" x="90" y="253" text-anchor="end">订阅</text>
           <text class="chart-label sub" x="90" y="267" text-anchor="end">接入</text>
 
           <!-- 角标刻度 -->

@@ -8,6 +8,15 @@ export function redact(text: string): string {
     .replace(/\b([a-f0-9]{32,})\b/gi, (match) => `${match.slice(0, 8)}…`);
 }
 
+/**
+ * 脱敏值不能当作新配置写回库。redact() 有三种痕迹：userinfo / query 的 `***`，
+ * 以及路径里 32 位 hex 被截成的 `abcdef01…`。早期防线只认 `***`，漏了省略号形态，
+ * 旧缓存页面照样能把被截断的订阅链接写回去。
+ */
+export function hasRedactionMarkers(value: string): boolean {
+  return value.includes('***') || value.includes('\u2026');
+}
+
 export const redactDiagnostic = (diagnostic: Diagnostic): Diagnostic => ({
   stage: diagnostic.stage,
   target: diagnostic.target,

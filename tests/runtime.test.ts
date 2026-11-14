@@ -236,7 +236,7 @@ test('设置接口：写入运行时段后，产物出现 dns 段且 configVersi
   assert.doesNotMatch(before, /^dns:/m);
   const versionBefore = ((await (await fetch(`${base}/health`)).json()) as { version: string }).version;
 
-  const put = await fetch(`${base}/api/runtime`, {
+  const put = await fetch(`${base}/api/runtime?profile=p`, {
     method: 'PUT',
     headers: auth,
     body: JSON.stringify({
@@ -252,7 +252,7 @@ test('设置接口：写入运行时段后，产物出现 dns 段且 configVersi
   assert.notEqual(versionAfter, versionBefore, 'configVersion 必须覆盖运行时段，否则客户端 304 拿到旧配置');
 
   // 非法策略当场拒绝，不能存一个「看起来存了但不会生效」的值。
-  const bad = await fetch(`${base}/api/runtime`, {
+  const bad = await fetch(`${base}/api/runtime?profile=p`, {
     method: 'PUT',
     headers: auth,
     body: JSON.stringify({ runtime: { dns: { mode: 'not-a-mode' } } }),
@@ -261,7 +261,7 @@ test('设置接口：写入运行时段后，产物出现 dns 段且 configVersi
   assert.equal(((await bad.json()) as { error: string }).error, 'invalid-runtime-policy');
 
   // 清空后回到不写段的状态。
-  const cleared = await fetch(`${base}/api/runtime`, {
+  const cleared = await fetch(`${base}/api/runtime?profile=p`, {
     method: 'PUT',
     headers: auth,
     body: JSON.stringify({ runtime: null }),

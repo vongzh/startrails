@@ -1,22 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, type Component } from 'vue';
+import { computed, onActivated, onMounted, onUnmounted, reactive, ref, watch, type Component } from 'vue';
 import {
   NAlert,
   NButton,
   NInput,
-  NInputNumber,
   NPopconfirm,
   NRadioButton,
   NRadioGroup,
-  NSelect,
   NSwitch,
+  NTabPane,
+  NTabs,
   NTag,
 } from 'naive-ui';
 import {
+  Activity,
   Bell,
   Cloud,
   Database,
-  Globe,
   HardDriveDownload,
   Info,
   KeyRound,
@@ -24,10 +24,12 @@ import {
   Monitor,
   Moon,
   Palette,
+  ShieldCheck,
   Sun,
 } from 'lucide-vue-next';
 import { UI_CORE_VERSION } from '../version';
-import ClientIcon from '../components/ClientIcon.vue';
+import CapabilitiesView from './CapabilitiesView.vue';
+import DiagnosticsView from './DiagnosticsView.vue';
 import {
   PALETTES,
   activeProfileName,
@@ -45,13 +47,14 @@ import {
   saveWebdavSettings,
   setPalette,
   setThemeMode,
+  settingsSection,
   state,
   themeMode,
   webdavSettings,
   type Palette as PaletteId,
 } from '../workspace';
 import { api } from '../api';
-import type { NotifyConfigView, NotifyTestResultView, RuntimeCapabilityView, RuntimePolicyView, WebDavProbeView } from '../api';
+import type { NotifyConfigView, NotifyTestResultView, WebDavProbeView } from '../api';
 
 const origin = window.location.origin;
 const dialectCount = computed(
@@ -70,34 +73,69 @@ const SWATCHES: Record<PaletteId, string> = {
   ocean: '#1E5FD0',
 };
 
-/* ---------------- 运行时段（DNS / TUN） ---------------- */
-
 /**
- * 这一块刻意做成「全量表单 + 保存」，而不是即时生效：
- * DNS 写错会让整台机器解析不到域名，误触的代价太高，必须有一次明确的提交动作。
- */
-/**
- * 设置页分区：一次只渲染一个分区，而不是把八张卡片堆成一条长页。
+ * 设置页分区：一次只渲染一个分区，而不是把所有卡片堆成一条长页。
  * 左侧导航是真正的切换器，滚动锚点在区块变多之后已经失去意义。
  */
-type SectionId = 'appearance' | 'runtime' | 'backup' | 'notify' | 'session' | 'info';
+type SectionId =
+  | 'appearance'
+  | 'backup'
+  | 'notify'
+  | 'session'
+  | 'info'
+  | 'diagnostics'
+  | 'capabilities';
 
-const SETTING_SECTIONS: readonly {
+interface SectionMeta {
   readonly id: SectionId;
   readonly label: string;
   readonly hint: string;
   readonly icon: Component;
-}[] = [
-  { id: 'appearance', label: '外观', hint: '明暗与主题色，选择只保存在本机', icon: Palette },
-  { id: 'runtime', label: '运行时段', hint: 'DNS 与 TUN 入站，写进产物会影响整机解析', icon: Globe },
-  { id: 'backup', label: '备份与缓存', hint: '本地快照、WebDAV 远端副本与上游缓存', icon: Database },
-  { id: 'notify', label: '通知', hint: '刷新失败时推送到 Telegram 或 Bark', icon: Bell },
-  { id: 'session', label: '会话', hint: '管理令牌与当前设备的登录状态', icon: KeyRound },
-  { id: 'info', label: '运行信息', hint: '版本、规模与调度器状态，只读', icon: Info },
+}
+
+/**
+ * 分区按「改动落在哪里」分成三组，而不是一条平铺列表：
+ * 个人偏好与凭据只跟这台设备有关，运行时几项会写库、改产物、发通知，
+ * 环境三项是这只实例的规格与诊断（只读）。分组标题同时替代了原来那个自指的「分区」标题。
+ */
+const SETTING_GROUPS: readonly { readonly label: string; readonly items: readonly SectionMeta[] }[] = [
+  {
+    label: '个人',
+    items: [
+      { id: 'appearance', label: '外观', hint: '明暗与主题色，选择只保存在本机', icon: Palette },
+      { id: 'session', label: '会话', hint: '管理令牌与当前设备的登录状态', icon: KeyRound },
+    ],
+  },
+  {
+    // 这一组不再叫「运行时」：DNS/TUN 已经跟着配置走（配置页第四段），
+    // 剩下的是备份、缓存与通知——对实例做的事，不是对产物做的事。
+    label: '运维',
+    items: [
+      { id: 'backup', label: '备份与缓存', hint: '本地快照、WebDAV 远端副本与上游缓存', icon: Database },
+      { id: 'notify', label: '通知', hint: '刷新失败时推送到 Telegram 或 Bark', icon: Bell },
+    ],
+  },
+  {
+    label: '环境',
+    items: [
+      { id: 'info', label: '运行信息', hint: '版本、规模与自动刷新状态，只读', icon: Info },
+      { id: 'capabilities', label: '能力矩阵', hint: '核对各客户端支持的能力范围与核实依据', icon: ShieldCheck },
+      // 诊断与能力是只读参考，不需要频繁切换，所以并进设置而不占一级导航。
+      { id: 'diagnostics', label: '诊断', hint: '追踪构建里的跳过、降级与逐步骤结果', icon: Activity },
+    ],
+  },
 ];
+
+const SETTING_SECTIONS = SETTING_GROUPS.flatMap((group) => group.items);
 
 const SECTION_KEY = 'startrails_settings_section';
 const SECTION_IDS = SETTING_SECTIONS.map((item) => item.id);
+
+/**
+ * 诊断与能力是从独立页整页搬进来的只读视图：760px 的行长上限会把能力矩阵压到
+ * 每列只剩三行、诊断双列挤成 300px。这两个分区放开到页面宽度，其余分区照旧守 760。
+ */
+const WIDE_SECTIONS: readonly SectionId[] = ['diagnostics', 'capabilities'];
 
 /** 深链优先（`#sec-session`），其次上次停留的分区，最后回到外观。 */
 function initialSection(): SectionId {
@@ -110,6 +148,7 @@ function initialSection(): SectionId {
 }
 
 const activeSection = ref<SectionId>(initialSection());
+const wideSection = computed(() => WIDE_SECTIONS.includes(activeSection.value));
 
 function switchSection(id: SectionId): void {
   if (activeSection.value === id) return;
@@ -128,148 +167,26 @@ function syncFromHash(): void {
   }
 }
 
-const runtimeCaps = ref<Record<string, RuntimeCapabilityView>>({});
-const runtimeRaw = ref<string | null>(null);
-const runtimeLoading = ref(false);
-const runtimeSaving = ref(false);
-
-type Tri = 'unset' | 'on' | 'off';
-const dnsForm = reactive({
-  mode: 'unset' as 'unset' | 'system' | 'redir-host' | 'fake-ip',
-  nameserver: '',
-  fallback: '',
-  ecs: '',
-  fakeIpRange: '',
-  ipv6: 'unset' as Tri,
-});
-const tunForm = reactive({
-  enabled: false,
-  stack: 'gvisor' as 'gvisor' | 'system' | 'mixed',
-  mtu: null as number | null,
-  strictRoute: false,
-});
-
-const ipv6Options = [
-  { label: '不写', value: 'unset' },
-  { label: '启用', value: 'on' },
-  { label: '关闭', value: 'off' },
-];
-const stackOptions = [
-  { label: 'gvisor（用户态，最稳）', value: 'gvisor' },
-  { label: 'system（走内核栈）', value: 'system' },
-  { label: 'mixed（混合）', value: 'mixed' },
-];
-
-const splitLines = (text: string): string[] =>
-  text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-/** 能力分组：把「谁会写 DNS 段、谁不会」直接说出来，比让用户逐个试要省事。 */
-const capabilitySplit = computed(() => {
-  const entries = Object.entries(runtimeCaps.value);
-  return {
-    dnsYes: entries.filter(([, cap]) => cap.dns === 'support').map(([target]) => target),
-    dnsNo: entries.filter(([, cap]) => cap.dns !== 'support').map(([target]) => target),
-    fakeIpYes: entries.filter(([, cap]) => cap.fakeIp === 'support').map(([target]) => target),
-    tunYes: entries.filter(([, cap]) => cap.tun === 'support').map(([target]) => target),
-  };
-});
-
-const hasRuntime = computed(
-  () =>
-    dnsForm.mode !== 'unset' ||
-    splitLines(dnsForm.nameserver).length > 0 ||
-    splitLines(dnsForm.fallback).length > 0 ||
-    dnsForm.ecs.trim().length > 0 ||
-    dnsForm.fakeIpRange.trim().length > 0 ||
-    dnsForm.ipv6 !== 'unset' ||
-    tunForm.enabled,
+/**
+ * 别的页面（如订阅列表的「查看诊断」）会把目标分区写进 settingsSection。
+ * 设置页被 KeepAlive 缓存，切回来不会重新挂载，所以只能靠 watch 接住，不能放 onMounted。
+ * 值被消费后置回 null，否则下次正常进设置页会被上一次的跳转反复拉走。
+ */
+watch(
+  settingsSection,
+  (id) => {
+    if (id === null) return;
+    if ((SECTION_IDS as readonly string[]).includes(id)) switchSection(id as SectionId);
+    settingsSection.value = null;
+  },
+  { immediate: true },
 );
-
-async function loadRuntime(): Promise<void> {
-  runtimeLoading.value = true;
-  try {
-    const view = await api.runtime();
-    runtimeCaps.value = view.targets;
-    runtimeRaw.value = view.raw;
-    const dns = view.runtime?.dns;
-    dnsForm.mode = dns === undefined ? 'unset' : dns.mode;
-    dnsForm.nameserver = (dns?.nameserver ?? []).join('\n');
-    dnsForm.fallback = (dns?.fallback ?? []).join('\n');
-    dnsForm.ecs = dns?.ecs ?? '';
-    dnsForm.fakeIpRange = dns?.fakeIpRange ?? '';
-    dnsForm.ipv6 = dns?.ipv6 === undefined ? 'unset' : dns.ipv6 ? 'on' : 'off';
-    const tun = view.runtime?.tun;
-    tunForm.enabled = tun?.enabled === true;
-    tunForm.stack = tun?.stack ?? 'gvisor';
-    tunForm.mtu = tun?.mtu ?? null;
-    tunForm.strictRoute = tun?.strictRoute === true;
-  } catch (error) {
-    notify('error', error instanceof Error ? error.message : '读取运行时段失败');
-  } finally {
-    runtimeLoading.value = false;
-  }
-}
-
-async function saveRuntime(): Promise<void> {
-  runtimeSaving.value = true;
-  try {
-    const nameserver = splitLines(dnsForm.nameserver);
-    const fallback = splitLines(dnsForm.fallback);
-    const dns: RuntimePolicyView['dns'] =
-      dnsForm.mode === 'unset' &&
-      nameserver.length === 0 &&
-      fallback.length === 0 &&
-      dnsForm.ecs.trim().length === 0 &&
-      dnsForm.fakeIpRange.trim().length === 0 &&
-      dnsForm.ipv6 === 'unset'
-        ? undefined
-        : {
-            // mode 是必填项：只填了服务器但没选模式时按 system 落库，语义是「按系统默认方式解析」。
-            mode: dnsForm.mode === 'unset' ? 'system' : dnsForm.mode,
-            ...(nameserver.length === 0 ? {} : { nameserver }),
-            ...(fallback.length === 0 ? {} : { fallback }),
-            ...(dnsForm.ecs.trim().length === 0 ? {} : { ecs: dnsForm.ecs.trim() }),
-            ...(dnsForm.fakeIpRange.trim().length === 0 ? {} : { fakeIpRange: dnsForm.fakeIpRange.trim() }),
-            ...(dnsForm.ipv6 === 'unset' ? {} : { ipv6: dnsForm.ipv6 === 'on' }),
-          };
-    const runtime: RuntimePolicyView = {
-      ...(dns === undefined ? {} : { dns }),
-      ...(tunForm.enabled
-        ? {
-            tun: {
-              enabled: true,
-              stack: tunForm.stack,
-              ...(tunForm.mtu === null || tunForm.mtu <= 0 ? {} : { mtu: tunForm.mtu }),
-              ...(tunForm.strictRoute ? { strictRoute: true } : {}),
-            },
-          }
-        : {}),
-    };
-    const saved = await api.saveRuntime(Object.keys(runtime).length === 0 ? null : runtime);
-    notify(
-      'ok',
-      saved.runtime === null
-        ? '已清空运行时段：产物不再写 DNS / TUN 段'
-        : '运行时段已保存；ETag 已变化，客户端下次拉取即生效',
-    );
-    await loadRuntime();
-  } catch (error) {
-    notify('error', error instanceof Error ? error.message : '保存运行时段失败');
-  } finally {
-    runtimeSaving.value = false;
-  }
-}
-
-onMounted(() => {
-  void loadRuntime();
-});
 
 /* ---------------- 通知 / WebDAV（界面可覆盖环境变量默认值） ---------------- */
 
 const notifyForm = reactive({
+  /** 总开关：关掉只停推送，不删渠道配置。 */
+  enabled: true,
   botToken: '',
   chatId: '',
   barkUrl: '',
@@ -282,11 +199,23 @@ const webdavForm = reactive({
 const notifySaving = ref(false);
 const webdavSaving = ref(false);
 
+/**
+ * 设置页被 KeepAlive 缓存，切回来不会再走 onMounted。表单要不要跟随全局状态重读，
+ * 取决于用户有没有动过它：动了就保留，没动就同步（否则会出现「徽标已启用、表单全空」，
+ * 此时点保存反而把配置清掉）。基线在每次读库 / 保存后重设。
+ */
+const notifyBaseline = ref('');
+const webdavBaseline = ref('');
+const notifyDirty = computed(() => JSON.stringify(notifyForm) !== notifyBaseline.value);
+const webdavDirty = computed(() => JSON.stringify(webdavForm) !== webdavBaseline.value);
+
 function loadNotifyForm(): void {
   const value = notifySettings.value?.value;
+  notifyForm.enabled = value?.enabled !== false;
   notifyForm.botToken = value?.botToken ?? '';
   notifyForm.chatId = value?.chatId ?? '';
   notifyForm.barkUrl = value?.barkUrl ?? '';
+  notifyBaseline.value = JSON.stringify(notifyForm);
 }
 
 function loadWebdavForm(): void {
@@ -295,6 +224,7 @@ function loadWebdavForm(): void {
   webdavForm.username = value?.username ?? '';
   // 密码不回传：已设过的密码这里留空，用户重填才覆盖。
   webdavForm.password = '';
+  webdavBaseline.value = JSON.stringify(webdavForm);
 }
 
 /** 判断表单是否「有内容」：有则保存为界面覆盖，无则清除回退环境变量。 */
@@ -310,13 +240,18 @@ function webdavHasInput(): boolean {
   return webdavForm.url.trim().length > 0;
 }
 
+/** 两个渠道各自的就绪判断，tab 标签与状态行共用。 */
+const telegramReady = computed(() => notifyForm.botToken.trim().length > 0 && notifyForm.chatId.trim().length > 0);
+const barkReady = computed(() => notifyForm.barkUrl.trim().length > 0);
+const notifyTab = ref<'telegram' | 'bark'>('telegram');
+
 /** 表单 → 通知配置。Telegram 两项必须成对；Bark 单独可存；全空返回 null。 */
 function notifyPayload(): NotifyConfigView | null {
   if (!notifyHasInput()) return null;
   const botToken = notifyForm.botToken.trim();
   const chatId = notifyForm.chatId.trim();
   const barkUrl = notifyForm.barkUrl.trim();
-  const payload: NotifyConfigView = {};
+  const payload: NotifyConfigView = { enabled: notifyForm.enabled };
   if (botToken.length > 0 || chatId.length > 0) {
     payload.botToken = botToken;
     payload.chatId = chatId;
@@ -325,13 +260,33 @@ function notifyPayload(): NotifyConfigView | null {
   return payload;
 }
 
+/** 只带一个渠道的配置，用来「只测这一页」。 */
+function channelPayload(channel: 'telegram' | 'bark'): NotifyConfigView | null {
+  if (channel === 'telegram') {
+    return telegramReady.value
+      ? { botToken: notifyForm.botToken.trim(), chatId: notifyForm.chatId.trim() }
+      : null;
+  }
+  return barkReady.value ? { barkUrl: notifyForm.barkUrl.trim() } : null;
+}
+
+/** 状态行只描述「现在会发生什么」，不重复表单里已经写着的字段。 */
+const notifyStatus = computed(() => {
+  const ready: string[] = [];
+  if (telegramReady.value) ready.push('Telegram');
+  if (barkReady.value) ready.push('Bark');
+  if (ready.length === 0) return '未配置任何渠道，填好下面一项并保存后生效';
+  if (!notifyForm.enabled) return `已暂停 · ${ready.join(' / ')} 的配置保留，打开开关即恢复`;
+  return `已启用：${ready.join(' / ')}`;
+});
+
 async function saveNotify(): Promise<void> {
   notifySaving.value = true;
   try {
     const payload = notifyPayload();
     if (payload === null) {
       await saveNotifySettings(null);
-      notifyForm.botToken = notifyForm.chatId = notifyForm.barkUrl = '';
+      loadNotifyForm();
       notifyTestResults.value = [];
       return;
     }
@@ -346,19 +301,24 @@ async function saveNotify(): Promise<void> {
 const notifyTesting = ref(false);
 const notifyTestResults = ref<NotifyTestResultView[]>([]);
 
-async function testNotify(): Promise<void> {
+async function testNotify(channel: 'telegram' | 'bark'): Promise<void> {
   if (notifyTesting.value) return;
+  const payload = channelPayload(channel);
+  if (payload === null) {
+    notify('error', channel === 'telegram' ? '先把 Bot Token 与 Chat ID 填完' : '先填 Bark 推送地址');
+    return;
+  }
   notifyTesting.value = true;
   notifyTestResults.value = [];
   try {
-    const outcome = await api.testNotify(notifyPayload());
+    const outcome = await api.testNotify(payload);
     if (outcome.results === undefined) {
       notify('error', outcome.hint ?? outcome.error ?? '测试发送失败');
       return;
     }
     notifyTestResults.value = outcome.results;
     if (outcome.ok === true) notify('ok', '测试消息已发出，去手机上确认');
-    else notify('error', '有渠道没发出去，原因见下方结果');
+    else notify('error', '没发出去，原因见下方结果');
   } catch (cause) {
     notify('error', cause instanceof Error ? cause.message : '测试发送失败');
   } finally {
@@ -371,7 +331,7 @@ async function saveWebdav(): Promise<void> {
   try {
     if (!webdavHasInput()) {
       await saveWebdavSettings(null);
-      webdavForm.url = webdavForm.username = webdavForm.password = '';
+      loadWebdavForm();
       webdavProbe.value = null;
       return;
     }
@@ -462,28 +422,45 @@ onMounted(() => {
   window.addEventListener('hashchange', syncFromHash);
 });
 
+// KeepAlive 下切回设置页不会重跑 onMounted：重新拉一次配置，未编辑的表单跟着同步。
+onActivated(() => {
+  void (async () => {
+    try {
+      const [notify, webdav] = await Promise.all([api.notifySettings(), api.webdavSettings()]);
+      notifySettings.value = notify;
+      webdavSettings.value = webdav;
+      if (!notifyDirty.value) loadNotifyForm();
+      if (!webdavDirty.value) loadWebdavForm();
+    } catch {
+      // 拉不到就保留现有表单，不拿空值覆盖用户正在编辑的内容。
+    }
+  })();
+});
+
 onUnmounted(() => {
   window.removeEventListener('hashchange', syncFromHash);
 });
 </script>
 
 <template>
-  <div class="page settings-page">
-    <div class="settings-layout">
+  <div class="page">
+    <div class="settings-layout" :class="{ wide: wideSection }">
       <nav class="settings-nav" aria-label="设置分区">
-        <div class="sn-title">分区</div>
-        <button
-          v-for="item in SETTING_SECTIONS"
-          :key="item.id"
-          type="button"
-          class="sn-item"
-          :class="{ active: activeSection === item.id }"
-          :title="item.hint"
-          @click="switchSection(item.id)"
-        >
-          <component :is="item.icon" :size="14" />
-          <span>{{ item.label }}</span>
-        </button>
+        <div v-for="group in SETTING_GROUPS" :key="group.label" class="sn-group">
+          <div class="sn-title">{{ group.label }}</div>
+          <button
+            v-for="item in group.items"
+            :key="item.id"
+            type="button"
+            class="sn-item"
+            :class="{ active: activeSection === item.id }"
+            :title="item.hint"
+            @click="switchSection(item.id)"
+          >
+            <component :is="item.icon" :size="14" />
+            <span>{{ item.label }}</span>
+          </button>
+        </div>
       </nav>
       <div class="settings-main">
         <section v-if="activeSection === 'appearance'" class="card">
@@ -530,130 +507,6 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <section v-if="activeSection === 'runtime'" class="card">
-          <div class="card-head">
-            <h2>运行时段</h2>
-            <div class="spacer"></div>
-            <n-tag size="small" :bordered="false" class="mono">
-              {{ runtimeLoading ? '读取中' : hasRuntime ? '已配置' : '未配置' }}
-            </n-tag>
-          </div>
-          <div class="card-body">
-            <div class="field">
-              <label>DNS 模式</label>
-              <n-radio-group v-model:value="dnsForm.mode" size="small">
-                <n-radio-button value="unset">不写</n-radio-button>
-                <n-radio-button value="system">system</n-radio-button>
-                <n-radio-button value="redir-host">redir-host</n-radio-button>
-                <n-radio-button value="fake-ip">fake-ip</n-radio-button>
-              </n-radio-group>
-              <span class="text-3" style="font-size: 11.5px; margin-top: 6px">
-                缺 DNS 段不影响节点可用，写错反而可能让整机解析不到域名；不支持的客户端会自动跳过这一段并留诊断。
-              </span>
-            </div>
-
-            <div class="form-grid cols-2" style="margin-top: 12px">
-              <div class="field">
-                <label>nameserver（每行一条）</label>
-                <n-input
-                  v-model:value="dnsForm.nameserver"
-                  type="textarea"
-                  size="small"
-                  :autosize="{ minRows: 2, maxRows: 4 }"
-                  placeholder="https://dns.alidns.com/dns-query"
-                />
-              </div>
-              <div class="field">
-                <label>fallback</label>
-                <n-input
-                  v-model:value="dnsForm.fallback"
-                  type="textarea"
-                  size="small"
-                  :autosize="{ minRows: 2, maxRows: 4 }"
-                  placeholder="tls://8.8.4.4"
-                />
-              </div>
-            </div>
-
-            <div class="form-grid cols-3" style="margin-top: 10px">
-              <div class="field">
-                <label>fake-ip 网段</label>
-                <n-input v-model:value="dnsForm.fakeIpRange" size="small" placeholder="198.18.0.1/16" />
-              </div>
-              <div class="field">
-                <label>ECS</label>
-                <n-input v-model:value="dnsForm.ecs" size="small" placeholder="1.2.3.0/24" />
-              </div>
-              <div class="field">
-                <label>IPv6</label>
-                <n-select v-model:value="dnsForm.ipv6" size="small" :options="ipv6Options" />
-              </div>
-            </div>
-
-            <div class="setting-row" style="margin-top: 6px">
-              <Globe :size="16" class="text-3" />
-              <div class="da-text">
-                <div class="da-title">TUN 入站</div>
-                <div class="da-sub">
-                  只对支持的客户端写出 tun 段；{{ capabilitySplit.tunYes.length }} 个目标可表达
-                </div>
-              </div>
-              <n-switch v-model:value="tunForm.enabled" size="small" />
-            </div>
-
-            <div v-if="tunForm.enabled" class="form-grid cols-2-1" style="margin-top: 6px">
-              <div class="field">
-                <label>栈</label>
-                <n-select v-model:value="tunForm.stack" size="small" :options="stackOptions" />
-              </div>
-              <div class="field">
-                <label>MTU</label>
-                <n-input-number
-                  v-model:value="tunForm.mtu"
-                  size="small"
-                  :min="1280"
-                  :max="9000"
-                  placeholder="默认"
-                  style="width: 100%"
-                />
-              </div>
-            </div>
-
-            <n-alert type="info" :bordered="false" style="margin-top: 12px">
-              <div class="cap-split">
-                <span class="cap-split-label">写 DNS 段 · {{ capabilitySplit.dnsYes.length }} 个</span>
-                <span v-for="id in capabilitySplit.dnsYes" :key="id" class="client-pill">
-                  <ClientIcon :id="id" size="xs" bare />
-                  <span class="mono">{{ id }}</span>
-                </span>
-              </div>
-              <div class="cap-split">
-                <span class="cap-split-label">不写 · {{ capabilitySplit.dnsNo.length }} 个</span>
-                <span v-for="id in capabilitySplit.dnsNo" :key="id" class="client-pill">
-                  <ClientIcon :id="id" size="xs" bare />
-                  <span class="mono">{{ id }}</span>
-                </span>
-                <span v-if="capabilitySplit.dnsNo.length === 0" class="text-3">无</span>
-              </div>
-            </n-alert>
-
-            <div class="row" style="margin-top: 12px; gap: 8px">
-              <n-button size="small" type="primary" :loading="runtimeSaving" @click="saveRuntime">
-                保存运行时段
-              </n-button>
-              <n-popconfirm @positive-click="saveRuntime">
-                <template #trigger>
-                  <n-button size="small" secondary :disabled="!hasRuntime">清空</n-button>
-                </template>
-                清空后产物不再写 DNS / TUN 段，确认？
-              </n-popconfirm>
-              <span v-if="runtimeRaw !== null && !hasRuntime" class="text-3" style="font-size: 11.5px">
-                库里存了无法解析的值，保存会用当前表单覆盖它。
-              </span>
-            </div>
-          </div>
-        </section>
-
         <section v-if="activeSection === 'backup'" class="card">
           <div class="card-head">
             <h2>备份与缓存</h2>
@@ -665,9 +518,24 @@ onUnmounted(() => {
               <HardDriveDownload :size="16" class="text-3" />
               <div class="da-text">
                 <div class="da-title">本地快照</div>
-                <div class="da-sub">含订阅源正文，一致性快照写入数据目录</div>
+                <div class="da-sub">含订阅正文，一致性快照写入数据目录</div>
               </div>
-              <n-button size="small" secondary :loading="busy > 0" @click="backupDatabase">备份</n-button>
+              <!-- 备份本身不毁数据，但每次都会在数据目录里新写一份、不覆盖旧的，
+                   所以先确认一次，免得手快点几下把磁盘写满。 -->
+              <n-popconfirm
+                placement="bottom-end"
+                style="max-width: 268px"
+                positive-text="备份"
+                @positive-click="backupDatabase"
+              >
+                <template #trigger>
+                  <n-button size="small" secondary :loading="busy > 0" :disabled="busy > 0">备份</n-button>
+                </template>
+                <div>
+                  <div>在数据目录新写一份快照？</div>
+                  <div class="pc-sub">data/backup/ 下按时间命名，旧快照保留不覆盖。</div>
+                </div>
+              </n-popconfirm>
             </div>
 
             <div class="setting-row">
@@ -683,15 +551,24 @@ onUnmounted(() => {
                   <template v-if="webdavSettings?.envDefaults"> · 环境变量已设默认值</template>
                 </div>
               </div>
-              <n-button
-                size="small"
-                secondary
-                :disabled="!ops?.webdav.configured"
-                :loading="busy > 0"
-                @click="backupToRemote"
+              <!-- 上传会把整库（含订阅正文、令牌密文）推到第三方 WebDAV，属于数据出本机，
+                   比本地备份更需要一次确认。 -->
+              <n-popconfirm
+                placement="bottom-end"
+                style="max-width: 268px"
+                positive-text="上传"
+                @positive-click="backupToRemote"
               >
-                上传备份
-              </n-button>
+                <template #trigger>
+                  <n-button size="small" secondary :disabled="!ops?.webdav.configured" :loading="busy > 0">
+                    上传备份
+                  </n-button>
+                </template>
+                <div>
+                  <div>上传整库到 WebDAV？</div>
+                  <div class="pc-sub">先在本地写一份快照，再上传（含订阅正文与令牌密文）。</div>
+                </div>
+              </n-popconfirm>
             </div>
             <div class="settings-form">
               <div class="field">
@@ -746,7 +623,7 @@ onUnmounted(() => {
               </div>
               <n-popconfirm @positive-click="clearCache">
                 <template #trigger>
-                  <n-button size="small" secondary>执行</n-button>
+                  <n-button size="small" secondary :loading="busy > 0" :disabled="busy > 0">执行</n-button>
                 </template>
                 将清空全部上游缓存，确认执行？
               </n-popconfirm>
@@ -760,59 +637,94 @@ onUnmounted(() => {
             <div class="spacer"></div>
             <Bell :size="14" class="text-3" />
           </div>
-          <div class="card-body" style="padding-top: 4px; padding-bottom: 4px">
-            <p class="text-3" style="font-size: 11.5px; margin: 8px 0 0">
-              上游不可用、节点被目标拒收、定时刷新失败时推送；同类事件 30 分钟内只推一条。
-            </p>
-            <div class="setting-row">
+          <div class="card-body">
+            <!-- 一个总开关 + 每个渠道各占一个 tab：开关管「发不发」，tab 管「怎么发」，
+                 两者分开才不用在三个输入框里猜哪个渠道现在是启用的。 -->
+            <div class="setting-row" style="padding-top: 4px">
               <Bell :size="16" class="text-3" />
               <div class="da-text">
                 <div class="da-title">运维通知</div>
-                <div class="da-sub">
-                  {{
-                    ops === null
-                      ? '读取中'
-                      : ops.notify.enabled
-                        ? `已启用：${ops.notify.channels.join(' / ')}`
-                        : '未配置'
-                  }}
-                  <template v-if="notifySettings?.envDefaults">
-                    · 环境变量已设默认值
-                  </template>
-                </div>
+                <div class="da-sub">{{ notifyStatus }}</div>
               </div>
-              <n-tag size="small" :bordered="false" :type="ops?.notify.enabled ? 'success' : 'default'">
-                {{ ops?.notify.enabled ? '启用' : '关闭' }}
-              </n-tag>
+              <n-switch v-model:value="notifyForm.enabled" size="small" />
             </div>
-            <div class="settings-form">
-              <div class="field">
-                <label>Telegram Bot Token</label>
-                <n-input v-model:value="notifyForm.botToken" size="small" placeholder="123456:ABC-DEF…" />
-              </div>
-              <div class="field">
-                <label>Telegram Chat ID</label>
-                <n-input v-model:value="notifyForm.chatId" size="small" placeholder="-1001234567890" />
-              </div>
-              <div class="field">
-                <label>Bark 推送地址</label>
-                <n-input v-model:value="notifyForm.barkUrl" size="small" placeholder="https://api.day.app/你的Key" />
-              </div>
-              <div class="form-actions">
-                <span class="text-3" style="font-size: 11px">Telegram 两项需成对填写；留空保存 = 清除界面配置</span>
-                <span class="spacer"></span>
-                <n-button size="small" secondary :loading="notifyTesting" :disabled="busy > 0" @click="testNotify">
-                  发一条测试
-                </n-button>
-                <n-button size="small" type="primary" :loading="notifySaving" @click="saveNotify">保存通知</n-button>
-              </div>
-              <div v-if="notifyTestResults.length > 0" class="probe-results">
-                <div v-for="item in notifyTestResults" :key="item.channel" class="probe-row">
-                  <span class="dot" :class="item.ok ? 'ok' : 'danger'"></span>
-                  <span class="mono" style="font-size: 11.5px">{{ item.channel }}</span>
-                  <span class="text-2" style="font-size: 11.5px">{{ item.ok ? '已发送' : (item.error ?? '发送失败') }}</span>
+
+            <p class="text-3" style="font-size: 11.5px; margin: 10px 0 0">
+              上游不可用、节点被目标拒收、定时刷新失败时推送；同类事件 30 分钟内只推一条。
+            </p>
+
+            <n-tabs v-model:value="notifyTab" type="line" size="small" animated class="notify-tabs">
+              <n-tab-pane name="telegram">
+                <template #tab>
+                  <span class="notify-tab">
+                    Telegram
+                    <span class="dot" :class="telegramReady ? 'ok' : 'muted'"></span>
+                  </span>
+                </template>
+                <div class="field">
+                  <label>Bot Token</label>
+                  <n-input v-model:value="notifyForm.botToken" size="small" placeholder="123456:ABC-DEF…" />
                 </div>
+                <div class="field">
+                  <label>Chat ID</label>
+                  <n-input v-model:value="notifyForm.chatId" size="small" placeholder="-1001234567890" />
+                </div>
+                <div class="form-actions">
+                  <span class="text-3" style="font-size: 11px">
+                    两项需成对填写；测试只发一条消息，不会保存
+                  </span>
+                  <span class="spacer"></span>
+                  <n-button
+                    size="small"
+                    secondary
+                    :loading="notifyTesting"
+                    :disabled="!telegramReady || busy > 0"
+                    @click="testNotify('telegram')"
+                  >
+                    发一条测试
+                  </n-button>
+                </div>
+              </n-tab-pane>
+
+              <n-tab-pane name="bark">
+                <template #tab>
+                  <span class="notify-tab">
+                    Bark
+                    <span class="dot" :class="barkReady ? 'ok' : 'muted'"></span>
+                  </span>
+                </template>
+                <div class="field">
+                  <label>推送地址</label>
+                  <n-input v-model:value="notifyForm.barkUrl" size="small" placeholder="https://api.day.app/你的Key" />
+                </div>
+                <div class="form-actions">
+                  <span class="text-3" style="font-size: 11px">地址里已经含 Key，别贴到公开地方</span>
+                  <span class="spacer"></span>
+                  <n-button
+                    size="small"
+                    secondary
+                    :loading="notifyTesting"
+                    :disabled="!barkReady || busy > 0"
+                    @click="testNotify('bark')"
+                  >
+                    发一条测试
+                  </n-button>
+                </div>
+              </n-tab-pane>
+            </n-tabs>
+
+            <div v-if="notifyTestResults.length > 0" class="probe-results">
+              <div v-for="item in notifyTestResults" :key="item.channel" class="probe-row">
+                <span class="dot" :class="item.ok ? 'ok' : 'danger'"></span>
+                <span class="mono" style="font-size: 11.5px">{{ item.channel }}</span>
+                <span class="text-2" style="font-size: 11.5px">{{ item.ok ? '已发送' : (item.error ?? '发送失败') }}</span>
               </div>
+            </div>
+
+            <div class="form-actions notify-save">
+              <span class="text-3" style="font-size: 11px">全部留空并保存 = 清除界面配置，回退环境变量</span>
+              <span class="spacer"></span>
+              <n-button size="small" type="primary" :loading="notifySaving" @click="saveNotify">保存通知</n-button>
             </div>
           </div>
         </section>
@@ -865,7 +777,23 @@ onUnmounted(() => {
                 <div class="da-title">断开连接</div>
                 <div class="da-sub">清除本会话保存的管理令牌</div>
               </div>
-              <n-button size="small" secondary type="error" @click="disconnect">断开</n-button>
+              <!-- 断开只影响这台浏览器；已签发的订阅地址照常交付，所以文案要把这点说清，
+                   否则用户会以为断开等于让别人的订阅失效。 -->
+              <n-popconfirm
+                placement="bottom-end"
+                style="max-width: 268px"
+                positive-text="断开"
+                negative-text="取消"
+                @positive-click="disconnect"
+              >
+                <template #trigger>
+                  <n-button size="small" secondary type="error">断开</n-button>
+                </template>
+                <div>
+                  <div>断开这台设备？</div>
+                  <div class="pc-sub">要重新输入管理令牌才能进入；已签发的订阅地址不受影响。</div>
+                </div>
+              </n-popconfirm>
             </div>
           </div>
         </section>
@@ -878,30 +806,38 @@ onUnmounted(() => {
             <dl class="kv">
               <dt>服务地址</dt>
               <dd>{{ origin }}</dd>
-              <dt>内核版本</dt>
+              <dt>服务端版本</dt>
               <dd>{{ state?.coreVersion ?? '—' }}</dd>
-              <dt>前端契约</dt>
+              <dt>界面版本</dt>
               <dd>{{ UI_CORE_VERSION }}</dd>
               <dt>配置版本</dt>
               <dd>{{ state?.version ?? '—' }}</dd>
-              <dt>Profile</dt>
+              <dt>当前配置</dt>
               <dd>{{ activeProfileName }}</dd>
-              <dt>引擎</dt>
-              <dd>IR 扇出 · {{ state?.clientTargets.length ?? 0 }} 个客户端 / {{ dialectCount }} 种方言</dd>
-              <dt>订阅源</dt>
-              <dd>{{ state?.sources.length ?? 0 }} 个 · {{ state?.collections.length ?? 0 }} 个组合订阅</dd>
-              <dt>调度</dt>
+              <dt>产物生成</dt>
               <dd>
-                每 {{ Math.round((ops?.scheduler.intervalMs ?? 60000) / 1000) }}s 检查到期
+                同一套编排 → {{ state?.clientTargets.length ?? 0 }} 份订阅（归成
+                {{ dialectCount }} 种客户端语法）
+              </dd>
+              <dt>订阅</dt>
+              <dd>{{ state?.sources.length ?? 0 }} 个订阅 · {{ state?.collections.length ?? 0 }} 个组合订阅</dd>
+              <dt>自动刷新</dt>
+              <dd>
+                每 {{ Math.round((ops?.scheduler.intervalMs ?? 60000) / 1000) }}s 检查一次到期订阅
                 <span class="text-3">·</span>
                 {{ ops === null ? '读取中' : '运行中' }}
               </dd>
             </dl>
             <n-alert v-if="versionMismatch" type="warning" :bordered="false" style="margin-top: 14px">
-              前端契约与内核版本不一致，请重新执行前端构建。
+              界面版本与服务端版本不一致，请重新构建前端。
             </n-alert>
           </div>
         </section>
+
+        <!-- 诊断与能力原本是独立页面：整页都是卡片，所以这里不再套 .card（会变成卡中卡），
+             只由 .settings-embed 中和它们根元素 .page 的内边距与宽度。 -->
+        <DiagnosticsView v-else-if="activeSection === 'diagnostics'" class="settings-embed" />
+        <CapabilitiesView v-else-if="activeSection === 'capabilities'" class="settings-embed" />
 
       </div>
     </div>

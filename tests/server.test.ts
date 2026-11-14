@@ -51,15 +51,15 @@ test('SQLite Store：配置态持久化、正文加密、WAL 快照可恢复', a
       dedupe: 'nodeKey',
       order: 0,
     });
-    store.putAnnotation({ nodeKey: 'k1', excluded: true, alias: 'Renamed', order: 2, region: 'JP' });
+    store.putAnnotation('default', { nodeKey: 'k1', excluded: true, alias: 'Renamed', order: 2, region: 'JP' });
     const row = readFileSync(join(dir, 'state.db'));
     assert.ok(!row.toString('latin1').includes('top-secret'), '源正文不应以明文出现在数据库文件');
     assert.equal(store.listSources()[0]?.kind, 'inline');
     assert.match(store.readSourcePayload('a') ?? '', /ss\.example\.invalid/);
     assert.equal(store.listCollections()[0]?.members.length, 1);
-    assert.equal(store.listAnnotations()[0]?.alias, 'Renamed');
+    assert.equal(store.listAnnotations('default')[0]?.alias, 'Renamed');
     // 手动覆盖地区必须落库：端口合同里有 region，适配器漏写会让「改地区」变成假动作。
-    assert.equal(store.listAnnotations()[0]?.region, 'JP');
+    assert.equal(store.listAnnotations('default')[0]?.region, 'JP');
     const backup = join(dir, 'backup', 'snapshot.db');
     await store.backup(backup);
     assert.ok(existsSync(backup));

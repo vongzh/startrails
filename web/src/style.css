@@ -6,6 +6,9 @@
 /* 基础层 = 默认配色「陶土」：data-palette 缺失或首帧尚未执行脚本时也是这套，
    因此换默认配色只需改这里与 web/index.html 的预置值。 */
 :root {
+  /* 正文宽度上限：页头 / 正文 / 页脚共用这一个值，三处必须同宽，否则页头会与内容错位。
+     1180 在 1440 及更宽的屏上两侧各空 130 以上，宽屏利用率偏低，收到 1400。 */
+  --page-max: 1400px;
   --bg: #f0eee6;
   --surface: #faf9f5;
   --surface-2: #f5f3ec;
@@ -273,6 +276,15 @@
 
 * { box-sizing: border-box; }
 html, body, #app { min-height: 100%; }
+/* 手机端手感的地基：两条声明解决两类「页面自己动了」的错觉——
+   iOS 横屏会把「字号过小」的正文擅自放大，版式整体跳一跳；Chrome 快速上滑到顶
+   会带出下拉刷新把整页拽走。控制台的刷新有专门入口，手势接力关掉（contain 而不是
+   none：iOS 自身的回弹手感保留，只挡误触）。 */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overscroll-behavior-y: contain;
+}
 body {
   margin: 0;
   background: var(--bg);
@@ -280,6 +292,11 @@ body {
   font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
+  /* 双击缩放对控制台没用，却会把快速连点两枚相邻按钮误判成一次放大。
+     生效值沿祖先链取交集，body 一条就覆盖全部子元素；双指捏合不受影响。
+     下面触屏层的显式清单是保底——iOS 对祖先链合成的支持有历史坑，
+     高频触点还是自己声明一遍靠得住。 */
+  touch-action: manipulation;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); text-decoration: none; }
@@ -292,7 +309,9 @@ a:hover { text-decoration: underline; }
 
 /* ---------- 骨架 ---------- */
 
-.app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
+/* 100svh 而不是 100vh：手机浏览器的 vh 按「地址栏收起后」算，页面因此比可视区高出一截，
+   滚动时地址栏一收一放就带着整页重排。svh 是「地址栏展开时」的高度，全程恒定。 */
+.app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; min-height: 100svh; }
 
 .sidebar {
   position: sticky; top: 0; height: 100vh;
@@ -307,6 +326,17 @@ a:hover { text-decoration: underline; }
 /* 中文名不是副标题：与 brand/logo.svg 的中英双排一致，靠字距拉开成「标识」而非「说明文字」，
    所以用 text-2 而不是 text-3，字距 0.26em 让「星迹」两字撑到与英文标近似的宽度。 */
 .brand-sub { font-size: 11px; color: var(--text-2); letter-spacing: 0.26em; }
+
+/* 配置切换在页脚区的最上一格：图标 + 名字，与导航项同构。
+   图标左缘 22px、文字左缘 48px，与 nav-item 完全对齐（side-foot 4 + 这里 10 + 图标 14 + 下拉自身 12）。
+   悬停底色画在整行上，才像「一个可点的对象」，而不是一段被选中的文字。 */
+.side-profile {
+  display: flex; align-items: center; gap: 0;
+  padding: 5px 0 5px 10px; border-radius: 9px;
+  transition: background 0.12s;
+}
+.side-profile:hover { background: var(--surface-3); }
+.side-profile-icon { flex: none; color: var(--text-3); }
 
 .nav { display: flex; flex-direction: column; gap: 1px; flex: 1; overflow-y: auto; padding-left: 4px; }
 .nav-group {
@@ -325,8 +355,18 @@ a:hover { text-decoration: underline; }
 .nav-item .nav-count { margin-left: auto; font: 500 11px/1 var(--mono); color: var(--text-3); font-variant-numeric: tabular-nums; }
 .nav-item.active .nav-count { color: var(--accent); opacity: 0.85; }
 
-.side-foot { padding: 0 10px; display: flex; flex-direction: column; gap: 8px; }
-.side-conn { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text-3); }
+/* 只缩左边：.nav 也只有 padding-left，右边齐着容器，底部这块才和上面的导航项同宽。
+   上边框把「去哪一页」与「在为哪份配置干活 + 连没连上」两件事分开。 */
+.side-foot {
+  padding: 10px 0 0 4px; border-top: 1px solid var(--divider);
+  display: flex; flex-direction: column;
+}
+/* 版本号那一行单独一格：配置下拉说的是「在为哪份配置干活」，版本号说的是「这个实例是什么」，
+   两件事之间画一条线，免得读成同一个控件组。10px 让文字与导航项左缘（12+10）对齐。 */
+.side-conn {
+  display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text-3);
+  padding: 10px 10px 0; border-top: 1px solid var(--divider);
+}
 
 .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .topbar {
@@ -338,18 +378,21 @@ a:hover { text-decoration: underline; }
 .topbar-title h1 { margin: 0; font-size: 15px; font-weight: 640; letter-spacing: -0.015em; }
 .topbar-title .sub { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+/* 提示条顶部居中（App.vue placement="top"）。naive 默认 top:12px 会压住本页 50px 的顶栏，
+   下移到顶栏下方；weight 靠 body 前缀压过运行时注入的同名规则。 */
+body .n-message-container.n-message-container--top { top: 62px; }
 
 .page {
   display: flex; flex-direction: column; gap: 14px;
   /* 顶部由全站统一的 .page-intro 负责，这里只留一条呼吸缝。 */
-  padding: 12px 20px 32px; width: 100%; max-width: 1180px; margin: 0 auto;
+  padding: 12px 20px 32px; width: 100%; max-width: var(--page-max); margin: 0 auto;
 }
 .grid { display: grid; gap: 14px; align-items: start; }
 /* 内容页页脚：所有页面共用一份版权，放在 .main 末尾。
    margin-top:auto 让短页面也贴到视口底部，长页面跟在内容后面。 */
 .app-foot {
   display: flex; align-items: center; justify-content: center; gap: 6px;
-  width: 100%; max-width: 1180px; margin: auto auto 0; padding: 18px 20px 24px;
+  width: 100%; max-width: var(--page-max); margin: auto auto 0; padding: 18px 20px 24px;
   font-size: 11px; color: var(--text-3); letter-spacing: 0.01em;
 }
 .app-foot a { color: var(--text-2); text-decoration: none; border-bottom: 1px solid var(--border); }
@@ -381,6 +424,9 @@ a:hover { text-decoration: underline; }
 .field-row .field { flex: 1; }
 .settings-form { display: flex; flex-direction: column; gap: 10px; padding: 10px 0 12px 28px; border-bottom: 1px solid var(--divider); }
 .form-actions { display: flex; align-items: center; gap: 8px; }
+/* 确认气泡里的副文案：主问句只说「做什么」，这一行补「代价是什么」。
+   Naive 的 popconfirm 没有 description 插槽，只能放进默认插槽里的第二行。 */
+.n-popconfirm__body .pc-sub { margin-top: 3px; font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
 .form-grid { display: grid; gap: 10px; }
 .form-grid.cols-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .form-grid.cols-3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); }
@@ -445,6 +491,9 @@ a:hover { text-decoration: underline; }
 /* ---------- 表格 ---------- */
 
 .tbl-wrap { overflow-x: auto; }
+/* 已撤销的记录：翻历史时才看得见，压暗一级，别和生效中的抢注意力。 */
+table.tbl tr.row-muted td { color: var(--text-3); }
+table.tbl tr.row-muted .client-pill { opacity: 0.62; }
 table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 table.tbl th {
   text-align: left; font-size: 10px; font-weight: 600; letter-spacing: 0.07em;
@@ -465,17 +514,64 @@ table.tbl tbody tr:hover td.actions .n-button { opacity: 1; }
 tr.expanded > td { background: var(--surface-2); }
 tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 
-.mono { font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+/* 长 URI / token / 导入的规则值都走 .mono：统一允许断行，别让任何一处长 token
+   把整张表撑宽。声明 nowrap 的单元格（编号、时间）不受影响。 */
+.mono { font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 /* 订阅链接常带 32 位 token，是最窄不可断内容：390px 下会把整张表撑宽 88px，
    编辑/更新/删除被挤到屏幕外。能力矩阵页的 .subject-cell 已修过同类问题。 */
 .addr-mobile { display: none; overflow-wrap: anywhere; word-break: break-all; }
+/* 桌面同样要看得见订阅链接（不然只能进编辑抽屉核对）；单行截断，完整值在 tooltip。
+   上限不能给太大：这行是 nowrap，它的宽度是名称列的 min-content 下限，给到 280 就会
+   把整张表顶出容器（1080 视口实测溢出 35px）。220 让 8 列在 1080 视口仍然装得下。 */
+.addr-desktop {
+  display: block; max-width: 220px; margin-top: 1px; font-size: 10.5px;
+  color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .n-tag.mono { font-family: var(--mono); }
 .n-input.mono .n-input__input-el,
 .n-input.mono .n-input__textarea-el { font-family: var(--mono); font-size: 12px; }
+
+/* 订阅源表：8 列各司其职。基础宽度全按内容收紧（auto 布局里 1% 约等于 min-content），
+   剩余宽度只留给名称列——窄屏下其它列本就隐藏，名称必须吃掉全部宽度。 */
+.tbl-sources .col-kind,
+.tbl-sources .col-nodes,
+.tbl-sources .col-size,
+.tbl-sources .col-fetch,
+.tbl-sources .col-status,
+.tbl-sources .col-enabled,
+.tbl-sources .col-actions { width: 1%; }
+
+/* 宽屏按比例收敛：全交给名称列时它会独吞剩余空间（1200 视口实测 470px），
+   名称与「方式」之间留出一大片空地、小列反而挤在一起。这里让每列都拿到稳定份额，
+   各列份额都不低于自身 min-content（否则 min-content 兜底会把表顶出容器）。 */
+@media (min-width: 1101px) {
+  .tbl-sources .col-name { width: 32%; }
+  .tbl-sources .col-kind { width: 8.5%; }
+  .tbl-sources .col-nodes { width: 6.5%; }
+  .tbl-sources .col-size { width: 8.5%; }
+  .tbl-sources .col-fetch { width: 9.5%; }
+  .tbl-sources .col-status { width: 12.5%; }
+  .tbl-sources .col-enabled { width: 8%; }
+}
+
+/* 我的节点表：名称 / 节点 / 状态 / 启用 / 操作——手工节点没有上游，
+   大小与更新两列对它没有意义，混进订阅表只会让「更新订阅」这类整表动作语义含混。 */
+.tbl-manual .col-nodes,
+.tbl-manual .col-status,
+.tbl-manual .col-enabled,
+.tbl-manual .col-actions { width: 1%; }
+
+@media (min-width: 1101px) {
+  .tbl-manual .col-nodes { width: 7%; }
+  .tbl-manual .col-status { width: 14%; }
+  .tbl-manual .col-enabled { width: 8%; }
+}
+
 .text-2 { color: var(--text-2); }
 .text-3 { color: var(--text-3); }
 .strong { font-weight: 600; }
-.hide-sm { display: inline; }
+/* 窄屏专用 / 桌面专用：侧栏在 860px 以下消失，配置切换要从侧栏落到「配置」页页头。 */
+.show-narrow { display: none !important; }
 
 /* ---------- 列表行 ---------- */
 
@@ -574,6 +670,14 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 .tone-auto { --mark: var(--accent); }
 .dialect-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--mark); }
 .client-pill { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+/* 已签发台账里的客户端是可点入口：点一下跳到下方预览，指针与 hover 要给足暗示。
+   用 button 而不是 span 是为了键盘可达，因此要把浏览器默认的按钮外观清掉。 */
+.client-pill.pill-link {
+  padding: 0; border: 0; background: transparent; font: inherit; color: inherit;
+  cursor: pointer; border-radius: 6px;
+}
+.client-pill.pill-link:hover { color: var(--accent); }
+.client-pill.pill-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .select-target { display: inline-flex; align-items: center; gap: 7px; }
 /* 能力覆盖清单：19 个目标用紧凑徽章换行铺开，比 id 文本串更容易扫读。 */
 .cap-split { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; line-height: 1.9; }
@@ -636,8 +740,23 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 /* 构成卡片顶部的补挂提示：夹在卡头与列表之间，只留一条下分隔线。 */
 .attach-hint { border-top: 0; border-bottom: 1px solid var(--divider); }
 
-/* Profile 切换：顶栏的全局作用域选择器，宽度固定免得数字变动时抖动。 */
+/* Profile 切换：窄屏落在配置页页头，定宽免得名字长短让整行抖动；侧栏里另给满宽。 */
 .profile-switch { width: 132px; flex: none; }
+/* 侧栏里它是「当前工作区」，不是表单字段：naive 的白底落在 label 上、变量又是内联写的，
+   所以直接压 label 的背景而不是改 --n-color。底色交给整行 hover，这里只留字与箭头。
+   展开时必须一并压掉激活态的白底与橙色光晕——否则点开的瞬间会跳成一张白卡片，
+   和折叠时的无框行判若两物。 */
+.side-profile .profile-switch { width: auto; flex: 1; min-width: 0; }
+.side-profile .profile-switch .n-base-selection {
+  border-radius: 7px; box-shadow: none !important; border: 0 !important;
+}
+.side-profile .profile-switch .n-base-selection-label,
+.side-profile .profile-switch .n-base-selection--active .n-base-selection-label,
+.side-profile .profile-switch .n-base-selection--focus .n-base-selection-label {
+  background-color: transparent !important;
+  color: var(--text-2);
+}
+.side-profile .profile-switch:hover .n-base-selection-label { color: var(--text); }
 
 /* 连通性测试的逐渠道结果。 */
 .probe-results {
@@ -648,9 +767,8 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 
 /* ---------- 设置页 ---------- */
 
-/* 设置页不再自己收窄：.page 的 1180 上限定住了左边距，收窄会让整块内容居中、
+/* 设置页与其它页同宽（--page-max）：自己收窄会让整块内容居中、
    和上面 .page-intro 的标题错开（实测偏 110px）。宽度交给 .settings-layout。 */
-.settings-page { max-width: 1180px; }
 .kv { display: grid; grid-template-columns: 88px 1fr; gap: 10px 14px; font-size: 12px; margin: 0; }
 .kv dt { color: var(--text-3); }
 .kv dd { margin: 0; font-family: var(--mono); font-size: 11.5px; word-break: break-all; }
@@ -906,14 +1024,19 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
   table.tbl th { padding: 8px 10px; }
   table.tbl td { padding: 9px 10px; }
   table.tbl td.actions .n-button { opacity: 1; }
+  /* 28px 的小按钮拇指按不准：表格操作列与列表行的高频触点抬到 34px。
+     顶栏圆形图标有图标语义且低频，不动。 */
+  table.tbl td.actions .n-button,
+  .row-actions .n-button { --n-height: 34px !important; }
   .col-optional, .col-wide-only { display: none; }
   .addr-mobile { display: block; font-size: 10px; color: var(--text-3); margin-top: 1px; }
+  .addr-desktop { display: none; }
   .status-mobile { display: flex; }
   .tbl-wrap td .row { flex-wrap: nowrap; }
   .nowrap-time { white-space: nowrap; }
-  .settings-page { max-width: none; }
   .member-grid { grid-template-columns: minmax(0, 1fr); }
-  .hide-sm { display: none; }
+  .show-narrow { display: inline-flex !important; }
+  .hide-narrow { display: none !important; }
 
   .tabbar {
     position: fixed; inset: auto 0 0 0; z-index: 40;
@@ -978,6 +1101,10 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 .qr-figure { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 0; flex: none; }
 .qr-figure img { width: 120px; height: 120px; padding: 6px; border-radius: 10px; background: #ffffff; border: 1px solid var(--border); }
 .qr-figure figcaption { font-size: 10.5px; color: var(--text-3); }
+/* 台账里的二维码弹窗：图要放大到 200px 才好扫，链接整段可读，不跟页面一起缩。 */
+.qr-panel { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.qr-panel img { width: 200px; height: 200px; padding: 8px; border-radius: 12px; background: #ffffff; border: 1px solid var(--border); }
+.qr-panel .row { justify-content: center; }
 
 @media (max-width: 560px) {
   .qr-figure { display: none; }
@@ -1025,8 +1152,9 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
    一次改动覆盖 8 个页面：顶栏退成面包屑、每页有统一页面头、长表表头粘性、
    操作常驻可见、空态与长页导航统一。全部只用 1px 线与留白分层。 */
 
-html { scroll-behavior: smooth; }
-@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+/* 不做全局 scroll-behavior: smooth。它会把所有程序化滚动（切页归零、设置页换分区）
+   都变成一段几百毫秒的滑行，切页时看见的是「页面自己动了」而不是「换了页」。
+   真正需要动效的只有规则页的定位，那一处显式传了 behavior: 'smooth'。 */
 
 button:focus-visible, a:focus-visible, [role='button']:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
@@ -1046,7 +1174,7 @@ section[id] { scroll-margin-top: 78px; }
 /* 页面头：分组 → 职能 → 实时状态，8 页共用。 */
 .page-intro {
   display: flex; align-items: flex-end; justify-content: space-between; gap: 20px;
-  width: 100%; max-width: 1180px; margin: 0 auto; padding: 24px 20px 4px;
+  width: 100%; max-width: var(--page-max); margin: 0 auto; padding: 24px 20px 4px;
 }
 .pi-text { min-width: 0; }
 .pi-eyebrow {
@@ -1069,7 +1197,6 @@ section[id] { scroll-margin-top: 78px; }
 
 /* 侧栏：选中态用一条 1px 强调线，不靠色块铺满。 */
 .nav-item.active { border-left-color: var(--accent); }
-.side-foot { padding-top: 10px; border-top: 1px solid var(--divider); }
 
 /* 筛选密集的卡头：独立成一条可换行的工具带，窄屏不再随机挤压。 */
 .card-head.filters {
@@ -1113,12 +1240,38 @@ table.tbl td.actions .n-button:focus-visible { opacity: 1; }
   max-width: 960px;
 }
 .settings-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; max-width: 760px; }
+/* 诊断 / 能力是整页搬进来的只读视图，760px 的行长上限会把能力矩阵压成每列三行，
+   这两个分区放开到页面宽度；其余分区（表单）仍守住 760 的可读行长。 */
+.settings-layout.wide { max-width: 100%; }
+.settings-layout.wide .settings-main { max-width: none; }
+/* 它们仍带着整页的 .page 外壳：自己的内边距与 1180 宽度上限会在分区导航右侧
+   造成双重留白，这里中和掉，宽度交给 .settings-layout。 */
+.page.settings-embed { padding: 0; max-width: none; margin: 0; }
+
+/* 产物预览：节点与规则两个页面整块嵌进来，它们的 .page 外壳要中和掉，
+   否则页内再套一层 20px 内边距，卡片会被推得比页头窄一截。 */
+.page.embed { padding: 0; max-width: none; margin: 0; gap: 12px; }
+/* 配置页页头：它管的是「这份配置本身」（新建 / 删除），不属于任何一段 tab，
+   所以放在 tabs 外面，不做卡片——不然会读成第五个分区。 */
+.config-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.pane-tabs > .n-tabs-nav { margin-bottom: 14px; }
+.pane-tabs .n-tabs-tab { font-size: 12.5px; }
+.scope-note {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin: 0 0 10px; padding: 7px 10px;
+  font-size: 11.5px; line-height: 1.5; color: var(--text-3);
+  border: 1px solid var(--divider); border-radius: 8px; background: var(--surface);
+}
+.scope-note svg { flex: 0 0 auto; margin-top: 2px; }
 .settings-nav {
-  position: sticky; top: 64px; display: flex; flex-direction: column; gap: 1px;
+  position: sticky; top: 64px; display: flex; flex-direction: column; gap: 4px;
   padding: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
 }
+/* 三个分组各自成列；组间用一条极细分隔线，比给每项加间距更省纵向空间。 */
+.settings-nav .sn-group { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.settings-nav .sn-group + .sn-group { padding-top: 8px; border-top: 1px solid var(--divider); }
 .settings-nav .sn-title {
-  padding: 7px 9px 9px; font-size: 10px; letter-spacing: 0.1em;
+  padding: 5px 9px 4px; font-size: 10px; letter-spacing: 0.1em;
   color: var(--text-3); font-weight: 600;
 }
 .settings-nav .sn-item {
@@ -1131,13 +1284,26 @@ table.tbl td.actions .n-button:focus-visible { opacity: 1; }
 .settings-nav .sn-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 560; }
 .settings-nav .sn-item.active svg { opacity: 1; }
 
+/* 通知分区：tab 头只放渠道名 + 一颗「配好了没」的圆点，字段收在各自的 tab 里；
+   否则三个渠道字段并排堆着，看不出哪个渠道现在是启用的。 */
+.notify-tabs { margin-top: 8px; }
+.notify-tabs .n-tabs-tab { font-size: 12px; padding-left: 2px; padding-right: 2px; }
+.notify-tabs .n-tabs-tab + .n-tabs-tab { margin-left: 8px; }
+.notify-tabs .n-tabs-pane-wrapper { padding-top: 2px; }
+.notify-tabs .form-actions { margin-top: 10px; }
+.notify-tab { display: inline-flex; align-items: center; gap: 6px; }
+/* 圆点在 tab 里只有 5px 会被读成一个脏点，放大 1px 才看得出是「配好了没」的状态。 */
+.notify-tab .dot { width: 6px; height: 6px; }
+.notify-save { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--divider); }
+
 /* 抽屉在窄屏铺满，避免 440/560px 固定宽度在 390px 手机上溢出。 */
 @media (max-width: 560px) {
   .n-drawer { width: 100% !important; }
   .start-steps { grid-template-columns: minmax(0, 1fr); }
   .start-step { border-right: 0; border-bottom: 1px solid var(--divider); }
   .start-step:last-child { border-bottom: 0; }
-  .profile-switch { width: 96px; }
+  /* 页头这一行还有「新建 / 删除」，132px 在 390 上会把按钮挤到第二行。 */
+  .profile-switch { width: 104px; }
   /* 表单在窄屏一律竖排：并排的输入框会被压到只剩占位符宽度。 */
   .settings-form { padding-left: 0; }
   .field-row { flex-direction: column; }
@@ -1159,16 +1325,113 @@ table.tbl td.actions .n-button:focus-visible { opacity: 1; }
   .settings-main { max-width: none; }
   /* 页脚跟着正文的内边距走，否则手机上会和卡片左边缘错开 8px。 */
   .app-foot { padding: 16px 12px 18px; }
+  /* 窄屏改为横向流：分组标题缩成行首的一枚小标签（每组自带换行），
+     靠「标签 + 竖线」而不是留白来读出分组。 */
   .settings-nav {
-    position: static; flex-direction: row; flex-wrap: wrap; gap: 2px;
+    position: static; flex-direction: row; flex-wrap: wrap; gap: 6px;
     padding: 5px;
   }
-  .settings-nav .sn-title { display: none; }
+  .settings-nav .sn-group { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 2px; }
+  .settings-nav .sn-group + .sn-group { padding-top: 0; border-top: 0; }
+  .settings-nav .sn-title {
+    align-self: stretch; display: flex; align-items: center; justify-content: flex-start;
+    /* 定宽：三组标签字数是 2/3/2，不定宽的话三条 chip 行会各偏几像素，右边缘对不齐。 */
+    min-width: 44px;
+    padding: 0 8px 0 3px; margin-right: 2px;
+    border-right: 1px solid var(--divider);
+    letter-spacing: 0.04em;
+  }
   .settings-nav .sn-item { width: auto; white-space: nowrap; padding: 6px 9px; }
-  .tbl-wrap { max-height: 72vh; }
+  /* 手机上只留一个滚动轴。桌面靠「容器内滚动 + 粘性表头」把长表关在卡片里，
+     这套在触屏上是反的：手指落在表上，页面立刻停住改成滚表；滑到表尾又因为
+     overscroll-behavior: contain 不接力，后半页再也滚不到。窄屏改成表格横向可拖、
+     纵向交给页面本身，代价是表头不再粘住（表格本来就矮，且窄屏已隐藏次要列）。 */
+  .tbl-wrap {
+    max-height: none; overflow-x: auto; overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  table.tbl thead th { position: static; }
 }
 
 @media (max-width: 480px) {
   .topbar-crumb span:first-child, .topbar-crumb svg:first-of-type { display: none; }
   .page-intro h1 { font-size: 20px; }
+}
+
+/* ---------- 触屏手感（手机） ----------
+   这一层只管「按下去有没有回应、滑动归谁管」，不动任何层级与尺寸。 */
+
+/* 系统默认的灰色点按块在深色主题里像一块脏斑，而且在整行可点的列表上会闪满一行；
+   按压反馈交给下面的 :active 自己画。 */
+* { -webkit-tap-highlight-color: transparent; }
+
+/* 高频触点逐个声明 touch-action：body 已有同值兜底，但 iOS 对祖先链合成
+   的支持有历史坑，交互元素还是自己写一遍靠得住。只关双击缩放，捏合保留。 */
+button, a, [role='button'], .tabbar-item, .nav-item, .list-item.tap,
+.target-item, .client-pill.pill-link, .settings-nav .sn-item { touch-action: manipulation; }
+
+/* 容器内滚动沿用系统惯性；代码块与客户端选择器还额外关掉滚动接力，
+   否则滑到边界会顺手把页面也带跑。 */
+.code-view, .target-scroll, .nav, .n-drawer-body-content-wrapper {
+  -webkit-overflow-scrolling: touch;
+}
+.code-view, .target-scroll { overscroll-behavior: contain; }
+
+/* 只在无悬停设备上常驻按压态：桌面上鼠标按下会闪一下底色，和 hover 过渡打架。 */
+@media (hover: none) {
+  /* 触屏没有 hover，按下去必须有立刻可见的回应，否则连点两下会像没生效。 */
+  .tabbar-item:active { background: var(--surface-3); }
+  .tabbar-item.active:active { background: color-mix(in srgb, var(--accent) 17%, transparent); }
+  .nav-item:active,
+  .list-item.tap:active,
+  .target-item:active,
+  .settings-nav .sn-item:active { background: var(--surface-3); }
+  .client-pill.pill-link:active { color: var(--accent); }
+
+  /* 长按在手机上默认等于「选中文字」：落在整行可点的列表上，会弹选择菜单把滑动打断。
+     正文、表格、代码仍然可选。 */
+  .tabbar, .topbar, .side-foot, .settings-nav,
+  .list-item.tap, .target-item, .client-pill { -webkit-user-select: none; user-select: none; }
+
+  /* 浏览器在触屏上仍会执行 :hover，并把状态钉在「最后一次点过的地方」：
+     点完一行，灰底一直停在那行直到点别处，读起来像页面卡住。
+     悬停底色是给鼠标准备的，触屏一律撤掉——按压反馈交给上面的 :active。 */
+  table.tbl tbody tr:hover { background: transparent; }
+  .list-item:hover, .pipeline-step:hover,
+  .target-item:hover, .settings-nav .sn-item:hover,
+  .nav-item:hover, .side-profile:hover { background: transparent; }
+  /* 平板 / 触屏本（>860）侧栏可见，这两条不能漏，否则点过导航就钉一排灰底。 */
+  .nav-item:hover { color: var(--text-2); }
+  /* sn-item 的 hover 除了底色还提亮了文字，触屏同样要撤回去。 */
+  .settings-nav .sn-item:hover { color: var(--text-2); }
+  .side-profile .profile-switch:hover .n-base-selection-label { color: var(--text-2); }
+  .target-item:hover { color: var(--text-2); }
+  .target-item:hover .client-icon { transform: none; }
+  .client-pill.pill-link:hover { color: inherit; }
+  .drop-zone:hover { border-color: var(--border-strong); color: var(--text-2); background: var(--surface-2); }
+  .palette-item:hover { border-color: var(--border); }
+}
+
+@media (max-width: 860px) {
+  /* 底栏两端让开刘海：横屏才有值，竖屏为 0。 */
+  .tabbar {
+    padding-left: calc(4px + env(safe-area-inset-left));
+    padding-right: calc(4px + env(safe-area-inset-right));
+  }
+
+  /* iOS 在 font-size < 16px 的输入框获得焦点时会整页放大一次，一眼看去像「点一下页面跳了」，
+     而且松开后不会自己缩回来。只抬输入框自身的字号，标签与正文不动。 */
+  .n-input .n-input__input-el,
+  .n-input .n-input__textarea-el,
+  .n-base-selection-input { font-size: 16px; }
+
+  /* 切页只要一个「换过了」的确认，不做位移动画：0.18s 位移加卡片 0.26s 错峰接近半秒，
+     在触屏上会被读成「点了没反应」。 */
+  .page-enter-active { transition-duration: 0.1s; }
+  .page-leave-active { transition-duration: 0.06s; }
+  .page-enter-from { transform: none; }
+  .page-enter-active .stat-grid,
+  .page-enter-active .card,
+  .page-enter-active .list-item { animation: none; }
 }

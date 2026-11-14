@@ -100,6 +100,8 @@ export interface TokenView {
   target: string;
   revoked: boolean;
   createdAt: string;
+  /** 可重新复制/出二维码的完整地址；早期只存 hash 的记录为 null，需要重新签发。 */
+  url: string | null;
 }
 
 export interface ClientTargetView {
@@ -220,7 +222,7 @@ export interface WebDavProbeView {
   reason: string | null;
 }
 
-/** 运行时段：DNS / TUN。都是「整份配置级」的部署设置，与订阅内容无关。 */
+/** DNS / TUN：整份配置级的部署设置，与订阅内容无关。 */
 export interface DnsPolicyView {
   mode: 'system' | 'fake-ip' | 'redir-host';
   nameserver?: string[];
@@ -241,20 +243,20 @@ export interface RuntimePolicyView {
   dns?: DnsPolicyView;
   tun?: TunPolicyView;
 }
-/** 每个目标的运行时段能力（support / unverified / reject），用来在界面上直接说清「谁支持」。 */
+/** 每个目标对 DNS / TUN 的能力（support / unverified / reject），用来在界面上直接说清「谁支持」。 */
 export type RuntimeCapabilityView = Record<
   'dns' | 'tun' | 'fakeIp' | 'ecs' | 'enhancedMode',
   'support' | 'unverified' | 'reject'
 >;
 export interface RuntimeView {
   runtime: RuntimePolicyView | null;
-  /** 库里存的原文：解析失败时用户能看见自己存了什么。 */
-  raw: string | null;
   targets: Record<string, RuntimeCapabilityView>;
 }
 
 /** 通知渠道的界面配置：Telegram（成对）与 Bark（https url）二选一或都配。 */
 export interface NotifyConfigView {
+  /** 总开关：false = 暂停推送，但渠道配置仍然保留。缺省视为开启。 */
+  enabled?: boolean;
   botToken?: string;
   chatId?: string;
   barkUrl?: string;
@@ -348,13 +350,20 @@ export const setActiveProfile = (name: string): void => {
 
 export const getActiveProfile = (): string => activeProfile;
 
+/**
+ * 排除 / 规则 / 策略组 / DNS 都按配置存，这些读写必须带上「哪一份」。
+ * 缺省用当前活动的 Profile：漏传的调用点会落到当前配置，而不是悄悄写到 default 上。
+ */
+const withProfile = (path: string, profile: string): string =>
+  `${path}${path.includes('?') ? '&' : '?'}profile=${encodeURIComponent(profile)}`;
+
 export const api = {
   /** 匿名端点：服务端尚未设置管理令牌时返回 required=true，登录页据此切换为初始化形态。 */
   setupStatus: () =>
     request<{ required: boolean; secretRequired: boolean }>('/api/setup/status'),
   setup: (body: { token?: string; secret?: string }) => post<{ ok: boolean }>('/api/setup', body),
   health: () => request<{ ok: boolean; version: string; coreVersion: string }>('/health'),
-  state: () => request<StateView>('/api/state'),
+  state: (profile = activeProfile) => request<StateView>(withProfile('/api/state', profile)),
   nodes: (profile = activeProfile) =>
     request<{ nodes: NodeView[]; diagnostics: DiagnosticView[]; configVersion: string }>(
       `/api/nodes?profile=${encodeURIComponent(profile)}`,
@@ -365,10 +374,14 @@ export const api = {
     ),
   capabilities: () => request<{ evidence: EvidenceView[] }>('/api/capabilities'),
   diagnostics: () => request<{ reports: HistoryEntry[] }>('/api/diagnostics'),
-  rules: () => request<{ rules: InlineRuleView[] }>('/api/rules'),
-  saveRules: (rules: InlineRuleView[]) => post<{ count: number }>('/api/rules', { rules }),
-  policyGroups: () => request<{ groups: GroupView[] }>('/api/policy-groups'),
-  savePolicyGroups: (groups: GroupView[]) => post<{ count: number }>('/api/policy-groups', { groups }),
+  rules: (profile = activeProfile) =>
+    request<{ rules: InlineRuleView[] }>(withProfile('/api/rules', profile)),
+  saveRules: (rules: InlineRuleView[], profile = activeProfile) =>
+    post<{ count: number }>(withProfile('/api/rules', profile), { rules }),
+  policyGroups: (profile = activeProfile) =>
+    request<{ groups: GroupView[] }>(withProfile('/api/policy-groups', profile)),
+  savePolicyGroups: (groups: GroupView[], profile = activeProfile) =>
+    post<{ count: number }>(withProfile('/api/policy-groups', profile), { groups }),
   trace: (profile = activeProfile) =>
     request<{ configVersion: string; steps: TraceStepView[] }>(
       `/api/trace?profile=${encodeURIComponent(profile)}`,
@@ -409,10 +422,10 @@ export const api = {
     request<{
       value: NotifyConfigView | null;
       envDefaults: { telegram?: { botToken: string; chatId: string }; bark?: { url: string } } | null;
-      effective: { telegram?: { botToken: string; chatId: string }; bark?: { url: string } } | null;
+      effective: { enabled?: boolean; telegram?: { botToken: string; chatId: string }; bark?: { url: string } } | null;
     }>('/api/settings/notify'),
   saveNotify: (notify: NotifyConfigView | null) =>
-    request<{ ok: boolean; notify: unknown }>('/api/settings/notify', {
+    request<{ ok: boolean; value: unknown }>('/api/settings/notify', {
       method: 'PUT',
       body: JSON.stringify({ notify }),
     }),
@@ -484,7 +497,13 @@ export const api = {
       entries: [],
     }),
   removeProfile: (name: string) =>
-    request<{ ok: boolean; revoked: number }>(`/api/profiles/${encodeURIComponent(name)}`, {
+    request<{
+      ok: boolean;
+      /** 随删除一并回收的配置级数据：与删源 / 删组合的 detached 口径一致。 */
+      detached: { rules: number; annotations: number; groupOverrides: number };
+      /** 因此失效的订阅地址条数。 */
+      revoked: number;
+    }>(`/api/profiles/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     }),
   /** 轮换管理令牌；环境变量提供令牌时后端会拒绝（409 admin-token-from-env）。 */
@@ -502,13 +521,15 @@ export const api = {
   /** 单次构建回执（构建历史 / 诊断详情）。 */
   buildReport: (buildId: string) =>
     request<BuildReportView>(`/api/diagnostics?buildId=${encodeURIComponent(buildId)}`),
-  saveAnnotation: (annotation: AnnotationView) => post<{ ok: boolean }>('/api/annotations', annotation),
-  createToken: (target: string) =>
-    post<{ id: string; url: string; token: string }>('/api/tokens', { profile: activeProfile, target }),
-  /** 运行时段（DNS / TUN）：整份配置级设置，改了会换 configVersion 与 ETag。 */
-  runtime: () => request<RuntimeView>('/api/runtime'),
-  saveRuntime: (runtime: RuntimePolicyView | null) =>
-    request<{ ok: boolean; runtime: RuntimePolicyView | null }>('/api/runtime', {
+  saveAnnotation: (annotation: AnnotationView, profile = activeProfile) =>
+    post<{ ok: boolean }>(withProfile('/api/annotations', profile), annotation),
+  /** 重新签发旧地址时要指定它原本所属的 Profile，不能跟着当前上下文漂。 */
+  createToken: (target: string, profile: string = activeProfile) =>
+    post<{ id: string; url: string; token: string }>('/api/tokens', { profile, target }),
+  /** DNS / TUN：跟着配置走，改了只换那一份的 configVersion 与 ETag。 */
+  runtime: (profile = activeProfile) => request<RuntimeView>(withProfile('/api/runtime', profile)),
+  saveRuntime: (runtime: RuntimePolicyView | null, profile = activeProfile) =>
+    request<{ ok: boolean; runtime: RuntimePolicyView | null }>(withProfile('/api/runtime', profile), {
       method: 'PUT',
       body: JSON.stringify({ runtime }),
     }),

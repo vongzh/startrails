@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createApp } from '../src/server/app.ts';
+import { hashToken } from '../src/store/crypto.ts';
 import { openStore } from '../src/store/sqlite.ts';
 
 /**
@@ -66,7 +67,7 @@ interface StateShape {
   sources: { id: string; kind: string }[];
   collections: { id: string; name: string; members: { sourceId: string }[]; order: number }[];
   profiles: { name: string; entries: { kind: string; id: string }[] }[];
-  tokens: { id: string; profile: string; target: string; revoked: boolean }[];
+  tokens: { id: string; profile: string; target: string; revoked: boolean; url: string | null }[];
 }
 
 const stateOf = async (harness: Harness): Promise<StateShape> =>
@@ -357,6 +358,40 @@ test('空 Profile 拒绝签发；Profile 可新建可删除，删除会撤销绑
   assert.equal(((await last.json()) as { error: string }).error, 'last-profile');
 });
 
+test('已签发地址可回读链接与二维码；早期只有 hash 的记录不编假链接', async (t) => {
+  const harness = await boot();
+  t.after(() => harness.close());
+
+  await harness.call('/api/sources', 'POST', { id: 'token-src', kind: 'inline', content: subscription });
+  await harness.call('/api/profiles', 'POST', {
+    name: 'default',
+    entries: [{ kind: 'source', id: 'token-src' }],
+  });
+
+  const issued = await harness.call('/api/tokens', 'POST', { profile: 'default', target: 'surge' });
+  assert.equal(issued.status, 201);
+  const created = (await issued.json()) as { id: string; url: string };
+
+  // 台账要能重看，而不是只在签发响应里出现一次。
+  let state = await stateOf(harness);
+  const row = state.tokens.find((item) => item.id === created.id);
+  assert.equal(row?.url, created.url, '/api/state 必须能还原订阅地址');
+  assert.equal((await fetch(`${created.url}`)).status, 200, '还原出来的地址要真的能拉');
+  assert.equal((await fetch(`${created.url}/qr.svg`)).status, 200, '二维码也要能重新取');
+
+  // 早期版本只落 token_hash：这类记录必须如实返回 null，前端才知道要提示重签发。
+  harness.store.createToken({
+    id: 'legacy-token',
+    tokenHash: hashToken('legacy-plain-token'),
+    profile: 'default',
+    target: 'surge',
+    revoked: false,
+    createdAt: new Date().toISOString(),
+  });
+  state = await stateOf(harness);
+  assert.equal(state.tokens.find((item) => item.id === 'legacy-token')?.url, null);
+});
+
 test('管理令牌轮换：短令牌与相同令牌被拒，换后旧令牌立刻失效', async (t) => {
   // 轮换只对「首次设置写进库」的令牌有意义；环境变量令牌的路径另有一条测试。
   const harness = await boot({ adminToken: undefined });
@@ -422,6 +457,39 @@ test('通知测试：未配置回 400，配置不通时按渠道回报原因', a
   assert.equal(body.results[0]?.channel, 'bark');
   assert.equal(body.results[0]?.ok, false);
   assert.ok((body.results[0]?.error ?? '').length > 0, '要说清是哪一步不通');
+});
+
+test('通知总开关：关掉后 /api/ops 报未启用，但渠道配置原样保留', async (t) => {
+  const harness = await boot();
+  t.after(() => harness.close());
+
+  const paused = await harness.call('/api/settings/notify', 'PUT', {
+    notify: { enabled: false, botToken: '123:abc', chatId: '-100' },
+  });
+  assert.equal(paused.status, 200);
+
+  const ops = (await (await harness.call('/api/ops', 'GET')).json()) as {
+    notify: { enabled: boolean; channels: string[] };
+  };
+  assert.equal(ops.notify.enabled, false, '总开关关掉后不该再有生效渠道');
+  assert.deepEqual(ops.notify.channels, []);
+
+  // 关键：暂停不等于清除。token 还在库里，界面重新打开开关就能直接恢复，不用重填。
+  const stored = (await (await harness.call('/api/settings/notify', 'GET')).json()) as {
+    value: { enabled?: boolean; botToken?: string; chatId?: string } | null;
+  };
+  assert.equal(stored.value?.enabled, false);
+  assert.equal(stored.value?.botToken, '123:abc');
+  assert.equal(stored.value?.chatId, '-100');
+
+  await harness.call('/api/settings/notify', 'PUT', {
+    notify: { enabled: true, botToken: '123:abc', chatId: '-100' },
+  });
+  const resumed = (await (await harness.call('/api/ops', 'GET')).json()) as {
+    notify: { enabled: boolean; channels: string[] };
+  };
+  assert.equal(resumed.notify.enabled, true);
+  assert.deepEqual(resumed.notify.channels, ['telegram']);
 });
 
 test('WebDAV 测试：不可达时报原因，未配置时回 400', async (t) => {
@@ -530,4 +598,77 @@ test('编辑源：明文回填、只改名不破坏链接、空值与格式清�
   );
   assert.equal((await harness.call('/api/sources/local-edit', 'PUT', { refreshPolicy: '2h' })).status, 200);
   assert.equal(harness.store.getSource('local-edit')?.refreshPolicy, undefined);
+});
+
+/**
+ * 脱敏防线不止 `***`：redact() 还会把路径里的 32 位 hex 截成 `abcdef01…`，
+ * 代理地址里的凭据同样是脱敏目标。POST / PUT 两侧都要挡住；但库里若已经被旧版
+ * 写坏，用户至少要还能停用、改名，不能被这道防线锁死。
+ */
+test('源编辑：脱敏值全形态拒绝、代理同样受保护、坏链接仍可停用', async (t) => {
+  const harness = await boot({ adminToken: 'redact-admin', allowPrivate: true });
+  t.after(() => harness.close());
+
+  const url = 'http://127.0.0.1:1/sub/abcdef0123456789abcdef0123456789';
+  const create = (body: unknown) => harness.call('/api/sources', 'POST', body);
+  const put = (body: unknown) => harness.call('/api/sources/guarded', 'PUT', body);
+  const errorOf = async (response: Response): Promise<string> =>
+    ((await response.json()) as { error: string }).error;
+
+  for (const bad of [
+    'http://127.0.0.1:1/sub?token=***',
+    'http://127.0.0.1:1/sub/abcdef01\u2026',
+  ]) {
+    const response = await create({ kind: 'remote', url: bad });
+    assert.equal(response.status, 400, `POST 必须拒绝脱敏链接：${bad}`);
+    assert.equal(await errorOf(response), 'redacted-url-rejected');
+  }
+  const badProxy = await create({
+    kind: 'remote',
+    url,
+    proxy: 'socks5://alice:***@127.0.0.1:1080',
+  });
+  assert.equal(badProxy.status, 400);
+  assert.equal(await errorOf(badProxy), 'redacted-proxy-rejected');
+
+  assert.equal((await create({ id: 'guarded', kind: 'remote', url, format: 'clash-yaml' })).status, 201);
+
+  const ellipsis = await put({ url: 'http://127.0.0.1:1/sub/abcdef01\u2026' });
+  assert.equal(ellipsis.status, 400);
+  assert.equal(await errorOf(ellipsis), 'redacted-url-rejected');
+  const staleProxy = await put({ proxy: 'socks5://alice:***@127.0.0.1:1080' });
+  assert.equal(staleProxy.status, 400);
+  assert.equal(await errorOf(staleProxy), 'redacted-proxy-rejected');
+  assert.equal(harness.store.getSource('guarded')?.url, url, '被拒的请求不能改动库');
+
+  // 非法值要报错，不能静默当成「清除」或「忽略」后回 200。
+  const badFormat = await put({ format: 'clash' });
+  assert.equal(badFormat.status, 400);
+  assert.equal(await errorOf(badFormat), 'invalid-source-format');
+  const badEnabled = await put({ enabled: 'yes' });
+  assert.equal(badEnabled.status, 400);
+  assert.equal(await errorOf(badEnabled), 'invalid-enabled');
+  assert.equal(harness.store.getSource('guarded')?.format, 'clash-yaml');
+
+  // 本地源：空正文不能假装保存成功；旧库里遗留的自动刷新策略要顺手清掉。
+  assert.equal((await create({ id: 'local-guard', kind: 'inline', content: singleNode })).status, 201);
+  const local = harness.store.getSource('local-guard');
+  assert.ok(local);
+  harness.store.putSource({ ...local, refreshPolicy: '2h' });
+  assert.equal(harness.store.getSource('local-guard')?.refreshPolicy, '2h');
+  const emptyContent = await harness.call('/api/sources/local-guard', 'PUT', { content: '' });
+  assert.equal(emptyContent.status, 400);
+  assert.equal(await errorOf(emptyContent), 'content-required');
+  assert.equal((await harness.call('/api/sources/local-guard', 'PUT', { name: '本地改名' })).status, 200);
+  assert.equal(harness.store.getSource('local-guard')?.refreshPolicy, undefined);
+
+  // 库里已被旧版写坏：不带 url 的停用要放行，带脱敏 url 的保存依然拒绝。
+  const current = harness.store.getSource('guarded');
+  assert.ok(current);
+  harness.store.putSource({ ...current, url: 'http://127.0.0.1:1/sub?token=***' });
+  assert.equal((await put({ enabled: false })).status, 200);
+  assert.equal(harness.store.getSource('guarded')?.enabled, false);
+  const stillBroken = await put({ url: 'http://127.0.0.1:1/sub?token=***' });
+  assert.equal(stillBroken.status, 400);
+  assert.equal(await errorOf(stillBroken), 'redacted-url-rejected');
 });

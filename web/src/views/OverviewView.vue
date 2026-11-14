@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowRight, Check, ChevronRight, Layers, Send, Server, I
 import { formatDuration, reasonLabel, STAGE_LABELS, severityOf, timeAgo } from '../format';
 import ClientIcon from '../components/ClientIcon.vue';
 import {
+  activeProfileName,
   allDiagnostics,
   clientNameOf,
   collections,
@@ -14,14 +15,20 @@ import {
   preview,
   profileEntries,
   groups,
+  openSettingsSection,
+  configSection,
   rules,
   sourceNameMap,
   sources,
   state,
   tab,
 } from '../workspace';
+import type { Tab } from '../workspace';
 
-const tokens = computed(() => state.value?.tokens ?? []);
+// 概览只汇报当前配置：/api/state 回的是全实例令牌，别的配置签了多少不该出现在这里。
+const tokens = computed(() =>
+  (state.value?.tokens ?? []).filter((item) => item.profile === activeProfileName.value),
+);
 const activeTokens = computed(() => tokens.value.filter((item) => !item.revoked));
 /**
  * 同一客户端可以签出多条地址（发布弹窗会提示「已有 N 条，再生成不会让旧的失效」），
@@ -64,6 +71,10 @@ const nodeNameByKey = computed(() => new Map(nodes.value.map((node) => [node.nod
 const sourceIssues = computed(() =>
   sources.value.filter((item) => item.enabled && (item.snapshotStale || item.lastError !== null)).length,
 );
+
+/** 订阅页把「订阅」与「我的节点」拆成了两张表，概览的计数必须跟着拆，否则点过去数字会变。 */
+const subscriptionCount = computed(() => sources.value.filter((item) => item.kind !== 'inline').length);
+const nodeGroupCount = computed(() => sources.value.filter((item) => item.kind === 'inline').length);
 
 interface AttentionRow {
   subject: string;
@@ -108,7 +119,9 @@ const rows = computed<AttentionRow[]>(() => {
     if (!source.enabled) continue;
     if (source.snapshotStale) {
       // 静默用旧数据比直接失败更难被发现，所以优先级最高，绝不能被前 4 条截断掉。
-      push(source.id, `回退旧快照 · ${formatDuration(source.snapshotAgeMs ?? 0)}`, 'ingest', 5);
+      // 措辞跟订阅页的状态列保持一致：有上游错误是「旧快照」，只是超时是「已过期」。
+      const label = source.lastError !== null ? '旧快照' : '已过期';
+      push(source.id, `${label} · ${formatDuration(source.snapshotAgeMs ?? 0)}`, 'ingest', 5);
     } else if (source.lastError !== null && !ingested.has(source.id)) {
       push(source.id, `拉取失败 · ${source.lastError}`, 'ingest', 4);
     }
@@ -119,19 +132,33 @@ const rows = computed<AttentionRow[]>(() => {
 
 const attention = computed(() => rows.value.slice(0, 4));
 
+/** 节点与规则现在都在「配置」页，点卡片要连分段一起切，否则落到默认的「构成」段。 */
+function openStep(step: { goto: Tab; section?: 'composition' | 'nodes' | 'rules' | 'runtime' }): void {
+  if (step.section !== undefined) configSection.value = step.section;
+  tab.value = step.goto;
+}
+
 const pipeline = computed(() => [
   {
     key: 'sources' as const,
-    label: '订阅源',
+    label: '订阅',
+    goto: 'sources' as const,
     icon: Inbox,
-    value: sources.value.length,
+    value: subscriptionCount.value,
     unit: '个',
-    foot: `${collections.value.length} 个组合订阅${sourceIssues.value > 0 ? ` · ${sourceIssues.value} 个异常` : ''}${sourceErrors.value > 0 ? ` · ${sourceErrors.value} 个停用` : ''}`,
+    foot: [
+      ...(nodeGroupCount.value > 0 ? [`${nodeGroupCount.value} 组我的节点`] : []),
+      `${collections.value.length} 个组合订阅`,
+      ...(sourceIssues.value > 0 ? [`${sourceIssues.value} 个异常`] : []),
+      ...(sourceErrors.value > 0 ? [`${sourceErrors.value} 个停用`] : []),
+    ].join(' · '),
     state: sources.value.length === 0 || sourceIssues.value > 0 ? 'warn' : 'ok',
   },
   {
     key: 'nodes' as const,
     label: '节点',
+    goto: 'config' as const,
+    section: 'nodes' as const,
     icon: Server,
     value: nodes.value.length,
     unit: '个',
@@ -141,6 +168,8 @@ const pipeline = computed(() => [
   {
     key: 'rules' as const,
     label: '规则',
+    goto: 'config' as const,
+    section: 'rules' as const,
     icon: Layers,
     value: rules.value.length,
     unit: '条',
@@ -150,6 +179,7 @@ const pipeline = computed(() => [
   {
     key: 'publish' as const,
     label: '发布',
+    goto: 'publish' as const,
     icon: Send,
     value: activeTokens.value.length,
     unit: '个地址',
@@ -174,23 +204,23 @@ const pipeline = computed(() => [
         <p class="start-lede">
           {{
             sources.length === 0
-              ? '先接入一个订阅来源：远端链接或上传文件都可以。'
-              : '来源已经接入，但当前 Profile 构成里没有解析出节点 —— 把源加进构成并保存即可。'
+              ? '先接入一个订阅（远端链接或上传文件），或者直接填几条自己的节点。'
+              : '订阅已经接入，但发布页的配置构成里没有解析出节点 —— 把它加入构成并保存即可。'
           }}
         </p>
         <div class="start-steps">
           <div class="start-step" :class="{ done: sources.length > 0 }">
             <span class="start-num">1</span>
             <div>
-              <b>接入来源</b>
-              <p>订阅链接 / 文件 / 粘贴，自动识别 Clash、sing-box、Surge、base64 等格式。</p>
+              <b>接入订阅或节点</b>
+              <p>订阅链接、上传文件会自动识别 Clash、sing-box、Surge、base64；自己常用的几条也可以直接填。</p>
             </div>
           </div>
           <div class="start-step" :class="{ done: profileEntries.length > 0 }">
             <span class="start-num">2</span>
             <div>
               <b>加入构成</b>
-              <p>决定哪些源参与本次构建，顺序即合并顺序；可先按源过滤、加前缀、去重。</p>
+              <p>在发布页划清这份配置包含哪些订阅与节点，顺序即合并顺序；可先按源过滤、加前缀、去重。</p>
             </div>
           </div>
           <div class="start-step" :class="{ done: activeTokens.length > 0 }">
@@ -202,8 +232,8 @@ const pipeline = computed(() => [
           </div>
         </div>
         <div class="row" style="margin-top: 14px">
-          <n-button size="small" type="primary" @click="tab = 'sources'">
-            {{ sources.length === 0 ? '添加订阅源' : '去配置构成' }}
+          <n-button size="small" type="primary" @click="tab = sources.length === 0 ? 'sources' : 'publish'">
+            {{ sources.length === 0 ? '添加订阅' : '去配置构成' }}
             <template #icon><ArrowRight :size="14" /></template>
           </n-button>
           <span class="text-3" style="font-size: 12px">
@@ -219,7 +249,7 @@ const pipeline = computed(() => [
         :key="step.key"
         class="stat pipeline-step"
         style="text-align: left; border: 0; border-right: 1px solid var(--divider); background: transparent; cursor: pointer"
-        @click="tab = step.key"
+        @click="openStep(step)"
       >
         <div class="stat-label">
           <span class="dot" :class="step.state"></span>
@@ -237,7 +267,7 @@ const pipeline = computed(() => [
           <h2>需要关注</h2>
           <span class="count">{{ attention.length }}/{{ rows.length }}</span>
           <div class="spacer"></div>
-          <n-button size="tiny" quaternary @click="tab = 'diagnostics'">
+          <n-button size="tiny" quaternary @click="openSettingsSection('diagnostics')">
             全部诊断
             <template #icon><ArrowRight :size="13" /></template>
           </n-button>
@@ -266,7 +296,7 @@ const pipeline = computed(() => [
           <div class="card-head">
             <h2>最近构建</h2>
             <div class="spacer"></div>
-            <n-button size="tiny" quaternary @click="tab = 'diagnostics'">
+            <n-button size="tiny" quaternary @click="openSettingsSection('diagnostics')">
               记录
               <template #icon><ArrowRight :size="13" /></template>
             </n-button>

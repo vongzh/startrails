@@ -45,7 +45,7 @@ import type { PersistedCollection, PersistedProfile, PersistedSource, Store } fr
 import { SnapshotCache } from './cache.ts';
 import { dueSourceIds, parseRefreshPolicy } from './schedule.ts';
 import { BuildCache } from './build-cache.ts';
-import { redact, redactDiagnostic } from './redact.ts';
+import { hasRedactionMarkers, redact, redactDiagnostic } from './redact.ts';
 import { assertPublicUrl, fetchSnapshot } from './url-guard.ts';
 import { parseProxyUrl } from './proxy-fetch.ts';
 import { createNotifier, sendTestNotify } from './notify.ts';
@@ -157,8 +157,7 @@ const MIME: Readonly<Record<string, string>> = {
   '.ico': 'image/x-icon',
 };
 
-/** app_setting 里运行时段设置的行键。字符串常量集中一处，避免读写两处拼错。 */
-const SETTING_RUNTIME = 'runtime';
+/** app_setting 里实例级设置的行键。字符串常量集中一处，避免读写两处拼错。 */
 const SETTING_NOTIFY = 'notify';
 const SETTING_WEBDAV = 'webdav';
 
@@ -384,10 +383,13 @@ const buildFilter = (raw: Record<string, unknown>): MemberFilter | undefined => 
 /**
  * 通知配置解析：只认 Telegram（botToken+chatId 成对）与 Bark（合法 https url），
  * 两者至少一个；多余字段丢弃。解析失败返回 null。
+ * `enabled` 是总开关：false 时不推送但保留渠道配置，所以它要和渠道一起落库。
  */
 const parseNotifyConfig = (raw: unknown): NotifyConfig | null => {
   if (typeof raw !== 'object' || raw === null) return null;
   const record = raw as Record<string, unknown>;
+  const enabledRaw = record['enabled'];
+  const paused = enabledRaw === false;
   const tgToken = asString(record['botToken']);
   const tgChat = asString(record['chatId']);
   const telegram =
@@ -406,8 +408,25 @@ const parseNotifyConfig = (raw: unknown): NotifyConfig | null => {
   }
   if (telegram === undefined && bark === undefined) return null;
   return {
+    ...(paused ? { enabled: false } : {}),
     ...(telegram === undefined ? {} : { telegram }),
     ...(bark === undefined ? {} : { bark }),
+  };
+};
+
+/**
+ * 落库是嵌套结构（`telegram` / `bark` 各自成对象），界面用的是扁平字段。
+ * 读接口必须摊平回扁平形态，否则「保存 → 切走 → 切回来」表单读到的是 undefined，
+ * 全空表单再点保存就会把刚配好的渠道清掉。
+ */
+const notifyViewOf = (config: NotifyConfig | null): Record<string, unknown> | null => {
+  if (config === null) return null;
+  return {
+    enabled: config.enabled !== false,
+    ...(config.telegram === undefined
+      ? {}
+      : { botToken: config.telegram.botToken, chatId: config.telegram.chatId }),
+    ...(config.bark === undefined ? {} : { barkUrl: config.bark.url }),
   };
 };
 
@@ -507,20 +526,6 @@ export function createApp(options: AppOptions): App {
    * 配置指纹里必须剔除「运行态」字段（最近拉取时间 / 错误 / 流量信息 / 上游建议间隔）。
    * 否则每拉一次上游就换一次版本号 → ETag 永远对不上，L2/L3 缓存全部失效。
    */
-  /**
-   * 运行时段是「整份配置级」设置，存 app_setting 的 JSON 里。
-   * 解析失败按「没有设置」处理并保留原文：宁可不出 DNS 段，也不要因为一段坏 JSON 让整个服务起不来。
-   */
-  const runtimePolicy = (): RuntimePolicy | undefined => {
-    const raw = store.getSetting(SETTING_RUNTIME);
-    if (raw === undefined) return undefined;
-    try {
-      return parseRuntime(JSON.parse(raw) as unknown);
-    } catch {
-      return undefined;
-    }
-  };
-
   const stripRuntime = (source: PersistedSource): Omit<PersistedSource, 'lastFetchedAt' | 'lastError' | 'userinfo' | 'suggestedRefreshHours'> => {
     const { lastFetchedAt, lastError, userinfo, suggestedRefreshHours, ...definition } = source;
     void lastFetchedAt;
@@ -530,19 +535,51 @@ export function createApp(options: AppOptions): App {
     return definition;
   };
 
-  const configVersion = (): string =>
-    sha256(
+  /**
+   * 指纹按配置算，不按实例算：改 A 的排除、规则或 DNS，不该让 B 的客户端判定产物过期而重新拉。
+   * 源与组合订阅也只统计这份配置实际引用的闭包（直接引用的源 + 引用组合的成员源）——
+   * 改一个没被任何配置引用的源，谁的产物都不该换版本。
+   */
+  const configVersion = (profileId: string): string => {
+    const definition = store.listProfiles().find((item) => item.id === profileId) ?? null;
+    const collections = store.listCollections();
+    const collectionById = new Map(collections.map((collection) => [collection.id, collection]));
+    const sources = new Map(store.listSources().map((source) => [source.id, source]));
+    const referencedCollections = new Set<string>();
+    const referencedSources = new Set<string>();
+    for (const entry of definition?.entries ?? []) {
+      if (entry.kind === 'collection') {
+        referencedCollections.add(entry.id);
+        for (const member of collectionById.get(entry.id)?.members ?? []) referencedSources.add(member.sourceId);
+      } else {
+        referencedSources.add(entry.id);
+      }
+    }
+    return sha256(
       JSON.stringify({
-        sources: store.listSources().map(stripRuntime),
-        collections: store.listCollections(),
-        profiles: store.listProfiles(),
-        annotations: store.listAnnotations(),
-        rules: store.listRules(),
-        groups: store.listGroupOverrides(),
-        // 运行时段也是配置态：改了 DNS 就必须换 configVersion，否则 L2/L3 与客户端 304 都会命中旧产物。
-        runtime: store.getSetting(SETTING_RUNTIME) ?? null,
+        // Set 按插入序遍历（entries 顺序 + 组合成员顺序），同一份库数据算出的指纹稳定。
+        sources: [...referencedSources].flatMap((id) => {
+          const source = sources.get(id);
+          return source === undefined ? [] : [stripRuntime(source)];
+        }),
+        collections: [...referencedCollections].flatMap((id) => {
+          const collection = collectionById.get(id);
+          return collection === undefined ? [] : [collection];
+        }),
+        profile: definition,
+        annotations: store.listAnnotations(profileId),
+        rules: store.listRules(profileId),
+        groups: store.listGroupOverrides(profileId),
       }),
     ).slice(0, 16);
+  };
+
+  /**
+   * /health 没有配置上下文：把每份配置的版本拼起来再取 hash，
+   * 任一配置变了都算实例版本变了，探活侧不需要知道有几种配置。
+   */
+  const instanceVersion = (): string =>
+    sha256(store.listProfiles().map((profile) => configVersion(profile.id)).join('|')).slice(0, 16);
 
   const listProfiles = (): readonly PersistedProfile[] => store.listProfiles();
 
@@ -724,7 +761,7 @@ export function createApp(options: AppOptions): App {
       }
     }
 
-    const version = configVersion();
+    const version = configVersion(definition.id);
     // irKey / ETag 只由「不跑 Ingest 就能算出」的量组成：配置版本 + 上游 body hash。
     const irKey = sha256([version, ...snapshots.map((s) => `${s.id}:${sha256(s.body)}`)].join('|'));
     const etag = `"${sha256(`${version}:${irKey}`).slice(0, 32)}"`;
@@ -850,10 +887,15 @@ export function createApp(options: AppOptions): App {
     };
   };
 
-  /** 用户持久化意图注入解析产物：内联规则集 + 策略组顺序覆盖。 */
-  const withOverrides = (profile: Readonly<Profile>): Profile => {
-    const rules = store.listRules();
-    const overrides = store.listGroupOverrides();
+  /**
+   * 用户持久化意图注入解析产物：内联规则 + 策略组 + 运行时段，三者都按配置取。
+   *
+   * 策略组是「整份替换」而不是逐条合并：保存时前端交回的就是这份配置当前显示的完整组清单，
+   * 存下来的也就是它。按配置隔离之后，替换只影响自己那份，不会再吃掉别的配置的组。
+   */
+  const withOverrides = (profile: Readonly<Profile>, definition: PersistedProfile): Profile => {
+    const rules = store.listRules(definition.id);
+    const overrides = store.listGroupOverrides(definition.id);
     const ruleSources: RuleSource[] = [...profile.ruleSources];
     if (rules.length > 0) ruleSources.push({ kind: 'inline', rules });
     const policyGroups: PolicyGroup[] =
@@ -862,12 +904,11 @@ export function createApp(options: AppOptions): App {
             .sort((left, right) => left.order - right.order)
             .map((override) => ({ name: override.name, members: override.members }))
         : [...profile.policyGroups];
-    const runtime = runtimePolicy();
     return parseProfile({
       nodes: [...profile.nodes],
       ruleSources,
       policyGroups,
-      ...(runtime === undefined ? {} : { runtime }),
+      ...(definition.runtime === undefined ? {} : { runtime: definition.runtime }),
     });
   };
 
@@ -938,21 +979,22 @@ export function createApp(options: AppOptions): App {
     queryFilter?: MemberFilter,
     eager = true,
   ): Promise<BuiltState> => {
+    // 标注按配置取，命中 L3 缓存时也要能拿到，所以 definition 提到分支外面。
+    const definition = findProfile(state.profileName);
+    if (definition === undefined) throw new Error('profile-not-found');
     // eager=false 的产物不含镜像后的规则集 URL，不能进 L3，否则会污染订阅渲染的缓存。
     let configured = eager ? buildCache.getL3(state.irKey) : undefined;
     const diagnostics: Diagnostic[] = [...state.diagnostics];
     if (configured === undefined) {
-      const definition = findProfile(state.profileName);
-      if (definition === undefined) throw new Error('profile-not-found');
       const composed = composeProfile(definition, state.snapshots);
-      configured = await withRuleSetMirror(withOverrides(composed.profile), eager);
+      configured = await withRuleSetMirror(withOverrides(composed.profile, definition), eager);
       diagnostics.push(...composed.diagnostics);
       if (eager) buildCache.setL3(state.irKey, configured);
     }
     const trace = traceProcessors(
       configured,
       { configVersion: state.configVersion },
-      [applyAnnotations(store.listAnnotations())],
+      [applyAnnotations(store.listAnnotations(definition.id))],
     );
     let final: Profile = trace.final;
     if (queryFilter !== undefined) {
@@ -1330,8 +1372,11 @@ export function createApp(options: AppOptions): App {
     }
 
     if (method === 'GET' && pathname === '/api/state') {
+      // 首屏接口：配置名写错不该让整个后台登不进去，回落到 default 而不是 404。
+      const requested = url.searchParams.get('profile') ?? 'default';
+      const definition = findProfile(requested) ?? findProfile('default');
       sendJson(res, 200, {
-        version: configVersion(),
+        version: definition === undefined ? instanceVersion() : configVersion(definition.id),
         coreVersion: CORE_VERSION,
         sources: store.listSources().map(sourceView),
         collections: store.listCollections().map((collection) => ({
@@ -1339,13 +1384,28 @@ export function createApp(options: AppOptions): App {
           previewCount: composeCollection(collection, offlineNodesOf(collection)).nodes.length,
         })),
         profiles: store.listProfiles(),
-        annotations: store.listAnnotations(),
+        // 标注按配置回：前端拿它标记排除与别名，拿错一份就会显示成另一份配置的取舍。
+        annotations: definition === undefined ? [] : store.listAnnotations(definition.id),
         tokens: store.listTokens().map((token) => ({
           id: token.id,
           profile: token.profile,
           target: token.target,
           revoked: token.revoked,
           createdAt: token.createdAt,
+          /**
+           * 台账要能重新复制链接、扫二维码，而不只是签发那一次。
+           * 早期记录库里只有 hash、还原不出 token：url 为 null，前端提示重新签发。
+           */
+          url:
+            token.token === undefined
+              ? null
+              : absoluteUrlOf(
+                  req,
+                  token.target === 'auto'
+                    ? `/s/${token.token}`
+                    : `/s/${token.token}/${token.profile}/${token.target}`,
+                  '',
+                ),
         })),
         targets: CLIENT_TARGETS,
         sourceFormats: SOURCE_FORMATS,
@@ -1459,8 +1519,15 @@ export function createApp(options: AppOptions): App {
     }
 
     if (pathname === '/api/rules') {
+      // 内联规则按配置存：它的 policy 字段引用的是这份配置的策略组，跟着配置走才不会悬空。
+      const profileName = url.searchParams.get('profile') ?? 'default';
+      const definition = findProfile(profileName);
+      if (definition === undefined) {
+        sendJson(res, 404, { error: 'profile-not-found' });
+        return;
+      }
       if (method === 'GET') {
-        sendJson(res, 200, { rules: store.listRules() });
+        sendJson(res, 200, { rules: store.listRules(definition.id) });
         return;
       }
       if (method === 'POST') {
@@ -1483,24 +1550,27 @@ export function createApp(options: AppOptions): App {
           });
           return;
         }
-        store.replaceRules(rules as InlineRule[]);
+        store.replaceRules(definition.id, rules as InlineRule[]);
         sendJson(res, 200, { count: rules.length });
         return;
       }
     }
 
     if (pathname === '/api/policy-groups') {
+      // 策略组属于某一份配置：脱离「哪份配置」谈它没有意义，缺省才回落 default。
+      const profileName = url.searchParams.get('profile') ?? 'default';
+      const definition = findProfile(profileName);
+      if (definition === undefined) {
+        sendJson(res, 404, { error: 'profile-not-found' });
+        return;
+      }
       if (method === 'GET') {
-        const profileName = url.searchParams.get('profile') ?? 'default';
-        const definition = findProfile(profileName);
-        const state = definition === undefined ? null : await prepareState(profileName);
-        const base =
-          state === null || definition === undefined
-            ? parseProfile({ nodes: [], ruleSources: [], policyGroups: [] })
-            : composeProfile(definition, state.snapshots).profile;
+        // prepareState 只在 profile 缺失时回 null，上面已 404 兜底，这里必然非空。
+        const state = (await prepareState(profileName)) as PreparedState;
+        const base = composeProfile(definition, state.snapshots).profile;
         sendJson(res, 200, {
-          groups: withOverrides(base).policyGroups,
-          overrides: store.listGroupOverrides(),
+          groups: withOverrides(base, definition).policyGroups,
+          overrides: store.listGroupOverrides(definition.id),
         });
         return;
       }
@@ -1525,6 +1595,7 @@ export function createApp(options: AppOptions): App {
           }
         }
         store.replaceGroupOverrides(
+          definition.id,
           parsedGroups.map((group, index) => ({ name: group.name, members: group.members, order: index })),
         );
         sendJson(res, 200, { count: parsedGroups.length });
@@ -1615,8 +1686,16 @@ export function createApp(options: AppOptions): App {
         sendJson(res, 400, { error: 'url-required' });
         return;
       }
-      if (kind !== 'remote' && (content === undefined || content.length === 0)) {
+      // 与 PUT 侧同一把尺：纯空白正文也算「没给内容」，不能靠 trim 前的 length 混过去。
+      if (kind !== 'remote' && (content === undefined || content.trim().length === 0)) {
         sendJson(res, 400, { error: 'content-required' });
+        return;
+      }
+      if (url !== undefined && hasRedactionMarkers(url)) {
+        sendJson(res, 400, {
+          error: 'redacted-url-rejected',
+          hint: '链接里是脱敏值，请粘贴完整订阅链接',
+        });
         return;
       }
       if (kind === 'remote' && url !== undefined) {
@@ -1629,12 +1708,20 @@ export function createApp(options: AppOptions): App {
       }
 
       const formatRaw = asString(body['format']);
+      if (formatRaw !== undefined && formatRaw !== '' && !isSourceFormat(formatRaw)) {
+        sendJson(res, 400, { error: 'invalid-source-format', hint: '格式须为已支持的方言，或留空自动识别' });
+        return;
+      }
       const format = formatRaw !== undefined && isSourceFormat(formatRaw) ? formatRaw : undefined;
       const ua = asString(body['ua']);
       const refreshPolicy = asString(body['refreshPolicy']);
       const proxy = proxyFrom(body['proxy']);
       if (!proxy.ok) {
         sendJson(res, 400, { error: 'invalid-proxy-url', hint: 'expect http://, https:// or socks5://host:port' });
+        return;
+      }
+      if (proxy.value !== undefined && hasRedactionMarkers(proxy.value)) {
+        sendJson(res, 400, { error: 'redacted-proxy-rejected', hint: '代理地址里是脱敏值，请重新粘贴完整地址' });
         return;
       }
       const id = asString(body['id']) ?? `${kind}-${randomUUID().slice(0, 8)}`;
@@ -1705,7 +1792,8 @@ export function createApp(options: AppOptions): App {
           return;
         }
         // 旧版前端会把脱敏值回填并原样写回；即便用户开着缓存的旧页面，也不让它再次毁掉链接。
-        if (url !== undefined && url.includes('***')) {
+        // 只在「本次真的传了 url」时检查：库里若已被旧版写坏，用户至少还能停用 / 改名。
+        if (urlProvided && url !== undefined && hasRedactionMarkers(url)) {
           sendJson(res, 400, {
             error: 'redacted-url-rejected',
             hint: '链接里是脱敏值（可能被旧版页面写坏过），请在编辑抽屉重新粘贴完整订阅链接',
@@ -1725,19 +1813,27 @@ export function createApp(options: AppOptions): App {
           sendJson(res, 400, { error: 'name-required' });
           return;
         }
+        if ('enabled' in body && typeof body['enabled'] !== 'boolean') {
+          sendJson(res, 400, { error: 'invalid-enabled', hint: 'enabled 只能是布尔值' });
+          return;
+        }
         // 只有请求里显式出现的键才覆盖：开关只带 { enabled } 时不能把 ua / 代理 / 刷新策略顺手清掉。
         // 例外是 format：显式传空串（「自动识别」）表示清除格式偏好，省略该键才是「不改」。
         let format = existing.format;
         if ('format' in body) {
           const raw = asString(body['format']);
+          if (raw !== undefined && !isSourceFormat(raw)) {
+            sendJson(res, 400, { error: 'invalid-source-format', hint: '格式须为已支持的方言，或留空自动识别' });
+            return;
+          }
           format = raw !== undefined && isSourceFormat(raw) ? raw : undefined;
         }
         const ua = 'ua' in body ? asString(body['ua']) : existing.ua;
-        // 本地源没有上游，自动刷新策略写进去也不会执行，别让编辑抽屉留下无意义的字段。
+        // 本地源没有上游：不写入策略，顺手清掉旧库里遗留的那条「永不执行」。
         const refreshPolicy =
-          existing.kind === 'remote' && 'refreshPolicy' in body
-            ? asString(body['refreshPolicy'])
-            : existing.refreshPolicy;
+          existing.kind === 'remote'
+            ? ('refreshPolicy' in body ? asString(body['refreshPolicy']) : existing.refreshPolicy)
+            : undefined;
         let proxy: string | undefined = existing.proxy;
         if ('proxy' in body) {
           const parsed = proxyFrom(body['proxy']);
@@ -1748,7 +1844,19 @@ export function createApp(options: AppOptions): App {
             });
             return;
           }
+          if (parsed.value !== undefined && hasRedactionMarkers(parsed.value)) {
+            sendJson(res, 400, { error: 'redacted-proxy-rejected', hint: '代理地址里是脱敏值，请重新粘贴完整地址' });
+            return;
+          }
           proxy = parsed.value;
+        }
+        // 正文清成空串没有意义（构建必然为空），回 400 而不是假装保存成功。
+        if ('content' in body && existing.kind !== 'remote') {
+          const content = body['content'];
+          if (typeof content !== 'string' || content.trim().length === 0) {
+            sendJson(res, 400, { error: 'content-required' });
+            return;
+          }
         }
         const next: PersistedSource = {
           id,
@@ -1797,10 +1905,22 @@ export function createApp(options: AppOptions): App {
         for (const id of asStringArray(body['sourceIds'])) entries.push({ kind: 'source', id });
       }
       const id = asString(body['id']) ?? name;
-      const existed = store.listProfiles().some((profile) => profile.id === id);
+      // 改名撞已有配置名：name 上有 UNIQUE 约束，不前置拦截会落到 500 internal-error。
+      const nameTaken = store.listProfiles().some((profile) => profile.name === name && profile.id !== id);
+      if (nameTaken) {
+        sendJson(res, 409, { error: 'profile-name-taken', hint: '已有同名配置' });
+        return;
+      }
+      const previous = store.listProfiles().find((profile) => profile.id === id);
+      const existed = previous !== undefined;
       store.putProfile({ id, name, entries });
+      // 改名要级联到令牌：令牌的 profile 存的是签发时的名字，不跟着改的话
+      // /s/ 交付链路按 record.profile 对不上 URL 里的配置名，已签发地址会整体失效。
+      if (existed && previous.name !== name) {
+        store.renameTokenProfile(previous.name, name);
+      }
       // 统一 201（建或改都由 `created` 区分）：调用方一直按「201 = 写成功」处理，不为语义优雅而改契约。
-      sendJson(res, 201, { name, id, entries: entries.length, created: !existed });
+      sendJson(res, 201, { name, id, entries: entries.length, created: !existed, renamed: existed && previous.name !== name });
       return;
     }
 
@@ -1815,16 +1935,30 @@ export function createApp(options: AppOptions): App {
         sendJson(res, 409, { error: 'last-profile', hint: '至少要保留一个 Profile' });
         return;
       }
+      // 引用回收必须跟删除同一个请求完成：配置级的标注 / 规则 / 策略组跟着配置走，
+      // 留着会让同名配置重建时继承旧意图。数量在删之前数好——删完就查不到了。
+      const detached = {
+        rules: store.listRules(profile.id).length,
+        annotations: store.listAnnotations(profile.id).length,
+        groupOverrides: store.listGroupOverrides(profile.id).length,
+      };
       store.removeProfile(profile.id);
       // 绑在这个 Profile 上的订阅地址会随之一并失效；留着只会让客户端拿到 404，
       // 不如当场撤销，并在响应里说清撤了几个。
       const affected = store.listTokens().filter((token) => token.profile === profile.name && !token.revoked);
       for (const token of affected) store.revokeToken(token.id);
-      sendJson(res, 200, { ok: true, revoked: affected.length });
+      sendJson(res, 200, { ok: true, detached, revoked: affected.length });
       return;
     }
 
     if (method === 'POST' && pathname === '/api/annotations') {
+      // 排除 / 别名 / 排序都只作用于这一份配置的产物，所以必须指明是哪一份。
+      const profileName = url.searchParams.get('profile') ?? 'default';
+      const definition = findProfile(profileName);
+      if (definition === undefined) {
+        sendJson(res, 404, { error: 'profile-not-found' });
+        return;
+      }
       const body = await readJson(req);
       const key = asString(body['nodeKey']);
       if (key === undefined) {
@@ -1834,7 +1968,7 @@ export function createApp(options: AppOptions): App {
       const alias = asString(body['alias']);
       const tag = asString(body['tag']);
       const region = asString(body['region']);
-      store.putAnnotation({
+      store.putAnnotation(definition.id, {
         nodeKey: key,
         ...(typeof body['excluded'] === 'boolean' ? { excluded: body['excluded'] } : {}),
         ...(alias === undefined ? {} : { alias }),
@@ -1866,8 +2000,8 @@ export function createApp(options: AppOptions): App {
        */
       if (
         definition.entries.length === 0 &&
-        store.listRules().length === 0 &&
-        store.listGroupOverrides().length === 0
+        store.listRules(definition.id).length === 0 &&
+        store.listGroupOverrides(definition.id).length === 0
       ) {
         sendJson(res, 409, {
           error: 'profile-empty',
@@ -1881,12 +2015,13 @@ export function createApp(options: AppOptions): App {
       store.createToken({
         id,
         tokenHash: hashToken(token),
+        // 明文与 hash 一起入库（应用层加密）：台账要能重看链接与二维码，不只签发这一瞬间。
+        token,
         profile: profileName,
         target: resolvedTarget,
         revoked: false,
         createdAt: new Date().toISOString(),
       });
-      // 明文只在此响应里出现一次，库中只存 hash。
       const path =
         resolvedTarget === 'auto' ? `/s/${token}` : `/s/${token}/${profileName}/${resolvedTarget}`;
       /**
@@ -2108,12 +2243,16 @@ export function createApp(options: AppOptions): App {
     }
 
     if (pathname === '/api/runtime') {
+      // 运行时段按配置存：手机要 fake-ip + TUN，路由器要 redir-host，两者不该互相牵制。
+      const profileName = url.searchParams.get('profile') ?? 'default';
+      const definition = findProfile(profileName);
+      if (definition === undefined) {
+        sendJson(res, 404, { error: 'profile-not-found' });
+        return;
+      }
       if (method === 'GET') {
-        const raw = store.getSetting(SETTING_RUNTIME);
         sendJson(res, 200, {
-          runtime: runtimePolicy() ?? null,
-          // 原文同时回传：解析失败时用户能看见自己存了什么，而不是面对一个空的 null 无从下手。
-          raw: raw ?? null,
+          runtime: definition.runtime ?? null,
           targets: Object.fromEntries(
             CLIENT_TARGETS.map((target) => [target, verifiedCapabilityTables.runtime[target]]),
           ),
@@ -2123,15 +2262,15 @@ export function createApp(options: AppOptions): App {
       if (method === 'PUT') {
         const body = await readJson(req);
         const candidate = body['runtime'];
-        // 传 null / 缺省 = 清空。清空是合法操作（回到「不写 DNS 段」）。
+        // 传 null / 缺省 = 清空。清空是合法操作（回到「不写 DNS / TUN 段」）。
         if (candidate === null || candidate === undefined) {
-          store.putSetting(SETTING_RUNTIME, 'null');
+          store.putProfileRuntime(definition.id, null);
           sendJson(res, 200, { ok: true, runtime: null });
           return;
         }
         try {
           const parsed = parseRuntime(candidate);
-          store.putSetting(SETTING_RUNTIME, JSON.stringify(parsed));
+          store.putProfileRuntime(definition.id, parsed);
           sendJson(res, 200, { ok: true, runtime: parsed });
         } catch (error) {
           sendJson(res, 400, {
@@ -2147,9 +2286,18 @@ export function createApp(options: AppOptions): App {
       if (method === 'GET') {
         const raw = store.getSetting(SETTING_NOTIFY);
         const active = notifyConfig();
+        // value 是「界面覆盖值」的扁平视图（enabled / botToken / chatId / barkUrl），
+        // 只在库里确实存过时才有；环境变量默认值走 envDefaults 单独标注，避免界面误显示为空。
+        let stored: Record<string, unknown> | null = null;
+        if (raw !== undefined) {
+          try {
+            stored = notifyViewOf(JSON.parse(raw) as NotifyConfig | null);
+          } catch {
+            stored = null;
+          }
+        }
         sendJson(res, 200, {
-          // 回传界面覆盖值（若有），否则 null；环境变量默认值单独标注，避免界面误显示为空。
-          value: raw === undefined ? null : (JSON.parse(raw) as unknown),
+          value: stored,
           envDefaults: options.notify ?? null,
           effective: active ?? null,
         });
@@ -2161,7 +2309,8 @@ export function createApp(options: AppOptions): App {
         // null = 清除界面覆盖，回退环境变量。
         if (candidate === null || candidate === undefined) {
           store.putSetting(SETTING_NOTIFY, 'null');
-          sendJson(res, 200, { ok: true, notify: null });
+          // 响应形状与 GET 的 value 对齐（扁平视图），调用方「保存后回读表单」不必特判两种形状。
+          sendJson(res, 200, { ok: true, value: null });
           return;
         }
         const parsed = parseNotifyConfig(candidate);
@@ -2170,7 +2319,7 @@ export function createApp(options: AppOptions): App {
           return;
         }
         store.putSetting(SETTING_NOTIFY, JSON.stringify(parsed));
-        sendJson(res, 200, { ok: true, notify: parsed });
+        sendJson(res, 200, { ok: true, value: notifyViewOf(parsed) });
         return;
       }
     }
@@ -2515,10 +2664,8 @@ export function createApp(options: AppOptions): App {
       return;
     }
 
-    // 只带「运行时段」（DNS / TUN），**不套**本地的内联规则与分组覆盖：
-    // 别人的订阅不该被我们的 ACL 和分组顺序改写；DNS 是「这台机器怎么解析」的部署态，
-    // 与订阅内容无关，带上才和 /s/<token> 的产物一致。
-    const runtime = runtimePolicy();
+    // 别人的订阅就按它自己的内容出，不套本地的内联规则、分组覆盖，也不套某一份配置的
+    // DNS / TUN：那三项现在都跟着配置走，而无状态端点不属于任何一份配置。
     const parsed = ingest(body);
     const deduped = dedupeNodes(parsed.profile.nodes, 'nodeKey');
     const profile = await withRuleSetMirror(
@@ -2526,7 +2673,6 @@ export function createApp(options: AppOptions): App {
         nodes: [...deduped.nodes],
         ruleSources: [...parsed.profile.ruleSources],
         policyGroups: [...parsed.profile.policyGroups],
-        ...(runtime === undefined ? {} : { runtime }),
       }),
     );
     const output = buildOne(profile, target);
@@ -2559,7 +2705,7 @@ export function createApp(options: AppOptions): App {
     void (async () => {
       try {
         if (pathname === '/health') {
-          sendJson(res, 200, { ok: true, version: configVersion(), coreVersion: CORE_VERSION });
+          sendJson(res, 200, { ok: true, version: instanceVersion(), coreVersion: CORE_VERSION });
         } else if (pathname.startsWith('/rules/')) {
           await serveRuleSet(res, pathname.slice('/rules/'.length));
         } else if (pathname.startsWith('/api/')) {

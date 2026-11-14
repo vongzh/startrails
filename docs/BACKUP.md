@@ -1,15 +1,15 @@
 # 备份与恢复
 
-备份的目标只有一个：**一个文件装下全部业务状态**。订阅源正文、标注、订阅 Token 哈希、管理面令牌哈希、构建历史都在 SQLite 里；加密字段的密钥来自环境变量 `STARTRAILS_TOKEN_SECRET` 或 `<data>/secret.key`，密钥本身不在 `.db` 里，必须单独保存。
+备份的目标只有一个：**一个文件装下全部业务状态**。订阅正文、标注、订阅 Token（哈希 + 加密明文）、管理面令牌哈希、构建历史都在 SQLite 里；加密字段的密钥来自环境变量 `STARTRAILS_TOKEN_SECRET` 或 `<data>/secret.key`，密钥本身不在 `.db` 里，必须单独保存。
 
 ## 备份里有什么
 
 | 内容 | 在不在备份里 | 说明 |
 | --- | --- | --- |
-| 订阅源配置（URL / UA / 代理 / 刷新策略） | ✅ | `source_config` |
+| 订阅配置（URL / UA / 代理 / 刷新策略） | ✅ | `source_config` |
 | 文件源与粘贴源正文 | ✅ | `source_payload`，字段级 AES-GCM |
-| 组合订阅 / Profile 构成 / 标注 / 内联规则 / 策略组 | ✅ | 全部用户意图 |
-| 订阅 Token 的 **hash** | ✅ | 明文 token 只在签发时出现一次，永不落库 |
+| 组合订阅 / 配置构成 / 标注 / 内联规则 / 策略组 / DNS 与 TUN | ✅ | 全部用户意图，且标注 / 规则 / 策略组 / 运行时都按配置各存一份 |
+| 订阅 Token 的 **hash 与加密明文** | ✅ | hash 用于校验；明文用同一把密钥做 AES-GCM，发布页台账才能重看地址与二维码。密钥丢失不影响已发出去的订阅，只是台账还原不出链接 |
 | 管理面令牌的 **hash** | ✅ | `app_setting`；恢复后沿用同一枚管理令牌（若配置了环境变量则以环境变量为准） |
 | 构建历史与诊断 | ✅ | 最近 200 次，可裁剪 |
 | `web/dist` 前端产物 | ❌ | 由 `npm run build:ui` 重新生成 |
@@ -57,12 +57,13 @@ curl -X POST -H "Authorization: Bearer $STARTRAILS_ADMIN_TOKEN" \
 1. **停服务**（`docker compose stop` 或 `systemctl stop startrails`），确保没有进程持有数据库。
 2. 备份现有库（哪怕它坏了）：`mv data/startrails.db data/startrails.db.broken`，同时删掉 `startrails.db-wal` / `startrails.db-shm`——它们属于旧库，混用会损坏新库。
 3. 把远端那份 `.db` 下载到 `data/startrails.db`。
-4. **用原来的密钥启动**：设置 `STARTRAILS_TOKEN_SECRET`，或把备份的 `secret.key` 放回 `data/secret.key`（自定义 `STARTRAILS_SECRET_FILE` 时放回对应路径）。换了密钥，加密字段全部解不开，表现是「源列表还在、正文读不出来」。
+4. **用原来的密钥启动**：设置 `STARTRAILS_TOKEN_SECRET`，或把备份的 `secret.key` 放回 `data/secret.key`（自定义 `STARTRAILS_SECRET_FILE` 时放回对应路径）。换了密钥，加密字段全部解不开，表现是「源列表还在、正文读不出来」，发布页台账里的订阅地址也会显示为无法还原。
 5. 启动后自检：
    - `/health` 返回 `ok`；
-   - 「订阅源」里每个源都有节点数，`lastError` 为空；
+   - 「来源」列表里每个订阅都有节点数，`lastError` 为空；
    - 订阅 URL 返回 200 且内容与备份前一致（ETag 会变，属正常）；
-   - 已签发的订阅 token 仍然可用（token 在你手上，库里存的是它的 hash）。
+   - 已签发的订阅 token 仍然可用（token 在你手上，库里存的是它的 hash；即便密钥换了也不影响客户端拉取）；
+   - 发布页「已签发」里地址可复制、二维码可打开（这依赖加密明文，换密钥前签发的旧记录会显示「无法还原」，点「重新签发」换一条即可）。
 
 ## 演练
 

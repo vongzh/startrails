@@ -100,14 +100,14 @@ export type Severity = 'danger' | 'warn' | 'muted' | 'accent';
  * 保留可对照日志的原文；只把「用户看得见但看不懂」的那几个翻译掉。
  */
 export const REASON_LABELS: Record<string, string> = {
-  'profile-empty': 'Profile 还没有任何来源',
-  'profile-no-nodes': '构成里有来源，但一个节点都没解析出来',
-  'source-not-found': '引用的来源已不存在',
-  'source-disabled': '来源已停用',
-  'source-unavailable': '来源内容不可用',
-  'source-payload-empty': '来源没有正文',
+  'profile-empty': '当前配置还没有任何订阅',
+  'profile-no-nodes': '构成里有订阅，但一个节点都没解析出来',
+  'source-not-found': '引用的订阅已不存在',
+  'source-disabled': '订阅已停用',
+  'source-unavailable': '订阅内容不可用',
+  'source-payload-empty': '订阅没有正文',
   'collection-not-found': '引用的组合订阅已不存在',
-  'collection-member-missing': '组合订阅的成员源已不存在',
+  'collection-member-missing': '组合订阅的成员已不存在',
 };
 
 export const reasonLabel = (reason: string): string => REASON_LABELS[reason] ?? reason;

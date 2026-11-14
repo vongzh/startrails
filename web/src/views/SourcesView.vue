@@ -9,6 +9,8 @@ import {
   NInput,
   NInputNumber,
   NPopconfirm,
+  NRadioButton,
+  NRadioGroup,
   NSelect,
   NSwitch,
   NTabPane,
@@ -25,6 +27,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Server,
   Trash2,
   Upload,
   X,
@@ -33,47 +36,48 @@ import type {
   CollectionMemberView,
   DedupeView,
   ProcessStep,
-  ProfileEntryView,
-  SourceKind,
   SourceView,
 } from '../api';
 import { api } from '../api';
 import { formatBytes, formatDuration, formatExpire, formatTime, formatTraffic, initialOf, timeAgo } from '../format';
 import {
-  activeProfileName,
-  addProfileEntry,
-  attachSources,
   busy,
   collections,
+  copyText,
   createSource,
-  moveProfileEntry,
   notify,
-  profileDirty,
-  profileEntries,
-  profiles,
   refreshRemoteSources,
   refreshSource,
   removeCollection,
-  removeProfile,
-  removeProfileEntry,
   removeSource,
+  openSettingsSection,
   saveCollection,
-  saveProfile,
   sourceLabel,
   sourceStats,
   sourceUpdating,
   sources,
   state,
-  tab,
-  unattachedSources,
   updateSource,
 } from '../workspace';
 
-/* ---------------- 添加订阅源 ---------------- */
+/* ---------------- 添加订阅 ---------------- */
 
 const drawerOpen = ref(false);
-const addTab = ref<string>('remote');
+/** 只有「链接 / 文件」两种是订阅；手工节点走自己的抽屉，不混进这个表单。 */
+const addTab = ref<'remote' | 'file'>('remote');
 const adding = ref(false);
+
+/**
+ * 订阅 = 从上游拿回来的一整份节点清单；我的节点 = 自己手填的几条。
+ * 两者在库里同为 `Source`（kind 分别为 remote/file 与 inline），但界面上必须分开：
+ * 一张表里既有「有上游、能刷新、有流量」的订阅，又有「没有上游、只能编辑正文」的节点，
+ * 「更新订阅」这类整表动作就会指向半张表。
+ */
+const subscriptions = computed(() => sources.value.filter((source) => source.kind !== 'inline'));
+const manualNodes = computed(() => sources.value.filter((source) => source.kind === 'inline'));
+const manualNodeTotal = computed(() =>
+  manualNodes.value.reduce((sum, source) => sum + (sourceStats.value[source.id]?.nodes ?? 0), 0),
+);
 const fileInput = ref<HTMLInputElement | null>(null);
 const fileName = ref('');
 const fileBaseName = computed(() => fileName.value.replace(/\.[^.]+$/, ''));
@@ -112,6 +116,20 @@ function resetDraft(): void {
   draft.proxy = '';
   fileName.value = '';
   addTab.value = 'remote';
+  manualMode.value = 'single';
+  bulkText.value = '';
+  manualForm.protocol = 'ss';
+  manualForm.server = '';
+  manualForm.port = 443;
+  manualForm.method = 'aes-256-gcm';
+  manualForm.password = '';
+  manualForm.uuid = '';
+  manualForm.username = '';
+  manualForm.transport = 'tcp';
+  manualForm.path = '';
+  manualForm.tls = true;
+  manualForm.sni = '';
+  manualForm.insecure = false;
 }
 
 function openDrawer(): void {
@@ -149,7 +167,7 @@ async function submitSource(): Promise<void> {
     notify('error', '请填写订阅链接');
     return;
   }
-  if (addTab.value !== 'remote' && draft.content.trim().length === 0) {
+  if (addTab.value === 'file' && draft.content.trim().length === 0) {
     notify('error', '请先选择订阅文件');
     return;
   }
@@ -158,9 +176,11 @@ async function submitSource(): Promise<void> {
   const finalName = name.length > 0 ? name : addTab.value === 'file' ? fileBaseName.value : '';
   adding.value = true;
   const result = await createSource({
-    kind: addTab.value as SourceKind,
+    kind: addTab.value,
     ...(finalName.length === 0 ? {} : { name: finalName }),
-    ...(addTab.value === 'remote' ? { url: draft.url.trim() } : { content: draft.content }),
+    ...(addTab.value === 'remote'
+      ? { url: draft.url.trim() }
+      : { content: draft.content }),
     ...(draft.format.length === 0 ? {} : { format: draft.format }),
     ...(draft.ua.trim().length === 0 || addTab.value !== 'remote' ? {} : { ua: draft.ua.trim() }),
     ...(addTab.value !== 'remote' || draft.refreshPolicy === 'off' ? {} : { refreshPolicy: draft.refreshPolicy }),
@@ -168,6 +188,199 @@ async function submitSource(): Promise<void> {
   });
   adding.value = false;
   if (result.ok) drawerOpen.value = false;
+}
+
+/* ---------------- 手工节点 ---------------- */
+
+/**
+ * 「自己的节点」不是一个特殊源：它和机场订阅落同一个 `kind: 'inline'`，
+ * 正文就是一行一条 URI。这样组合订阅的筛选 / 改名 / 去重对它完全适用，
+ * 下游代码不需要为「手工」开分支；表单只是一个 URI 生成器。
+ *
+ * 反过来不做「URI → 表单」的解析：九种协议的字段各不相同，双向映射的成本
+ * 远高于收益。再次编辑走文本视图（一行一条），改一个字段比填十个框快。
+ */
+type ManualProtocol = 'ss' | 'vmess' | 'vless' | 'trojan' | 'hysteria2' | 'socks5';
+
+const MANUAL_PROTOCOLS: readonly { label: string; value: ManualProtocol }[] = [
+  { label: 'Shadowsocks', value: 'ss' },
+  { label: 'VMess', value: 'vmess' },
+  { label: 'VLESS', value: 'vless' },
+  { label: 'Trojan', value: 'trojan' },
+  { label: 'Hysteria2', value: 'hysteria2' },
+  { label: 'SOCKS5', value: 'socks5' },
+];
+
+const MANUAL_TRANSPORTS: readonly { label: string; value: string }[] = [
+  { label: 'TCP', value: 'tcp' },
+  { label: 'WebSocket', value: 'ws' },
+  { label: 'gRPC', value: 'grpc' },
+];
+
+const MANUAL_METHODS: readonly { label: string; value: string }[] = [
+  { label: 'aes-256-gcm', value: 'aes-256-gcm' },
+  { label: 'aes-128-gcm', value: 'aes-128-gcm' },
+  { label: 'chacha20-ietf-poly1305', value: 'chacha20-ietf-poly1305' },
+  { label: '2022-blake3-aes-256-gcm', value: '2022-blake3-aes-256-gcm' },
+  { label: 'xchacha20-ietf-poly1305', value: 'xchacha20-ietf-poly1305' },
+];
+
+const manualMode = ref<'single' | 'bulk'>('single');
+const bulkText = ref('');
+const manualForm = reactive({
+  protocol: 'ss' as ManualProtocol,
+  server: '',
+  port: 443 as number | null,
+  method: 'aes-256-gcm',
+  password: '',
+  uuid: '',
+  username: '',
+  transport: 'tcp',
+  path: '',
+  tls: true,
+  sni: '',
+  insecure: false,
+});
+
+const manualNeedsUuid = computed(() => manualForm.protocol === 'vmess' || manualForm.protocol === 'vless');
+const manualNeedsPassword = computed(() => manualForm.protocol !== 'vmess' && manualForm.protocol !== 'vless');
+const manualNeedsMethod = computed(() => manualForm.protocol === 'ss');
+const manualNeedsTransport = computed(
+  () => manualForm.protocol === 'vmess' || manualForm.protocol === 'vless' || manualForm.protocol === 'trojan',
+);
+const manualNeedsTls = computed(() => manualForm.protocol !== 'socks5' && manualForm.protocol !== 'hysteria2');
+const manualNeedsSni = computed(() => manualForm.protocol !== 'socks5');
+
+/** URL-safe 且去 padding：服务端 decodeBase64 两种都认，这里统一成不带 `=` 的形态。 */
+function base64Url(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** 单个表单 → 一条 URI；字段不完整时返回 null，界面上直接说明缺什么。 */
+const manualUri = computed<string | null>(() => {
+  const form = manualForm;
+  const server = form.server.trim();
+  const port = form.port;
+  if (server.length === 0 || port === null || port <= 0 || port > 65535) return null;
+  const name = draft.name.trim();
+  const tail = name.length === 0 ? '' : `#${encodeURIComponent(name)}`;
+  const sni = form.sni.trim();
+
+  if (form.protocol === 'ss') {
+    if (form.password.length === 0) return null;
+    return `ss://${base64Url(`${form.method}:${form.password}`)}@${server}:${port}${tail}`;
+  }
+  if (form.protocol === 'socks5') {
+    const auth =
+      form.username.length === 0
+        ? ''
+        : `${encodeURIComponent(form.username)}:${encodeURIComponent(form.password)}@`;
+    return `socks5://${auth}${server}:${port}${tail}`;
+  }
+  if (form.protocol === 'vmess') {
+    const uuid = form.uuid.trim();
+    if (uuid.length === 0) return null;
+    const doc: Record<string, string> = {
+      v: '2',
+      ps: name,
+      add: server,
+      port: String(port),
+      id: uuid,
+      aid: '0',
+      net: form.transport,
+      type: 'none',
+      ...(form.transport === 'tcp' ? {} : { path: form.path.trim() === '' ? '/' : form.path.trim() }),
+      ...(form.tls ? { tls: 'tls', ...(sni === '' ? {} : { sni }) } : {}),
+    };
+    return `vmess://${base64Url(JSON.stringify(doc))}`;
+  }
+  if (form.protocol === 'hysteria2') {
+    if (form.password.length === 0) return null;
+    const query = new URLSearchParams();
+    if (sni !== '') query.set('sni', sni);
+    if (form.insecure) query.set('insecure', '1');
+    const qs = query.toString();
+    return `hysteria2://${encodeURIComponent(form.password)}@${server}:${port}${qs.length > 0 ? `?${qs}` : ''}${tail}`;
+  }
+  const secret = form.protocol === 'vless' ? form.uuid.trim() : form.password;
+  if (secret.length === 0) return null;
+  const query = new URLSearchParams();
+  if (form.protocol === 'vless') query.set('encryption', 'none');
+  if (form.tls) {
+    query.set('security', 'tls');
+    if (sni !== '') query.set('sni', sni);
+  }
+  if (form.transport !== 'tcp') {
+    query.set('type', form.transport);
+    const path = form.path.trim();
+    if (path !== '') query.set(form.transport === 'grpc' ? 'serviceName' : 'path', path);
+  }
+  if (form.insecure) query.set('allowInsecure', '1');
+  const qs = query.toString();
+  return `${form.protocol}://${encodeURIComponent(secret)}@${server}:${port}${qs.length > 0 ? `?${qs}` : ''}${tail}`;
+});
+
+/** 缺什么：表单下方直接写出来，不让用户对着灰按钮猜。 */
+const manualHint = computed(() => {
+  const form = manualForm;
+  if (form.server.trim().length === 0) return '还差服务器地址';
+  if (form.port === null || form.port <= 0) return '还差端口';
+  if (manualNeedsUuid.value && form.uuid.trim().length === 0) return '还差 UUID';
+  if (manualNeedsPassword.value && form.password.length === 0) return '还差密码';
+  return '';
+});
+
+const bulkLines = computed(() =>
+  bulkText.value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0),
+);
+
+/** 只校验「像个 URI」，不做完整解析——真正的解析在后端，这里不该出现第二个解析器。 */
+const bulkValid = computed(() => bulkLines.value.filter((line) => /^[a-z0-9+.-]+:\/\//i.test(line)).length);
+const bulkInvalid = computed(() => bulkLines.value.length - bulkValid.value);
+
+const manualContent = computed(() => {
+  const lines: string[] = [];
+  if (manualMode.value === 'single') {
+    if (manualUri.value !== null) lines.push(manualUri.value);
+  } else {
+    lines.push(...bulkLines.value);
+  }
+  return lines.join('\n');
+});
+
+/* ---------------- 添加节点（独立抽屉） ---------------- */
+
+const nodeDrawerOpen = ref(false);
+const nodeSaving = ref(false);
+
+function openNodeDrawer(): void {
+  resetDraft();
+  nodeDrawerOpen.value = true;
+}
+
+async function submitNodes(): Promise<void> {
+  if (nodeSaving.value) return;
+  const content = manualContent.value;
+  if (content.length === 0) {
+    notify('error', manualMode.value === 'single' ? `节点信息还没填完：${manualHint.value}` : '请先粘贴节点链接');
+    return;
+  }
+  const name = draft.name.trim();
+  nodeSaving.value = true;
+  // 不传 format：手工节点的正文就是 URI 行，交给后端自动识别。
+  const result = await createSource({
+    kind: 'inline',
+    name: name.length === 0 ? '我的节点' : name,
+    content,
+  });
+  nodeSaving.value = false;
+  if (result.ok) nodeDrawerOpen.value = false;
 }
 
 /* ---------------- 编辑已有源 ---------------- */
@@ -255,7 +468,7 @@ async function submitEdit(): Promise<void> {
 const kindLabels: Record<string, string> = {
   remote: '远端',
   file: '文件',
-  inline: '粘贴',
+  inline: '手工',
 };
 
 function statOf(id: string) {
@@ -385,8 +598,22 @@ const dedupeOptions = [
   { label: '不去重', value: 'none' },
 ];
 
+/** 成员下拉按「订阅 / 我的节点」分组：两者都能当成员，但别让人以为节点也是订阅。 */
 const sourceOptions = computed(() =>
-  sources.value.map((item) => ({ label: item.name, value: item.id })),
+  [
+    {
+      type: 'group' as const,
+      label: '订阅',
+      key: 'subscriptions',
+      children: subscriptions.value.map((item) => ({ label: item.name, value: item.id })),
+    },
+    {
+      type: 'group' as const,
+      label: '我的节点',
+      key: 'nodes',
+      children: manualNodes.value.map((item) => ({ label: item.name, value: item.id })),
+    },
+  ].filter((group) => group.children.length > 0),
 );
 
 function openCollection(collection?: {
@@ -414,9 +641,9 @@ function openCollection(collection?: {
 }
 
 function addMember(): void {
-  const first = sources.value[0];
+  const first = subscriptions.value[0] ?? manualNodes.value[0];
   if (first === undefined) {
-    notify('error', '先添加订阅源，再组建组合订阅');
+    notify('error', '先添加订阅或节点，再组建组合订阅');
     return;
   }
   collectionDraft.members.push({
@@ -657,80 +884,32 @@ async function submitCollection(): Promise<void> {
   if (ok) collectionOpen.value = false;
 }
 
-/* ---------------- Profile 构成 ---------------- */
-
-const entryOptions = computed(() => [
-  {
-    type: 'group' as const,
-    label: '组合订阅',
-    key: 'collections',
-    children: collections.value.map((item) => ({ label: item.name, value: `collection:${item.id}` })),
-  },
-  {
-    type: 'group' as const,
-    label: '单个订阅源',
-    key: 'sources',
-    children: sources.value.map((item) => ({ label: item.name, value: `source:${item.id}` })),
-  },
-]);
-
-function addEntry(value: string): void {
-  const [kind, id] = value.split(':');
-  if (id === undefined) return;
-  const entry: ProfileEntryView = { kind: kind === 'collection' ? 'collection' : 'source', id };
-  if (profileEntries.value.some((item) => item.kind === entry.kind && item.id === entry.id)) {
-    notify('error', '已经在构成里了');
-    return;
-  }
-  addProfileEntry(entry);
-}
-
-function entryName(entry: ProfileEntryView): string {
-  if (entry.kind === 'source') return sourceLabel(entry.id);
-  return collections.value.find((item) => item.id === entry.id)?.name ?? `缺失：${entry.id}`;
-}
-
-function entryCount(entry: ProfileEntryView): string {
-  if (entry.kind === 'source') {
-    const stat = statOf(entry.id);
-    return stat === undefined ? '—' : String(stat.nodes);
-  }
-  const found = collections.value.find((item) => item.id === entry.id);
-  return found?.previewCount === undefined ? '—' : String(found.previewCount);
-}
-
-const derivedNodes = computed(() =>
-  profileEntries.value.reduce((sum, entry) => {
-    const value = Number.parseInt(entryCount(entry), 10);
-    return Number.isNaN(value) ? sum : sum + value;
-  }, 0),
-);
 </script>
 
 <template>
   <div class="page">
     <section class="card">
       <div class="card-head">
-        <h2>订阅源</h2>
-        <span class="count">{{ sources.length }}</span>
+        <h2>订阅</h2>
+        <span class="count">{{ subscriptions.length }}</span>
         <div class="spacer"></div>
-        <n-button size="small" quaternary :loading="busy > 0" @click="refreshAll">
+        <n-button size="small" quaternary :loading="busy > 0" :disabled="busy > 0" @click="refreshAll">
           <template #icon><RefreshCw :size="14" /></template>
           更新订阅
         </n-button>
         <n-button size="small" type="primary" @click="openDrawer">
           <template #icon><Plus :size="14" /></template>
-          添加
+          添加订阅
         </n-button>
       </div>
 
-      <n-empty v-if="sources.length === 0" description="还没有订阅源" style="padding: 40px 0">
+      <n-empty v-if="subscriptions.length === 0" description="还没有订阅" style="padding: 40px 0">
         <template #icon><Globe :size="30" /></template>
         <template #extra>
           <div class="stack" style="gap: 8px; align-items: center">
             <n-button size="small" type="primary" @click="openDrawer">
               <template #icon><Plus :size="14" /></template>
-              添加订阅源
+              添加订阅
             </n-button>
             <span class="text-3" style="font-size: 12px">支持远端链接、上传文件</span>
           </div>
@@ -738,27 +917,36 @@ const derivedNodes = computed(() =>
       </n-empty>
 
       <div v-else class="tbl-wrap">
-        <table class="tbl">
+        <table class="tbl tbl-sources">
           <thead>
             <tr>
-              <th>名称</th>
-              <th class="col-optional" style="width: 1%">方式</th>
-              <th style="width: 1%">节点</th>
-              <th class="col-wide-only">大小</th>
-              <th class="col-wide-only">更新</th>
-              <th class="col-optional" style="width: 1%">状态</th>
-              <th></th>
+              <th class="col-name">名称</th>
+              <th class="col-optional col-kind">方式</th>
+              <th class="col-nodes">节点</th>
+              <th class="col-wide-only col-size">大小</th>
+              <th class="col-wide-only col-fetch">更新</th>
+              <th class="col-optional col-status">状态</th>
+              <!-- 开关独立成列：原来挂在状态列里，标题只管住左边那半格，右边看起来像没表头的野列。 -->
+              <th class="col-optional col-enabled">启用</th>
+              <th class="col-actions">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="source in sources" :key="source.id">
+            <tr v-for="source in subscriptions" :key="source.id">
               <td>
                 <div class="row tight" style="gap: 8px">
                   <span class="avatar sm">{{ initialOf(source.name) }}</span>
                   <div style="min-width: 0">
                     <div class="strong" style="font-size: 13px">{{ source.name }}</div>
+                    <!-- 桌面也要能直接核对链接，不必每次都打开编辑抽屉；窄屏改由 .addr-mobile 完整断行显示。 -->
+                    <n-tooltip v-if="source.url" trigger="hover">
+                      <template #trigger>
+                        <div class="addr-desktop mono text-3">{{ source.url }}</div>
+                      </template>
+                      <span class="mono" style="display: inline-block; max-width: 320px; overflow-wrap: anywhere">{{ source.url }}</span>
+                    </n-tooltip>
                     <div class="addr-mobile mono text-3">
-                      {{ source.url ?? (source.kind === 'file' ? `上传文件 · ${formatBytes(source.bytes)}` : '粘贴内容') }}
+                      {{ source.url ?? `上传文件 · ${formatBytes(source.bytes)}` }}
                     </div>
                     <div v-if="trafficOf(source.id) !== ''" class="text-3" style="font-size: 11.5px">
                       {{ trafficOf(source.id) }}
@@ -783,16 +971,16 @@ const derivedNodes = computed(() =>
                   </div>
                 </div>
               </td>
-              <td class="col-optional">
+              <td class="col-optional col-kind">
                 <n-tag size="small" :bordered="false" style="white-space: nowrap">
                   {{ kindLabels[source.kind] ?? source.kind }}
                 </n-tag>
               </td>
-              <td class="mono" style="width: 1%; white-space: nowrap">{{ statOf(source.id)?.nodes ?? '—' }}</td>
-              <td class="col-wide-only mono text-3" style="width: 1%; white-space: nowrap">
+              <td class="col-nodes mono" style="white-space: nowrap">{{ statOf(source.id)?.nodes ?? '—' }}</td>
+              <td class="col-wide-only col-size mono text-3" style="white-space: nowrap">
                 {{ source.bytes > 0 ? formatBytes(source.bytes) : '—' }}
               </td>
-              <td class="col-wide-only text-3" style="width: 1%; white-space: nowrap; font-size: 11.5px">
+              <td class="col-wide-only col-fetch text-3" style="white-space: nowrap; font-size: 11.5px">
                 <n-tooltip v-if="source.kind === 'remote'" trigger="hover" :disabled="source.lastFetchedAt === null">
                   <template #trigger>
                     <span>{{ fetchTimeOf(source) }}</span>
@@ -804,7 +992,7 @@ const derivedNodes = computed(() =>
                 </n-tooltip>
                 <span v-else>{{ fetchTimeOf(source) }}</span>
               </td>
-              <td class="col-optional status-cell" style="width: 1%">
+              <td class="col-optional col-status status-cell">
                 <div class="status-line">
                   <n-tooltip trigger="hover">
                     <template #trigger>
@@ -816,23 +1004,25 @@ const derivedNodes = computed(() =>
                     </template>
                     {{ statusDetail(source.id) }}
                   </n-tooltip>
-                  <!-- 启用开关归在状态列：它是一个状态，不是一次操作。与圆点文字同一 flex 基线对齐。 -->
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-switch
-                        size="small"
-                        :value="source.enabled"
-                        @update:value="(value: boolean) => updateSource(source.id, { enabled: value })"
-                      />
-                    </template>
-                    参与构建
-                  </n-tooltip>
                 </div>
               </td>
-              <td class="actions">
+              <!-- 启用是状态不是操作，但必须自己占一列：挤在状态格里时与表头对不上。 -->
+              <td class="col-optional col-enabled">
                 <n-tooltip trigger="hover">
                   <template #trigger>
-                    <n-button aria-label="编辑订阅源" quaternary circle size="tiny" @click="openEdit(source)">
+                    <n-switch
+                      size="small"
+                      :value="source.enabled"
+                      @update:value="(value: boolean) => updateSource(source.id, { enabled: value })"
+                    />
+                  </template>
+                  参与构建
+                </n-tooltip>
+              </td>
+              <td class="actions col-actions">
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-button aria-label="编辑订阅" quaternary circle size="tiny" @click="openEdit(source)">
                       <template #icon><Pencil :size="13" /></template>
                     </n-button>
                   </template>
@@ -857,11 +1047,11 @@ const derivedNodes = computed(() =>
                 </n-tooltip>
                 <n-popconfirm @positive-click="removeSource(source.id)">
                   <template #trigger>
-                    <n-button aria-label="删除订阅源" quaternary circle size="tiny" type="error">
+                    <n-button aria-label="删除订阅" quaternary circle size="tiny" type="error" :disabled="busy > 0">
                       <template #icon><Trash2 :size="13" /></template>
                     </n-button>
                   </template>
-                  删除「{{ source.name }}」？它在组合订阅与 Profile 构成里的引用会一并清除。
+                  删除「{{ source.name }}」？它在组合订阅与配置构成里的引用会一并清除。
                 </n-popconfirm>
               </td>
             </tr>
@@ -872,7 +1062,121 @@ const derivedNodes = computed(() =>
       <div v-if="sources.some((item) => statOf(item.id)?.diagnostics.length)" class="card-foot">
         <AlertTriangle :size="14" class="text-3" />
         <span class="text-3" style="font-size: 12px">部分源存在解析诊断</span>
-        <n-button text type="primary" size="tiny" @click="tab = 'diagnostics'">查看诊断</n-button>
+        <n-button text type="primary" size="tiny" @click="openSettingsSection('diagnostics')">查看诊断</n-button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>我的节点</h2>
+        <span class="count">{{ manualNodeTotal }}</span>
+        <div class="spacer"></div>
+        <n-button size="small" type="primary" @click="openNodeDrawer">
+          <template #icon><Plus :size="14" /></template>
+          添加节点
+        </n-button>
+      </div>
+
+      <n-empty v-if="manualNodes.length === 0" description="还没有自己的节点" style="padding: 32px 0">
+        <template #icon><Server :size="30" /></template>
+        <template #extra>
+          <div class="stack" style="gap: 8px; align-items: center">
+            <n-button size="small" type="primary" @click="openNodeDrawer">
+              <template #icon><Plus :size="14" /></template>
+              添加节点
+            </n-button>
+            <span class="text-3" style="font-size: 12px">填一个，或一次粘贴一批分享链接</span>
+          </div>
+        </template>
+      </n-empty>
+
+      <div v-else class="tbl-wrap">
+        <table class="tbl tbl-manual">
+          <thead>
+            <tr>
+              <th class="col-name">名称</th>
+              <th class="col-nodes">节点</th>
+              <th class="col-optional col-status">状态</th>
+              <th class="col-optional col-enabled">启用</th>
+              <th class="col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="node in manualNodes" :key="node.id">
+              <td>
+                <div class="row tight" style="gap: 8px">
+                  <span class="avatar sm">{{ initialOf(node.name) }}</span>
+                  <div style="min-width: 0">
+                    <div class="strong" style="font-size: 13px">{{ node.name }}</div>
+                    <!-- 写入时间放在副行：它是这一组的元信息，不值得占一列。 -->
+                    <div class="text-3" style="font-size: 11px">写入 {{ fetchTimeOf(node) }}</div>
+                    <!-- 窄屏隐藏状态列与启用列，这两样必须留在这里，否则手机上没法启停。 -->
+                    <div class="status-mobile">
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <span class="row tight status-signal" style="gap: 6px; flex-wrap: nowrap">
+                            <span class="dot" :class="sourceStatus(node.id).kind"></span>
+                            <span class="text-2" style="font-size: 11px">{{ sourceStatus(node.id).text }}</span>
+                          </span>
+                        </template>
+                        {{ statusDetail(node.id) }}
+                      </n-tooltip>
+                      <n-switch
+                        size="small"
+                        :value="node.enabled"
+                        @update:value="(value: boolean) => updateSource(node.id, { enabled: value })"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td class="col-nodes mono" style="white-space: nowrap">{{ statOf(node.id)?.nodes ?? '—' }}</td>
+              <td class="col-optional col-status status-cell">
+                <div class="status-line">
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <span class="row tight status-signal" style="gap: 6px; flex-wrap: nowrap">
+                        <span class="dot" :class="sourceStatus(node.id).kind"></span>
+                        <span class="text-2" style="font-size: 12px">{{ sourceStatus(node.id).text }}</span>
+                      </span>
+                    </template>
+                    {{ statusDetail(node.id) }}
+                  </n-tooltip>
+                </div>
+              </td>
+              <td class="col-optional col-enabled">
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-switch
+                      size="small"
+                      :value="node.enabled"
+                      @update:value="(value: boolean) => updateSource(node.id, { enabled: value })"
+                    />
+                  </template>
+                  参与构建
+                </n-tooltip>
+              </td>
+              <td class="actions col-actions">
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-button aria-label="编辑节点" quaternary circle size="tiny" @click="openEdit(node)">
+                      <template #icon><Pencil :size="13" /></template>
+                    </n-button>
+                  </template>
+                  编辑
+                </n-tooltip>
+                <n-popconfirm @positive-click="removeSource(node.id)">
+                  <template #trigger>
+                    <n-button aria-label="删除节点" quaternary circle size="tiny" type="error" :disabled="busy > 0">
+                      <template #icon><Trash2 :size="13" /></template>
+                    </n-button>
+                  </template>
+                  删除「{{ node.name }}」？它在组合订阅与配置构成里的引用会一并清除。
+                </n-popconfirm>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
@@ -881,15 +1185,15 @@ const derivedNodes = computed(() =>
         <h2>组合订阅</h2>
         <span class="count">{{ collections.length }}</span>
         <div class="spacer"></div>
-        <n-button size="small" secondary :disabled="sources.length === 0" @click="openCollection()">
+        <n-button size="small" type="primary" :disabled="sources.length === 0" @click="openCollection()">
           <template #icon><Layers :size="14" /></template>
-          新建
+          新建组合订阅
         </n-button>
       </div>
 
       <n-empty
         v-if="collections.length === 0"
-        description="组合订阅把多个源合并成一份，可逐源过滤、加前缀、去重"
+        description="把多个订阅或自己的节点合并成一份，可逐源过滤、加前缀、去重"
         style="padding: 32px 0"
       >
         <template #icon><Layers :size="30" /></template>
@@ -900,7 +1204,7 @@ const derivedNodes = computed(() =>
           </n-button>
           <n-button v-else size="small" type="primary" @click="openDrawer">
             <template #icon><Plus :size="14" /></template>
-            先添加订阅源
+            先添加订阅
           </n-button>
         </template>
       </n-empty>
@@ -930,123 +1234,16 @@ const derivedNodes = computed(() =>
                   <template #icon><Trash2 :size="13" /></template>
                 </n-button>
               </template>
-              删除组合订阅「{{ collection.name }}」？当前 Profile 构成里的引用会一并移除。
+              删除组合订阅「{{ collection.name }}」？当前配置构成里的引用会一并移除。
             </n-popconfirm>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Profile 构成</h2>
-        <n-tag size="small" :bordered="false" class="mono">{{ activeProfileName }}</n-tag>
-        <span class="count">{{ profileEntries.length }}</span>
-        <div class="spacer"></div>
-        <div class="head-actions">
-          <n-select
-            size="small"
-            placeholder="添加来源"
-            style="width: 180px"
-            :options="entryOptions"
-            :value="null"
-            :disabled="sources.length === 0"
-            @update:value="addEntry"
-          />
-          <n-button
-            size="small"
-            :type="profileDirty ? 'primary' : 'default'"
-            :disabled="!profileDirty || busy > 0"
-            @click="saveProfile()"
-          >
-            {{ profileDirty ? '保存' : '已保存' }}
-          </n-button>
-          <n-popconfirm v-if="profiles.length > 1" @positive-click="removeProfile(activeProfileName)">
-            <template #trigger>
-              <n-tooltip trigger="hover">
-                <template #trigger>
-                  <n-button aria-label="删除当前 Profile" quaternary circle size="small" type="error">
-                    <template #icon><Trash2 :size="14" /></template>
-                  </n-button>
-                </template>
-                删除当前 Profile
-              </n-tooltip>
-            </template>
-            删除 Profile「{{ activeProfileName }}」？绑定它的订阅地址会一并撤销，其余 Profile 不受影响。
-          </n-popconfirm>
-        </div>
-      </div>
-
-      <!-- 加完源却没进构成，是「节点一直是 0」最常见的成因；在构成卡片上当场补挂。 -->
-      <div v-if="unattachedSources.length > 0" class="card-foot attach-hint">
-        <AlertTriangle :size="14" class="text-3" />
-        <span class="text-2" style="font-size: 12px">
-          {{ unattachedSources.length }} 个已启用的源还没加入构成，构建不会用到它们
-        </span>
-        <span class="text-3" style="font-size: 11.5px" :title="unattachedSources.map((item) => item.name).join('、')">
-          {{ unattachedSources.slice(0, 3).map((item) => item.name).join('、') }}{{ unattachedSources.length > 3 ? ' 等' : '' }}
-        </span>
-        <div class="spacer"></div>
-        <n-button size="tiny" secondary :loading="busy > 0" @click="attachSources(unattachedSources.map((item) => item.id))">
-          全部加入构成
-        </n-button>
-      </div>
-
-      <n-empty
-        v-if="profileEntries.length === 0"
-        description="当前 Profile 没有任何来源，发布出去会是空配置"
-        style="padding: 28px 0"
-      >
-        <template #extra>
-          <n-button v-if="sources.length === 0" size="small" type="primary" @click="openDrawer">
-            <template #icon><Plus :size="14" /></template>
-            先添加一个订阅源
-          </n-button>
-          <span v-else class="text-3" style="font-size: 12px">用右上角的下拉把源加进来</span>
-        </template>
-      </n-empty>
-
-      <div v-else>
-        <div v-for="(entry, index) in profileEntries" :key="`${entry.kind}:${entry.id}`" class="entry-row">
-          <span class="entry-index mono">{{ index + 1 }}</span>
-          <n-tag size="small" :bordered="false" :type="entry.kind === 'collection' ? 'primary' : 'default'">
-            {{ entry.kind === 'collection' ? '组合' : '源' }}
-          </n-tag>
-          <span class="strong" style="font-size: 13px">{{ entryName(entry) }}</span>
-          <span class="text-3 mono" style="font-size: 11.5px">{{ entryCount(entry) }} 节点</span>
-          <div class="spacer"></div>
-          <div class="row-actions">
-            <n-button aria-label="上移" quaternary circle size="tiny" :disabled="index === 0" @click="moveProfileEntry(index, -1)">
-              <template #icon><ArrowUp :size="13" /></template>
-            </n-button>
-            <n-button aria-label="下移"
-              quaternary
-              circle
-              size="tiny"
-              :disabled="index === profileEntries.length - 1"
-              @click="moveProfileEntry(index, 1)"
-            >
-              <template #icon><ArrowDown :size="13" /></template>
-            </n-button>
-            <n-button aria-label="移除构成来源" quaternary circle size="tiny" type="error" @click="removeProfileEntry(index)">
-              <template #icon><X :size="13" /></template>
-            </n-button>
-          </div>
-        </div>
-        <div class="card-foot">
-          <span class="text-3" style="font-size: 12px">
-            顺序即合并顺序；按节点指纹全局去重，同一源被多个组合订阅引用只出现一次。
-          </span>
-          <div class="spacer"></div>
-          <!-- 直接相加是去重前的量，别和旁边的「按节点指纹全局去重」说成同一个数。 -->
-          <span class="mono text-2" style="font-size: 12px">合计 {{ derivedNodes }} 节点（去重前）</span>
-        </div>
-      </div>
-    </section>
-
     <!-- 添加源 -->
     <n-drawer v-model:show="drawerOpen" :width="440" placement="right">
-      <n-drawer-content title="添加订阅源" closable>
+      <n-drawer-content title="添加订阅" closable>
         <n-tabs v-model:value="addTab" type="segment" size="small">
           <n-tab-pane name="remote" tab="链接">
             <div class="stack" style="gap: 12px; padding-top: 12px">
@@ -1109,6 +1306,7 @@ const derivedNodes = computed(() =>
               <input ref="fileInput" type="file" hidden accept=".yaml,.yml,.json,.conf,.txt,.ini" @change="pickFile" />
             </div>
           </n-tab-pane>
+
         </n-tabs>
 
         <div class="field" style="margin-top: 14px">
@@ -1127,9 +1325,174 @@ const derivedNodes = computed(() =>
       </n-drawer-content>
     </n-drawer>
 
+    <!-- 添加节点：与「添加订阅」彻底分开——这里的输入是 URI 本身，没有上游可拉。 -->
+    <n-drawer v-model:show="nodeDrawerOpen" :width="440" placement="right">
+      <n-drawer-content title="添加节点" closable>
+        <div class="stack" style="gap: 12px">
+          <div class="field">
+            <label>名称</label>
+            <n-input
+              v-model:value="draft.name"
+              size="small"
+              :placeholder="manualMode === 'single' ? '例如 我的 VPS' : '留空则叫「我的节点」'"
+            />
+            <span class="text-3" style="font-size: 11.5px">节点名写在链接的 # 后面；留空时用服务器地址</span>
+          </div>
+
+          <n-radio-group v-model:value="manualMode" size="small">
+            <n-radio-button value="single">填一个</n-radio-button>
+            <n-radio-button value="bulk">批量粘贴</n-radio-button>
+          </n-radio-group>
+
+          <template v-if="manualMode === 'single'">
+            <div class="field">
+              <label>协议</label>
+              <n-select v-model:value="manualForm.protocol" size="small" :options="MANUAL_PROTOCOLS" />
+            </div>
+
+            <div class="row" style="gap: 10px; align-items: flex-start">
+              <div class="field" style="flex: 1">
+                <label>服务器</label>
+                <n-input
+                  v-model:value="manualForm.server"
+                  size="small"
+                  class="mono"
+                  placeholder="1.2.3.4 或 node.example.com"
+                />
+              </div>
+              <div class="field" style="width: 96px">
+                <label>端口</label>
+                <n-input-number
+                  v-model:value="manualForm.port"
+                  size="small"
+                  :min="1"
+                  :max="65535"
+                  :show-button="false"
+                  style="width: 100%"
+                />
+              </div>
+            </div>
+
+            <div v-if="manualNeedsMethod" class="field">
+              <label>加密方式</label>
+              <n-select v-model:value="manualForm.method" size="small" :options="MANUAL_METHODS" />
+            </div>
+
+            <div v-if="manualNeedsUuid" class="field">
+              <label>UUID</label>
+              <n-input
+                v-model:value="manualForm.uuid"
+                size="small"
+                class="mono"
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              />
+            </div>
+
+            <div v-if="manualForm.protocol === 'socks5'" class="row" style="gap: 10px">
+              <div class="field" style="flex: 1">
+                <label>用户名</label>
+                <n-input v-model:value="manualForm.username" size="small" placeholder="无认证可留空" />
+              </div>
+              <div class="field" style="flex: 1">
+                <label>密码</label>
+                <n-input v-model:value="manualForm.password" size="small" type="password" show-password-on="click" />
+              </div>
+            </div>
+
+            <div v-else-if="manualNeedsPassword" class="field">
+              <label>密码</label>
+              <n-input v-model:value="manualForm.password" size="small" type="password" show-password-on="click" />
+            </div>
+
+            <template v-if="manualNeedsTransport">
+              <div class="field">
+                <label>传输</label>
+                <n-select v-model:value="manualForm.transport" size="small" :options="MANUAL_TRANSPORTS" />
+              </div>
+              <div v-if="manualForm.transport !== 'tcp'" class="field">
+                <label>{{ manualForm.transport === 'grpc' ? 'gRPC 服务名' : '路径' }}</label>
+                <n-input
+                  v-model:value="manualForm.path"
+                  size="small"
+                  class="mono"
+                  :placeholder="manualForm.transport === 'grpc' ? 'grpc-service' : '/path'"
+                />
+              </div>
+            </template>
+
+            <div v-if="manualNeedsTls" class="setting-row">
+              <div class="da-text">
+                <div class="da-title">TLS</div>
+                <div class="da-sub">大多数自建节点都要开；SNI 留空则用服务器地址</div>
+              </div>
+              <n-switch v-model:value="manualForm.tls" size="small" />
+            </div>
+
+            <div v-if="manualNeedsSni" class="field">
+              <label>SNI</label>
+              <n-input v-model:value="manualForm.sni" size="small" class="mono" placeholder="可留空" />
+            </div>
+
+            <div v-if="manualForm.protocol !== 'ss'" class="setting-row">
+              <div class="da-text">
+                <div class="da-title">跳过证书校验</div>
+                <div class="da-sub">自签证书才需要；公开证书不要开</div>
+              </div>
+              <n-switch v-model:value="manualForm.insecure" size="small" />
+            </div>
+          </template>
+
+          <div v-else class="field">
+            <label>节点链接</label>
+            <n-input
+              v-model:value="bulkText"
+              type="textarea"
+              size="small"
+              class="mono"
+              :rows="9"
+              placeholder="一行一条：ss://… vmess://… vless://… trojan://… hysteria2://…"
+            />
+            <span class="text-3" style="font-size: 11.5px">
+              <template v-if="bulkLines.length === 0">
+                支持 ss / vmess / vless / trojan / hysteria2 / tuic / anytls / wireguard / socks5
+              </template>
+              <template v-else>
+                共 {{ bulkLines.length }} 行，{{ bulkValid }} 行格式正确<template v-if="bulkInvalid > 0">，{{ bulkInvalid }} 行不是节点链接</template>
+              </template>
+            </span>
+          </div>
+
+          <!-- 生成结果：让用户保存前就能看到究竟会写进库的那一行。 -->
+          <div
+            v-if="manualContent.length > 0"
+            style="border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px"
+          >
+            <div class="row tight">
+              <span class="text-3" style="font-size: 11.5px">保存后在「我的节点」里是一条记录</span>
+              <div class="spacer"></div>
+              <n-button size="tiny" quaternary @click="copyText(manualContent)">复制</n-button>
+            </div>
+            <div class="mono text-2" style="font-size: 11.5px; margin-top: 4px; overflow-wrap: anywhere">
+              {{ manualMode === 'single' ? manualUri : `${bulkLines.length} 条链接` }}
+            </div>
+          </div>
+          <span v-else class="text-3" style="font-size: 11.5px">
+            {{ manualMode === 'single' ? manualHint : '还没有粘贴任何链接' }}
+          </span>
+        </div>
+
+        <template #footer>
+          <div class="row" style="width: 100%; justify-content: flex-end; gap: 8px">
+            <n-button size="small" quaternary @click="nodeDrawerOpen = false">取消</n-button>
+            <n-button size="small" type="primary" :loading="nodeSaving" @click="submitNodes">添加</n-button>
+          </div>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
+
     <!-- 编辑已有源 -->
     <n-drawer v-model:show="editOpen" :width="440" placement="right">
-      <n-drawer-content title="编辑订阅源" closable>
+      <n-drawer-content :title="editing?.kind === 'inline' ? '编辑节点' : '编辑订阅'" closable>
         <div class="stack" style="gap: 12px">
           <div class="field">
             <label>名称</label>
@@ -1158,7 +1521,7 @@ const derivedNodes = computed(() =>
               placeholder="节点链接或完整配置…"
             />
             <span class="text-3" style="font-size: 11.5px">
-              改完保存即重新解析；组合订阅与 Profile 构成不用动。
+              改完保存即重新解析；组合订阅与配置构成不用动。
             </span>
           </div>
           <div class="field">

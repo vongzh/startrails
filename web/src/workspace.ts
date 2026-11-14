@@ -25,34 +25,27 @@ import type {
 import { formatTraffic, lineCount } from './format';
 import { clientLabelOf } from './client-icons';
 
-export type Tab =
-  | 'overview'
-  | 'sources'
-  | 'nodes'
-  | 'rules'
-  | 'publish'
-  | 'diagnostics'
-  | 'capabilities'
-  | 'settings';
+/**
+ * 一级页面只留需要频繁切换的：诊断与能力都是只读参考，收在设置的分区里；
+ * 设置本身也不占导航项——它是「这只实例」的事，入口固定在侧栏底部 / 顶栏图标。
+ */
+export type Tab = 'overview' | 'sources' | 'config' | 'output' | 'publish' | 'settings';
 
 export interface NavEntry {
   key: Tab;
   label: string;
   title: string;
   group: string;
-  /** 手机底部标签栏只放主要入口，其余进「更多」。 */
-  mobile?: boolean;
 }
 
 export const NAV: readonly NavEntry[] = [
-  { key: 'overview', label: '概览', title: '概览', group: '编排', mobile: true },
-  { key: 'sources', label: '订阅源', title: '订阅源', group: '编排', mobile: true },
-  { key: 'nodes', label: '节点', title: '节点', group: '编排', mobile: true },
-  { key: 'rules', label: '规则', title: '规则', group: '编排', mobile: true },
-  { key: 'publish', label: '发布', title: '发布', group: '编排', mobile: true },
-  { key: 'diagnostics', label: '诊断', title: '诊断', group: '排查' },
-  { key: 'capabilities', label: '能力', title: '能力矩阵', group: '排查' },
-  { key: 'settings', label: '设置', title: '设置', group: '系统' },
+  { key: 'overview', label: '概览', title: '概览', group: '编排' },
+  { key: 'sources', label: '订阅', title: '订阅', group: '编排' },
+  // 配置是「这份产物怎么组装」：构成、节点取舍、规则与策略、DNS 与 TUN 四段全在这里。
+  // 它与「产物预览」的分工是输入 / 输出——那边只读，这边改。
+  { key: 'config', label: '配置', title: '配置', group: '编排' },
+  { key: 'output', label: '产物预览', title: '产物预览', group: '编排' },
+  { key: 'publish', label: '发布', title: '发布', group: '编排' },
 ];
 
 export const DIALECT_LABELS: Record<string, string> = {
@@ -83,6 +76,23 @@ export const secretRequired = ref(false);
 export const setupChecking = ref(true);
 export const busy = ref(0);
 export const tab = ref<Tab>('overview');
+/**
+ * 配置页当前分段。默认落在「构成」：那是这份配置最上游、也最常改的一段。
+ * 概览的管线卡与发布页的台账都会按 name 指定要落到哪一段。
+ */
+export const configSection = ref<'composition' | 'nodes' | 'rules' | 'runtime'>('composition');
+
+/**
+ * 「跳到设置里的某个分区」。诊断与能力收进设置后，别的页面仍要能一键跳过去
+ * （如订阅列表里的「查看诊断」）。设置页被 KeepAlive 缓存，所以走这个 ref 而不是 hash：
+ * 组件不会重新挂载，只能靠状态变化通知它切分区。值被设置页消费后置回 null。
+ */
+export const settingsSection = ref<string | null>(null);
+
+export function openSettingsSection(id: string): void {
+  settingsSection.value = id;
+  tab.value = 'settings';
+}
 
 export const state = ref<StateView | null>(null);
 export const nodes = ref<NodeView[]>([]);
@@ -96,7 +106,14 @@ export const history = ref<HistoryEntry[]>([]);
 export const buildReport = ref<BuildReportView | null>(null);
 export const buildReportLoading = ref(false);
 export const traceSteps = ref<TraceStepView[]>([]);
+/**
+ * 两个客户端选择互不干扰，别合并：
+ * `target` 是「产物预览里我正在读哪一个客户端的产物」；`publishTarget` 是「接下来要签发哪一种」。
+ * 签发完一次之后才把 `target` 拨过去（生成的那份，用户下一步多半就要核对它）。
+ */
 export const target = ref('surge');
+/** 签发默认走「自动识别」：多数人只想要一条能喂给所有客户端的地址，先让他点生成就能拿到。 */
+export const publishTarget = ref('auto');
 export const createdUrls = ref<{ target: string; url: string }[]>([]);
 export const activeProfileName = ref(getActiveProfile());
 
@@ -217,6 +234,8 @@ export const targetName = computed(() => {
 export const clientNameOf = (id: string): string =>
   clientLabelOf(id, clientTargets.value.find((item) => item.id === id)?.name);
 
+export const publishTargetName = computed(() => clientNameOf(publishTarget.value));
+
 /** 发布页左侧：按方言分组的客户端清单。 */
 export const targetGroups = computed(() => {
   const buckets = new Map<string, { id: string; name: string; ext: string; nodesOnly: boolean }[]>();
@@ -236,8 +255,6 @@ export const targetGroups = computed(() => {
     items,
   }));
 });
-
-export const activeTokens = computed(() => (state.value?.tokens ?? []).filter((item) => !item.revoked));
 
 export const excludedCount = computed(
   () => nodes.value.filter((node) => annotationMap.value.get(node.nodeKey)?.excluded === true).length,
@@ -282,16 +299,21 @@ function messageOf(cause: unknown): string {
   if (text.includes('secret-file-desync'))
     return '密钥文件没写成，但数据库已切到新密钥：重启前把密钥文件内容改成刚才设置的密钥，否则正文解不开';
   if (text.includes('secret-persist-failed')) return '加密密钥写入失败，已回滚，请检查 data 目录权限';
-  if (text.includes('profile-empty')) return '当前 Profile 没有任何内容：先在订阅源页把源加入构成';
+  if (text.includes('profile-empty')) return '当前配置没有任何内容：先在订阅页把源加入构成';
   if (text.includes('admin-token-from-env'))
     return '管理令牌由环境变量提供，请在部署侧修改后重启';
   if (text.includes('admin-token-unchanged')) return '新令牌与当前相同，无需更换';
-  if (text.includes('last-profile')) return '至少要保留一个 Profile';
+  if (text.includes('last-profile')) return '至少要保留一个配置';
+  if (text.includes('profile-name-taken')) return '已有同名配置，换一个名字';
   if (text.includes('notify-not-configured')) return '还没配置通知渠道';
   if (text.includes('redacted-url-rejected')) return '订阅链接是脱敏值：请在编辑抽屉重新粘贴完整链接';
+  if (text.includes('redacted-proxy-rejected')) return '代理地址是脱敏值：请重新粘贴完整代理地址';
+  if (text.includes('invalid-source-format')) return '订阅格式不支持：请选择已列出的格式或留空自动识别';
+  if (text.includes('invalid-enabled')) return '启用状态只能是开或关';
+  if (text.includes('content-required')) return '正文不能为空，删除正文请直接删源';
   if (text.includes('url-required')) return '订阅链接不能为空';
   if (text.includes('name-required')) return '名称不能为空';
-  if (text.includes('404') && text.includes('profile-not-found')) return 'Profile 不存在，请先在订阅源页重建';
+  if (text.includes('404') && text.includes('profile-not-found')) return '配置不存在，请先在订阅页重建';
   return text.length > 240 ? `${text.slice(0, 240)}…` : text;
 }
 
@@ -376,23 +398,43 @@ export function downloadPreview(): void {
 
 /* ---------------- 数据加载 ---------------- */
 
+/**
+ * 产物预览刷新。序号守卫两件事：
+ * ① 快速切换 target（点客户端 / 签发后拨指针）时，先发出的响应可能后到，
+ *    旧响应不得覆盖新状态——否则卡头是新客户端、正文还是旧产物；
+ * ② 失败时清空旧内容并提示（比如配置为空），而不是继续展示上一个 target 的产物。
+ */
+let previewSeq = 0;
 export async function refreshPreview(): Promise<void> {
+  const seq = ++previewSeq;
   previewLoading.value = true;
   try {
-    preview.value = await api.preview(target.value);
+    const result = await api.preview(target.value);
+    if (seq === previewSeq) preview.value = result;
+  } catch (cause) {
+    if (seq === previewSeq) {
+      preview.value = null;
+      notify('error', messageOf(cause));
+    }
   } finally {
-    previewLoading.value = false;
+    if (seq === previewSeq) previewLoading.value = false;
   }
 }
 
-async function loadRuleState(): Promise<void> {
+/**
+ * 规则与策略组的草稿保护同构成：后台刷新不得覆盖未保存的修改。
+ * 但 force（切配置）时必须无条件覆盖——旧配置的规则草稿留在界面里，
+ * 点保存就会写进新配置；此时 loadedRules / loadedGroups 也要一起重建，
+ * 否则脏标记永远停 true。
+ */
+async function loadRuleState(force = false): Promise<void> {
   const ruleData = await api.rules();
-  if (!rulesDirty.value) {
+  if (force || !rulesDirty.value) {
     rules.value = ruleData.rules;
     loadedRules.value = JSON.stringify(ruleData.rules);
   }
   const groupData = await api.policyGroups();
-  if (!groupsDirty.value) {
+  if (force || !groupsDirty.value) {
     groups.value = groupData.groups.map((group) => ({ name: group.name, members: [...group.members] }));
     loadedGroups.value = JSON.stringify(groups.value);
   }
@@ -418,8 +460,11 @@ async function loadNodeState(): Promise<void> {
  * 所以未保存的草稿必须由它保护：早期实现无条件重写 profileEntries / loadedEntries，
  * 用户在后台拉上游那几十秒里改构成，保存按钮会自己变回「已保存」，改动静默消失。
  * 规则与策略组同理，保护放在 loadRuleState 里。
+ *
+ * force 只给「用户主动换 Profile」用：此时必须按新 Profile 的构成重建界面，
+ * 否则旧 Profile 的未保存草稿会被带过去、点保存时写进新 Profile。
  */
-function applyStateSnapshot(snapshot: StateView): void {
+function applyStateSnapshot(snapshot: StateView, force = false): void {
   state.value = snapshot;
   const preferred = getActiveProfile();
   const profile =
@@ -429,10 +474,13 @@ function applyStateSnapshot(snapshot: StateView): void {
   setActiveProfile(profile?.name ?? 'default');
   activeProfileName.value = getActiveProfile();
 
-  if (!profileDirty.value) {
+  if (force || !profileDirty.value) {
     profileEntries.value = profile ? [...profile.entries] : [];
     loadedEntries.value = JSON.stringify(profileEntries.value);
   }
+  // 加工轨迹是按配置算的：换配置时必须清掉，否则诊断页的 loadTraceIfNeeded
+  // 看到「有数据」就短路，展示的还是上一个配置的步骤。
+  if (force) traceSteps.value = [];
   // 标注是即时保存（没有草稿态），可以放心同步。
   annotations.value = [...snapshot.annotations];
 
@@ -442,13 +490,13 @@ function applyStateSnapshot(snapshot: StateView): void {
   }
 }
 
-export async function loadAll(): Promise<void> {
-  applyStateSnapshot(await api.state());
+export async function loadAll(force = false): Promise<void> {
+  applyStateSnapshot(await api.state(), force);
 
   await refreshSourceStats();
   await loadNodeState();
   await refreshPreview();
-  await loadRuleState();
+  await loadRuleState(force);
   evidence.value = (await api.capabilities()).evidence;
   history.value = (await api.diagnostics()).reports;
   ops.value = await api.ops();
@@ -464,6 +512,15 @@ export async function loadAll(): Promise<void> {
  */
 async function reloadAfterSave(): Promise<void> {
   applyStateSnapshot(await api.state());
+}
+
+/**
+ * 保存后的后台补齐：inspectSources 会对每个远端源真发一次上游请求，不能让它挡住
+ * 「抽屉关闭 / 开关翻转」。串行排队，避免连续操作后旧响应反而覆盖了新状态。
+ */
+let backgroundReload: Promise<void> = Promise.resolve();
+function scheduleBackgroundReload(): void {
+  backgroundReload = backgroundReload.then(() => loadAll()).catch(() => undefined);
 }
 
 /**
@@ -584,7 +641,7 @@ export function reload(): Promise<boolean> {
   });
 }
 
-/* ---------------- 订阅源 ---------------- */
+/* ---------------- 订阅 ---------------- */
 
 export async function createSource(
   input: SourceInput,
@@ -596,7 +653,7 @@ export async function createSource(
     attached = created.attached;
     createdId = created.id;
     await reloadAfterSave();
-    notify('ok', attached ? `已添加 ${created.id}，并加入当前 Profile 构成` : `已添加 ${created.id}`);
+    notify('ok', attached ? `已添加 ${created.id}，并加入当前配置构成` : `已添加 ${created.id}`);
   });
   // 保存已经落库，上游拉取交给后台：remote 源要真去拉一次，file 源只需补齐统计与构建状态。
   if (ok && createdId !== '') queueSourceRefresh(createdId, input.kind === 'remote');
@@ -607,10 +664,25 @@ export async function updateSource(
   id: string,
   patch: Partial<SourceInput> & { enabled?: boolean },
 ): Promise<boolean> {
-  return run(async () => {
+  // 启用开关是受控组件：先本地翻转，失败再回滚。等一串上游请求回来才动会让人连点。
+  const enabled = patch.enabled;
+  const before = enabled === undefined ? undefined : sources.value.find((item) => item.id === id)?.enabled;
+  const flip = (value: boolean): void => {
+    if (state.value === null) return;
+    state.value = {
+      ...state.value,
+      sources: state.value.sources.map((item) => (item.id === id ? { ...item, enabled: value } : item)),
+    };
+  };
+  if (enabled !== undefined && before !== undefined) flip(enabled);
+
+  const ok = await run(async () => {
     await api.updateSource(id, patch);
-    await loadAll();
+    await reloadAfterSave();
   });
+  if (!ok && enabled !== undefined && before !== undefined) flip(before);
+  if (ok) scheduleBackgroundReload();
+  return ok;
 }
 
 export async function removeSource(id: string): Promise<boolean> {
@@ -622,7 +694,7 @@ export async function removeSource(id: string): Promise<boolean> {
     const cleaned = result.detached;
     const parts: string[] = [];
     if (cleaned.collections > 0) parts.push(`${cleaned.collections} 个组合订阅`);
-    if (cleaned.profiles > 0) parts.push(`${cleaned.profiles} 个 Profile 构成`);
+    if (cleaned.profiles > 0) parts.push(`${cleaned.profiles} 个配置构成`);
     notify(
       'ok',
       parts.length === 0
@@ -659,16 +731,27 @@ export async function refreshSource(id: string): Promise<{ refreshed: number; fa
 }
 
 export async function refreshRemoteSources(): Promise<void> {
-  await run(async () => {
-    const outcome = await api.refreshRemote();
-    await loadAll();
-    notify(
-      outcome.failed > 0 ? 'error' : 'ok',
-      outcome.failed > 0
-        ? `${outcome.refreshed} 个已更新，${outcome.failed} 个失败（原因见订阅源列表）`
-        : `已更新 ${outcome.refreshed} 个订阅`,
-    );
-  });
+  // 批量更新也要占住每个源的「更新中」：否则状态列不动、单源按钮仍可点，
+  // 会和批量刷新并发打同一条上游。只清掉自己加进去的 id，不碰后台队列已占的。
+  const ids = sources.value
+    .filter((item) => item.kind === 'remote' && item.enabled)
+    .map((item) => item.id);
+  const marked = ids.filter((id) => !sourceUpdating.value.includes(id));
+  sourceUpdating.value = [...sourceUpdating.value, ...marked];
+  try {
+    await run(async () => {
+      const outcome = await api.refreshRemote();
+      await loadAll();
+      notify(
+        outcome.failed > 0 ? 'error' : 'ok',
+        outcome.failed > 0
+          ? `${outcome.refreshed} 个已更新，${outcome.failed} 个失败（原因见订阅列表）`
+          : `已更新 ${outcome.refreshed} 个订阅`,
+      );
+    });
+  } finally {
+    sourceUpdating.value = sourceUpdating.value.filter((id) => !marked.includes(id));
+  }
 }
 
 /* ---------------- 组合订阅 ---------------- */
@@ -693,7 +776,7 @@ export async function removeCollection(id: string): Promise<boolean> {
     notify(
       'ok',
       result.detached.profiles > 0
-        ? `已删除组合订阅，并从 ${result.detached.profiles} 个 Profile 构成里移除`
+        ? `已删除组合订阅，并从 ${result.detached.profiles} 个配置构成里移除`
         : '已删除组合订阅',
     );
   });
@@ -711,36 +794,62 @@ export async function attachSources(ids: readonly string[]): Promise<boolean> {
 
 /* ---------------- Profile ---------------- */
 
+/** 切换器的选项。侧栏与配置页窄屏共用一份，别在两处各建一次。 */
+export const profileOptions = computed(() =>
+  profiles.value.map((item) => ({ label: item.name, value: item.name })),
+);
+
+export async function onProfileChange(value: string): Promise<void> {
+  await switchProfile(value);
+}
+
 export async function switchProfile(name: string): Promise<boolean> {
   if (name === activeProfileName.value) return true;
+  const previous = activeProfileName.value;
+  const hadDraft = profileDirty.value;
+  // 规则与策略组也按配置存了，切走同样会丢掉未保存的草稿——不能只提示构成。
+  const hadRuleDraft = rulesDirty.value || groupsDirty.value;
   return run(async () => {
     setActiveProfile(name);
     activeProfileName.value = name;
-    await loadAll();
-    notify('ok', `已切换到 Profile「${name}」`);
+    await loadAll(true);
+    if (hadDraft || hadRuleDraft) {
+      const what = hadDraft && hadRuleDraft ? '构成与规则' : hadDraft ? '构成' : '规则';
+      notify('error', `切换配置，「${previous}」未保存的${what}修改已丢弃`);
+    } else notify('ok', `已切换到配置「${name}」`);
   });
 }
 
 export async function createProfile(name: string): Promise<boolean> {
   const value = name.trim();
   if (value.length === 0) {
-    notify('error', '请填写 Profile 名称');
+    notify('error', '请填写配置名称');
     return false;
   }
+  const previous = activeProfileName.value;
+  const hadDraft = profileDirty.value;
+  const hadRuleDraft = rulesDirty.value || groupsDirty.value;
   return run(async () => {
     const created = await api.createProfile(value);
     if (!created.created) {
-      notify('error', `Profile「${value}」已存在`);
+      notify('error', `配置「${value}」已存在`);
       return;
     }
     setActiveProfile(value);
     activeProfileName.value = value;
-    await loadAll();
-    notify('ok', `已新建 Profile「${value}」，接着往构成里加来源`);
+    await loadAll(true);
+    if (hadDraft || hadRuleDraft) {
+      const what = hadDraft && hadRuleDraft ? '构成与规则' : hadDraft ? '构成' : '规则';
+      notify('error', `新建配置，「${previous}」未保存的${what}修改已丢弃`);
+    }
+    notify('ok', `已新建配置「${value}」，接着往构成里加订阅`);
   });
 }
 
 export async function removeProfile(name: string): Promise<boolean> {
+  const previous = activeProfileName.value;
+  const hadDraft = profileDirty.value;
+  const hadRuleDraft = rulesDirty.value || groupsDirty.value;
   return run(async () => {
     const result = await api.removeProfile(name);
     if (name === activeProfileName.value) {
@@ -749,17 +858,21 @@ export async function removeProfile(name: string): Promise<boolean> {
       setActiveProfile(fallback);
       activeProfileName.value = fallback;
     }
-    await loadAll();
+    await loadAll(true);
+    if (hadDraft || hadRuleDraft) {
+      const what = hadDraft && hadRuleDraft ? '构成与规则' : hadDraft ? '构成' : '规则';
+      notify('error', `删除配置，「${previous}」未保存的${what}修改已丢弃`);
+    }
     notify(
       'ok',
       result.revoked > 0
-        ? `已删除 Profile「${name}」，并撤销 ${result.revoked} 个绑定它的订阅地址`
-        : `已删除 Profile「${name}」`,
+        ? `已删除配置「${name}」，并撤销 ${result.revoked} 个绑定它的订阅地址`
+        : `已删除配置「${name}」`,
     );
   });
 }
 
-/* ---------------- Profile 构成 ---------------- */
+/* ----------------配置构成 ---------------- */
 
 export function addProfileEntry(entry: ProfileEntryView): void {
   profileEntries.value = [...profileEntries.value, entry];
@@ -781,14 +894,28 @@ export function moveProfileEntry(index: number, direction: number): void {
   profileEntries.value = list;
 }
 
+/**
+ * 丢弃构成草稿，回到最近一次 /api/state 里落库的构成。
+ * 用 state 而不是 loadedEntries 当来源：基线只是字符串比对用的快照，
+ * 一旦历史上某次保存把基线写成错的，靠它「还原」只会把错误再写一遍。
+ */
+export function discardProfileDraft(): void {
+  const snapshot = state.value;
+  if (snapshot === null) return;
+  const profile = snapshot.profiles.find((item) => item.name === activeProfileName.value);
+  profileEntries.value = profile ? [...profile.entries] : [];
+  loadedEntries.value = JSON.stringify(profileEntries.value);
+}
+
 export async function saveProfile(): Promise<boolean> {
   return run(async () => {
     await api.saveProfile(profileEntries.value);
-    state.value = await api.state();
+    // 先把基线对齐，再走统一的状态映射：否则草稿保护会把刚保存的构成当成「未保存改动」跳过。
     loadedEntries.value = JSON.stringify(profileEntries.value);
+    applyStateSnapshot(await api.state());
     await loadNodeState();
     await refreshPreview();
-    notify('ok', 'Profile 已保存');
+    notify('ok', '配置已保存');
   });
 }
 
@@ -862,26 +989,59 @@ export async function moveNode(index: number, direction: number): Promise<boolea
 
 /* ---------------- 订阅 URL ---------------- */
 
-/** 签发成功返回明文地址（只此一次），失败返回 null；调用方拿到就能立刻给用户复制。 */
-export async function createToken(forTarget: string): Promise<string | null> {
+/** 签发成功返回明文地址，失败返回 null；调用方拿到就能立刻给用户复制。 */
+export async function createToken(
+  forTarget: string,
+  forProfile: string = activeProfileName.value,
+): Promise<string | null> {
   let url: string | null = null;
   const ok = await run(async () => {
-    const result = await api.createToken(forTarget);
+    const result = await api.createToken(forTarget, forProfile);
     url = result.url;
     createdUrls.value = [
       { target: forTarget, url: result.url },
       ...createdUrls.value.filter((item) => item.target !== forTarget),
     ];
-    state.value = await api.state();
+    applyStateSnapshot(await api.state());
     notify('ok', '订阅地址已生成');
   });
   return ok ? url : null;
 }
 
+/**
+ * 早期记录只存了 token 的 hash，链接和二维码再也还原不出来。
+ * 重签发先建新地址、成功后才撤销旧的：中间任何一步失败都只是短暂并存，
+ * 不会出现「旧的已失效、新的又没签出来」把用户锁在门外。
+ */
+export async function reissueToken(
+  id: string,
+  forTarget: string,
+  forProfile: string,
+): Promise<boolean> {
+  return run(async () => {
+    // 先建新地址：这一步失败就整体失败，旧地址原样保留，用户不会被锁在门外。
+    const result = await api.createToken(forTarget, forProfile);
+    createdUrls.value = [
+      { target: forTarget, url: result.url },
+      ...createdUrls.value.filter((item) => item.target !== forTarget),
+    ];
+    try {
+      await api.revokeToken(id);
+    } catch {
+      // 新地址已经可用，只是旧地址没撤掉：说清楚现状，别让用户以为整件事失败了。
+      applyStateSnapshot(await api.state());
+      notify('error', '新地址已生成，但旧地址撤销失败，请在列表里手动撤销');
+      return;
+    }
+    applyStateSnapshot(await api.state());
+    notify('ok', '已重新签发，旧地址已失效');
+  });
+}
+
 export async function revokeToken(id: string): Promise<boolean> {
   return run(async () => {
     await api.revokeToken(id);
-    state.value = await api.state();
+    applyStateSnapshot(await api.state());
     notify('ok', '订阅地址已撤销');
   });
 }

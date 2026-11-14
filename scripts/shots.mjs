@@ -17,7 +17,7 @@ const CHROME =
       : 'google-chrome');
 const BASE = process.env.STARTRAILS_BASE ?? 'http://127.0.0.1:8787';
 const OUT = process.argv[2] ?? process.env.STARTRAILS_SHOTS_DIR ?? 'out/shots';
-const PAGES = ['overview', 'sources', 'nodes', 'rules', 'publish', 'diagnostics', 'capabilities', 'settings'];
+const PAGES = ['overview', 'sources', 'config', 'output', 'publish', 'settings'];
 const TOKEN = process.env.STARTRAILS_ADMIN_TOKEN ?? 'demo-admin';
 
 mkdirSync(OUT, { recursive: true });
@@ -103,7 +103,22 @@ await sleep(2600);
 async function shot(name) {
   const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
   writeFileSync(`${OUT}/${name}.png`, Buffer.from(data, 'base64'));
-  console.log(`shot ${name}`);
+  // 截图看不出的横向溢出，用数字兜底：不为 0 就让流水失败，别只打印了事。
+  const { result } = await send(
+    'Runtime.evaluate',
+    {
+      expression:
+        `JSON.stringify({ doc: document.documentElement.scrollWidth - window.innerWidth,` +
+        ` wrap: Math.max(0, ...[...document.querySelectorAll('.tbl-wrap')].map((el) => el.scrollWidth - el.clientWidth)) })`,
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  const overflow = JSON.parse(result.value);
+  if (overflow.doc !== 0 || overflow.wrap !== 0) {
+    throw new Error(`page ${name} has horizontal overflow: ${result.value}`);
+  }
+  console.log(`shot ${name} overflow=0`);
 }
 
 for (const page of PAGES) {
@@ -128,7 +143,7 @@ await shot('theme-celadon');
 await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true }, sessionId);
 await send('Runtime.evaluate', { expression: `localStorage.removeItem('startrails_palette'); localStorage.setItem('startrails_theme_mode','light'); location.reload()` }, sessionId);
 await sleep(2600);
-for (const page of ['overview', 'sources', 'nodes', 'publish', 'settings']) {
+for (const page of ['overview', 'sources', 'config', 'output', 'publish', 'settings']) {
   await send('Runtime.evaluate', { expression: `document.querySelector('[data-nav="${page}"]')?.click()` }, sessionId);
   await sleep(700);
   await shot(`m-${page}`);

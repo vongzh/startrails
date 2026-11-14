@@ -17,6 +17,11 @@ export interface BarkConfig {
 }
 
 export interface NotifyConfig {
+  /**
+   * 总开关。false = 暂停推送但保留渠道配置（不删 token），界面上的「运维通知」就是它。
+   * 缺省视为开启，兼容环境变量与旧记录。
+   */
+  readonly enabled?: boolean;
   readonly telegram?: TelegramConfig;
   readonly bark?: BarkConfig;
   /** 同一 key 的最短重发间隔，默认 30 分钟。 */
@@ -59,7 +64,8 @@ export function createNotifier(
     readonly interval: number;
   } | null => {
     const config = resolve();
-    if (config === undefined) return null;
+    // enabled === false 时整条链路静默：配置留着，开关一开就恢复，不用重填 token。
+    if (config === undefined || config.enabled === false) return null;
     const channels: string[] = [];
     if (config.telegram !== undefined) channels.push('telegram');
     if (config.bark !== undefined) channels.push('bark');

@@ -2,7 +2,9 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover 不是「铺满全屏」的装饰：没有它，iPhone 上的
+         env(safe-area-inset-*) 恒等于 0，底栏会压在 Home 手势条上，点哪都先触发系统手势。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Startrails · 订阅配置控制台</title>

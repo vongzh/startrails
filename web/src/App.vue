@@ -111,7 +111,9 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
     :locale="zhCN"
     :date-locale="dateZhCN"
   >
-    <n-message-provider :max="3" placement="bottom-right">
+    <!-- 提示条放顶部居中：右下角离操作区（表格行内的图标按钮）太近，容易被忽略。
+         顶部有顶栏，位置由 style.css 的 .n-message-container 下移让开。 -->
+    <n-message-provider :max="3" placement="top">
       <n-dialog-provider>
         <Shell />
       </n-dialog-provider>

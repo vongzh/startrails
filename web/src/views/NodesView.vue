@@ -218,10 +218,10 @@ async function commitAlias(node: NodeView): Promise<void> {
         />
       </div>
 
-      <n-empty v-if="nodes.length === 0" description="还没有节点：先添加订阅源，并把它加入 Profile 构成" style="padding: 40px 0">
+      <n-empty v-if="nodes.length === 0" description="还没有节点：先添加订阅或自己的节点，并把它加入配置构成" style="padding: 40px 0">
         <template #icon><Server :size="30" /></template>
         <template #extra>
-          <n-button size="small" type="primary" @click="tab = 'sources'">去订阅源页配置</n-button>
+          <n-button size="small" type="primary" @click="tab = 'sources'">去订阅页配置</n-button>
         </template>
       </n-empty>
 
@@ -308,10 +308,10 @@ async function commitAlias(node: NodeView): Promise<void> {
                 </td>
                 <td class="col-optional">
                   <div class="row tight">
-                    <n-button aria-label="上移" quaternary circle size="tiny" :disabled="!sortable || index === 0" @click="moveNode(nodes.indexOf(node), -1)">
+                    <n-button aria-label="上移" quaternary circle size="tiny" :disabled="!sortable || busy > 0 || index === 0" @click="moveNode(nodes.indexOf(node), -1)">
                       <template #icon><ArrowUp :size="13" /></template>
                     </n-button>
-                    <n-button aria-label="下移" quaternary circle size="tiny" :disabled="!sortable || index === filtered.length - 1" @click="moveNode(nodes.indexOf(node), 1)">
+                    <n-button aria-label="下移" quaternary circle size="tiny" :disabled="!sortable || busy > 0 || index === filtered.length - 1" @click="moveNode(nodes.indexOf(node), 1)">
                       <template #icon><ArrowDown :size="13" /></template>
                     </n-button>
                   </div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { NButton, NEmpty, NInput, NSelect, NTag } from 'naive-ui';
+import { NButton, NEmpty, NInput, NSelect, NTag, NTooltip } from 'naive-ui';
 import { ArrowDown, ArrowUp, FileCode2, Filter, Layers, Plus, Trash2, X } from 'lucide-vue-next';
 import {
   addGroup,
@@ -28,16 +28,44 @@ const jsonOpen = ref(false);
 const jsonDraft = ref('[]');
 const memberDrafts = ref<Record<string, string>>({});
 const groupDraft = ref('');
+const ruleInputRow = ref<HTMLElement | null>(null);
+const groupInputRow = ref<HTMLElement | null>(null);
 
+/** 空态 CTA：把焦点交回下方输入行，别让用户对着空卡片找入口。 */
+function focusInput(row: HTMLElement | null): void {
+  row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const field =
+    row?.querySelector<HTMLInputElement>('.n-input__input-el') ??
+    row?.querySelector<HTMLInputElement>('input');
+  field?.focus();
+}
+
+/**
+ * 只列**后端真能存**的三种条件。IR 的条件树目前是 domain / domainSuffix / ipCidr（+ and/or/not），
+ * 而 DOMAIN-KEYWORD 与 GEOIP 只在客户端方言里有说法：给个能选、一保存就 400 `invalid-rules` 的下拉
+ * 比不给更糟。真要支持得先在 IR、校验、能力表与 7 种方言的渲染里补上，再来加这两项。
+ */
 const conditionTypes = [
   { label: 'DOMAIN-SUFFIX', value: 'domainSuffix' },
   { label: 'DOMAIN', value: 'domain' },
-  { label: 'DOMAIN-KEYWORD', value: 'domainKeyword' },
   { label: 'IP-CIDR', value: 'ipCidr' },
-  { label: 'GEOIP', value: 'geoIp' },
 ];
 
 const dirty = computed(() => rulesDirty.value || groupsDirty.value);
+
+/**
+ * 规则的 policy 会被原样写进产物（`renderRule` 就是模板拼接），写错组名时构建不会报错，
+ * 客户端却可能整个配置拒绝加载。这里只做「认不认得」的提示，不限制输入——
+ * 各方言的内置策略名并不一致，硬约束会挡掉合法写法。
+ */
+// 各方言的内置策略取并集（小写比对）：Clash/mihomo 的 DIRECT/REJECT/REJECT-DROP/PASS/COMPATIBLE，
+// Surge 同名沿用，block 是 Clash 旧版别名，proxy 是「主代理组」的惯用占位名。
+const POLICY_BUILTINS = ['direct', 'reject', 'reject-drop', 'proxy', 'pass', 'compatible', 'block'];
+const groupNames = computed(() => new Set(groups.value.map((group) => group.name.toLowerCase())));
+const policyKnown = (policy: string): boolean => {
+  const key = policy.trim().toLowerCase();
+  return groupNames.value.has(key) || POLICY_BUILTINS.includes(key);
+};
 
 function submitRule(): void {
   if (draft.value.value.trim() === '') return;
@@ -90,6 +118,7 @@ function submitGroup(): void {
 
         <n-empty v-if="rules.length === 0" description="还没有内联规则" style="padding: 36px 0">
           <template #icon><Filter :size="28" /></template>
+          <n-button size="small" @click="focusInput(ruleInputRow)">添加第一条规则</n-button>
         </n-empty>
 
         <div v-else class="tbl-wrap">
@@ -101,7 +130,18 @@ function submitGroup(): void {
               <tr v-for="(rule, index) in rules" :key="index">
                 <td class="num">{{ index + 1 }}</td>
                 <td class="mono">{{ ruleLabel(rule) }}</td>
-                <td><n-tag size="small" type="primary" :bordered="false" class="mono">{{ rule.policy }}</n-tag></td>
+                <td>
+                  <n-tooltip v-if="!policyKnown(rule.policy)" trigger="hover">
+                    <template #trigger>
+                      <!-- 加描边：这个主题里 warning 与 primary 的底色差得不远，光靠颜色读不出来。 -->
+                      <n-tag size="small" type="warning" :bordered="true" class="mono" style="cursor: help">
+                        {{ rule.policy }}
+                      </n-tag>
+                    </template>
+                    不是内置策略，也找不到同名策略组：产物会原样写这个值，客户端可能拒绝整份配置。
+                  </n-tooltip>
+                  <n-tag v-else size="small" type="primary" :bordered="false" class="mono">{{ rule.policy }}</n-tag>
+                </td>
                 <td class="actions">
                   <div class="row tight end">
                     <n-button aria-label="上移" quaternary circle size="tiny" :disabled="index === 0" @click="moveRule(index, -1)">
@@ -120,7 +160,7 @@ function submitGroup(): void {
           </table>
         </div>
 
-        <div class="row" style="padding: 12px 18px; border-top: 1px solid var(--border)">
+        <div ref="ruleInputRow" class="row" style="padding: 12px 18px; border-top: 1px solid var(--border)">
           <n-select v-model:value="draft.type" :options="conditionTypes" size="small" style="width: 170px" />
           <n-input v-model:value="draft.value" size="small" placeholder="匹配值，例如 example.com" class="grow" @keyup.enter="submitRule" />
           <n-input v-model:value="draft.policy" size="small" placeholder="DIRECT" style="width: 120px" @keyup.enter="submitRule" />
@@ -144,6 +184,7 @@ function submitGroup(): void {
 
         <n-empty v-if="groups.length === 0" description="还没有策略组，可在下方新建" style="padding: 36px 0">
           <template #icon><Layers :size="28" /></template>
+          <n-button size="small" @click="focusInput(groupInputRow)">新建第一个策略组</n-button>
         </n-empty>
 
         <div v-else class="card-body stack" style="gap: 12px">
@@ -189,7 +230,7 @@ function submitGroup(): void {
           </div>
         </div>
 
-        <div class="row" style="padding: 12px 18px; border-top: 1px solid var(--border)">
+        <div ref="groupInputRow" class="row" style="padding: 12px 18px; border-top: 1px solid var(--border)">
           <n-input
             v-model:value="groupDraft"
             size="small"

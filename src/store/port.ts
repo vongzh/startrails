@@ -1,4 +1,4 @@
-import type { Annotation, BuildReport, ClientTarget, InlineRule } from '../core/index.ts';
+import type { Annotation, BuildReport, ClientTarget, InlineRule, RuntimePolicy } from '../core/index.ts';
 import type { CollectionMember, DedupeStrategy } from '../core/index.ts';
 
 export interface PersistedGroupOverride {
@@ -78,6 +78,11 @@ export interface PersistedProfile {
   readonly name: string;
   /** 顺序即合并顺序；同一源可被多个组合订阅重复引用。 */
   readonly entries: readonly ProfileEntry[];
+  /**
+   * 这份配置的解析方式与 TUN 入站。曾经存在 app_setting 里全局一份，
+   * 结果是改一次 DNS 让所有配置的产物都换版本；现在跟着配置走，留空即不写段。
+   */
+  readonly runtime?: RuntimePolicy | undefined;
 }
 
 /** auto = 一个链接喂所有客户端，按请求 UA 判定输出方言。 */
@@ -90,6 +95,11 @@ export interface PersistedToken {
   readonly target: TokenTarget;
   readonly revoked: boolean;
   readonly createdAt: string;
+  /**
+   * 明文 token，仅在 store 内部加解密，用来让台账能重新拼出订阅地址与二维码。
+   * 只存 hash 时，签发响应一关掉就再也拿不回链接；老记录没有这一列，读出来是 undefined。
+   */
+  readonly token?: string | undefined;
 }
 
 export interface PersistedBuildReport {
@@ -128,16 +138,22 @@ export interface Store {
   removeCollection(id: string): void;
 
   listProfiles(): readonly PersistedProfile[];
+  /** 只写身份与构成；运行时段有自己的写入口，保存构成时不该顺手把它清掉。 */
   putProfile(profile: PersistedProfile): void;
+  /** `null` 表示主动清空：产物不再写 DNS / TUN 段，区别于「本次不涉及」。 */
+  putProfileRuntime(profileId: string, runtime: RuntimePolicy | null): void;
   removeProfile(id: string): void;
 
-  listAnnotations(): readonly Annotation[];
-  putAnnotation(annotation: Annotation): void;
-  removeAnnotation(nodeKey: string): void;
+  /**
+   * 节点标注按配置隔离：排除、别名、地区、排序都只作用于这一份配置的产物。
+   * 早期这三张表没有 profile 列，改一份会连带改掉所有配置的产物。
+   */
+  listAnnotations(profileId: string): readonly Annotation[];
+  putAnnotation(profileId: string, annotation: Annotation): void;
 
   /**
-   * 通用键值设置。只放「整份配置级」的小对象（运行时段 DNS / TUN、通知、WebDAV、管理面令牌哈希）。
-   * 值由调用方负责序列化与校验，Store 不解释内容——否则每加一种设置都要改一次驱动。
+   * 通用键值设置。只放**实例级**的小对象（通知、WebDAV、管理面令牌哈希）。
+   * 任何「只对某份配置成立」的东西都不要放这里——那会退化成全局共享。
    */
   getSetting(key: string): string | undefined;
   putSetting(key: string, value: string): void;
@@ -147,15 +163,21 @@ export interface Store {
    */
   claimSetting(key: string, value: string): boolean;
 
-  listRules(): readonly InlineRule[];
-  replaceRules(rules: readonly InlineRule[]): void;
-  listGroupOverrides(): readonly PersistedGroupOverride[];
-  replaceGroupOverrides(overrides: readonly PersistedGroupOverride[]): void;
+  listRules(profileId: string): readonly InlineRule[];
+  replaceRules(profileId: string, rules: readonly InlineRule[]): void;
+  listGroupOverrides(profileId: string): readonly PersistedGroupOverride[];
+  replaceGroupOverrides(profileId: string, overrides: readonly PersistedGroupOverride[]): void;
 
   createToken(token: PersistedToken): void;
   findTokenByHash(hash: string): PersistedToken | undefined;
   listTokens(): readonly PersistedToken[];
   revokeToken(id: string): void;
+  /**
+   * 配置改名要跟着改令牌的归属：令牌的 profile 存的是签发时的配置名，
+   * 不级联的话 /s/ 交付链路与撤销匹配都按名字对不上，已签发地址会整体失效。
+   * 返回改写的条数，供响应计数。
+   */
+  renameTokenProfile(from: string, to: string): number;
 
   saveBuildReport(report: PersistedBuildReport): void;
   getBuildReport(buildId: string): PersistedBuildReport | undefined;

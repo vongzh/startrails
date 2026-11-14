@@ -1,7 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import type { Annotation, BuildReport, ClientTarget, CollectionMember, DedupeStrategy, InlineRule } from '../core/index.ts';
+import type { Annotation, BuildReport, ClientTarget, CollectionMember, DedupeStrategy, InlineRule, RuntimePolicy } from '../core/index.ts';
+import { parseRuntime } from '../core/index.ts';
 import { decrypt, deriveKey, encrypt } from './crypto.ts';
 import type {
   PersistedBuildReport,
@@ -33,7 +34,7 @@ interface SourceRow {
   updated_at: string;
 }
 interface PayloadRow { content: string; bytes: number; updated_at: string }
-interface ProfileRow { id: string; name: string; source_ids: string; items: string | null }
+interface ProfileRow { id: string; name: string; source_ids: string; items: string | null; runtime: string | null }
 interface CollectionRow {
   id: string;
   name: string;
@@ -52,6 +53,7 @@ interface AnnotationRow {
 interface TokenRow {
   id: string;
   token_hash: string;
+  token_secret: string | null;
   profile: string;
   target: string;
   revoked: number;
@@ -87,7 +89,8 @@ CREATE TABLE IF NOT EXISTS profile_definition (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   source_ids TEXT NOT NULL DEFAULT '[]',
-  items TEXT
+  items TEXT,
+  runtime TEXT
 );
 CREATE TABLE IF NOT EXISTS collection_definition (
   id TEXT PRIMARY KEY,
@@ -98,16 +101,19 @@ CREATE TABLE IF NOT EXISTS collection_definition (
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS annotation (
-  node_key TEXT PRIMARY KEY,
+  profile TEXT NOT NULL,
+  node_key TEXT NOT NULL,
   excluded INTEGER NOT NULL DEFAULT 0,
   alias TEXT,
   tag TEXT,
   region TEXT,
-  sort_order INTEGER
+  sort_order INTEGER,
+  PRIMARY KEY (profile, node_key)
 );
 CREATE TABLE IF NOT EXISTS subscription_token (
   id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
+  token_secret TEXT,
   profile TEXT NOT NULL,
   target TEXT NOT NULL,
   revoked INTEGER NOT NULL DEFAULT 0,
@@ -120,13 +126,17 @@ CREATE TABLE IF NOT EXISTS build_report (
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS inline_rule (
-  position INTEGER PRIMARY KEY,
-  payload TEXT NOT NULL
+  profile TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  PRIMARY KEY (profile, position)
 );
 CREATE TABLE IF NOT EXISTS policy_group_override (
-  name TEXT PRIMARY KEY,
+  profile TEXT NOT NULL,
+  name TEXT NOT NULL,
   members TEXT NOT NULL,
-  sort_order INTEGER NOT NULL
+  sort_order INTEGER NOT NULL,
+  PRIMARY KEY (profile, name)
 );
 CREATE TABLE IF NOT EXISTS app_setting (
   key TEXT PRIMARY KEY,
@@ -145,6 +155,97 @@ function ensureColumn(
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   if (columns.some((item) => item.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+
+function hasColumn(db: Database.Database, table: string, column: string): boolean {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  return columns.some((item) => item.name === column);
+}
+
+/**
+ * 三张「用户意图」表从全局升级成按配置。
+ *
+ * 老库里排除、内联规则、策略组覆盖都没有 profile 列——改一份配置会连带改掉所有配置的产物，
+ * 而它们本来属于「这份产物怎么组装」。SQLite 不能改主键，只能重建表；
+ * 迁移把原有的全局值**平铺到每一份配置**，这样升级前后的构建结果完全一致，
+ * 用户不会因为一次升级发现排除项消失。
+ */
+function migrateScopeToProfile(db: Database.Database): void {
+  if (!hasColumn(db, 'annotation', 'profile')) {
+    db.exec(`
+      CREATE TABLE annotation_scoped (
+        profile TEXT NOT NULL,
+        node_key TEXT NOT NULL,
+        excluded INTEGER NOT NULL DEFAULT 0,
+        alias TEXT,
+        tag TEXT,
+        region TEXT,
+        sort_order INTEGER,
+        PRIMARY KEY (profile, node_key)
+      );
+      INSERT INTO annotation_scoped (profile, node_key, excluded, alias, tag, region, sort_order)
+        SELECT p.id, a.node_key, a.excluded, a.alias, a.tag, a.region, a.sort_order
+        FROM annotation a CROSS JOIN profile_definition p;
+      DROP TABLE annotation;
+      ALTER TABLE annotation_scoped RENAME TO annotation;
+    `);
+  }
+
+  if (!hasColumn(db, 'inline_rule', 'profile')) {
+    db.exec(`
+      CREATE TABLE inline_rule_scoped (
+        profile TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (profile, position)
+      );
+      INSERT INTO inline_rule_scoped (profile, position, payload)
+        SELECT p.id, r.position, r.payload
+        FROM inline_rule r CROSS JOIN profile_definition p;
+      DROP TABLE inline_rule;
+      ALTER TABLE inline_rule_scoped RENAME TO inline_rule;
+    `);
+  }
+
+  if (!hasColumn(db, 'policy_group_override', 'profile')) {
+    db.exec(`
+      CREATE TABLE policy_group_override_scoped (
+        profile TEXT NOT NULL,
+        name TEXT NOT NULL,
+        members TEXT NOT NULL,
+        sort_order INTEGER NOT NULL,
+        PRIMARY KEY (profile, name)
+      );
+      INSERT INTO policy_group_override_scoped (profile, name, members, sort_order)
+        SELECT p.id, g.name, g.members, g.sort_order
+        FROM policy_group_override g CROSS JOIN profile_definition p;
+      DROP TABLE policy_group_override;
+      ALTER TABLE policy_group_override_scoped RENAME TO policy_group_override;
+    `);
+  }
+}
+
+/**
+ * 运行时段（DNS / TUN）从 app_setting 的一份全局值，搬到每份配置各自的 runtime 列。
+ * 同样是「平铺」：升级前所有配置共用一份，升级后各自留一份，产物不变。
+ * 存过 'null' 表示用户主动清空，不当成可用的值；键一律删掉，避免它被后来的配置误读。
+ */
+function migrateRuntimeToProfile(db: Database.Database): void {
+  const legacy = db.prepare("SELECT value FROM app_setting WHERE key = 'runtime'").get() as
+    | { value: string }
+    | undefined;
+  if (legacy === undefined) return;
+  let usable = false;
+  try {
+    const parsed: unknown = JSON.parse(legacy.value);
+    usable = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    usable = false;
+  }
+  if (usable) {
+    db.prepare('UPDATE profile_definition SET runtime = ? WHERE runtime IS NULL').run(legacy.value);
+  }
+  db.prepare("DELETE FROM app_setting WHERE key = 'runtime'").run();
 }
 
 const SOURCE_KINDS: readonly SourceKind[] = ['remote', 'file', 'inline'];
@@ -170,11 +271,16 @@ export function openStore(dbPath: string, secret: string): Store {
   ensureColumn(db, 'source_config', 'userinfo', 'userinfo TEXT');
   ensureColumn(db, 'source_config', 'suggested_hours', 'suggested_hours REAL');
   ensureColumn(db, 'profile_definition', 'items', 'items TEXT');
+  ensureColumn(db, 'profile_definition', 'runtime', 'runtime TEXT');
   // 手动覆盖地区：早期版本只存 alias / tag，旧库要补这一列才不会在写入时 500。
   ensureColumn(db, 'annotation', 'region', 'region TEXT');
+  // 台账要能重看链接与二维码：token 明文加密存这一列。旧库补列后既有记录仍是 NULL，
+  // 无法反推（库里本来只有 hash），前端会提示重新签发。
+  ensureColumn(db, 'subscription_token', 'token_secret', 'token_secret TEXT');
 
-  // 空库冷启动：保证始终存在一个 default profile，否则登录后 /api/nodes、/api/preview 等
+  // 空库冷启动：保证始终存在一个 default profile，否则登录后 /api/nodes、 /api/preview 等
   // 因 findProfile('default') 返回 undefined 全部抛 profile-not-found，前端直接「登录失败」。
+  // 必须排在三张表的按配置迁移之前——平铺要靠 profile_definition 里的行当目标。
   const profileCount = (
     db.prepare('SELECT COUNT(*) AS c FROM profile_definition').get() as { c: number }
   ).c;
@@ -183,6 +289,10 @@ export function openStore(dbPath: string, secret: string): Store {
       'INSERT INTO profile_definition (id, name, source_ids, items) VALUES (?, ?, ?, ?)',
     ).run('default', 'default', '[]', '[]');
   }
+
+  // 逐表判断是否还缺 profile 列，缺一补一；已经是新结构的库会整段跳过。
+  migrateScopeToProfile(db);
+  migrateRuntimeToProfile(db);
 
   const toSource = (row: SourceRow): PersistedSource => {
     const kind = (SOURCE_KINDS as readonly string[]).includes(row.kind)
@@ -216,14 +326,31 @@ export function openStore(dbPath: string, secret: string): Store {
     excluded: row.excluded === 1,
   });
 
-  const toToken = (row: TokenRow): PersistedToken => ({
-    id: row.id,
-    tokenHash: row.token_hash,
-    profile: row.profile,
-    target: row.target === 'auto' ? 'auto' : (row.target as ClientTarget),
-    revoked: row.revoked === 1,
-    createdAt: row.created_at,
-  });
+  /**
+   * 老记录只有 hash，没这一列的值，解不开就当作「无法还原」返回 undefined：
+   * 台账据此提示重新签发，而不是让整个列表接口因为一条历史数据 500。
+   */
+  const revealToken = (sealed: string | null): string | undefined => {
+    if (sealed === null || sealed.length === 0) return undefined;
+    try {
+      return decrypt(sealed, key);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const toToken = (row: TokenRow): PersistedToken => {
+    const token = revealToken(row.token_secret);
+    return {
+      id: row.id,
+      tokenHash: row.token_hash,
+      profile: row.profile,
+      target: row.target === 'auto' ? 'auto' : (row.target as ClientTarget),
+      revoked: row.revoked === 1,
+      createdAt: row.created_at,
+      ...(token === undefined ? {} : { token }),
+    };
+  };
 
   const toReport = (row: ReportRow): PersistedBuildReport => ({
     buildId: row.build_id,
@@ -242,7 +369,10 @@ export function openStore(dbPath: string, secret: string): Store {
     order: row.sort_order,
   });
 
-  /** 老库只有 source_ids：升级时按顺序生成 items，语义与升级前一致（扁平合并）。 */
+  /**
+   * 老库只有 source_ids：升级时按顺序生成 items，语义与升级前一致（扁平合并）。
+   * runtime 解析失败按「没设置」处理：宁可产物里少一段，也不要因为一行坏 JSON 让服务起不来。
+   */
   const toProfile = (row: ProfileRow): PersistedProfile => {
     const legacyIds = JSON.parse(row.source_ids) as string[];
     const parsed = row.items === null ? null : (JSON.parse(row.items) as ProfileEntry[]);
@@ -250,7 +380,15 @@ export function openStore(dbPath: string, secret: string): Store {
       parsed === null || parsed.length === 0
         ? legacyIds.map((id) => ({ kind: 'source', id }))
         : parsed;
-    return { id: row.id, name: row.name, entries };
+    let runtime: RuntimePolicy | undefined;
+    if (row.runtime !== null) {
+      try {
+        runtime = parseRuntime(JSON.parse(row.runtime) as unknown);
+      } catch {
+        runtime = undefined;
+      }
+    }
+    return { id: row.id, name: row.name, entries, ...(runtime === undefined ? {} : { runtime }) };
   };
 
   return {
@@ -347,12 +485,23 @@ export function openStore(dbPath: string, secret: string): Store {
         source_id: string;
         content: string;
       }[];
+      /** 订阅 token 明文用的是同一把 key，换密钥时必须跟着重加密，否则台账再也解不开。 */
+      const reencryptTokens = (from: Buffer, to: Buffer): void => {
+        const sealed = db
+          .prepare('SELECT id, token_secret FROM subscription_token WHERE token_secret IS NOT NULL')
+          .all() as { id: string; token_secret: string }[];
+        const update = db.prepare('UPDATE subscription_token SET token_secret = ? WHERE id = ?');
+        for (const row of sealed) {
+          update.run(encrypt(decrypt(row.token_secret, from), to), row.id);
+        }
+      };
       // 整个重加密放在一个事务里：任何一行解不开都回滚，不会留下「一半新密钥、一半旧密钥」。
       db.transaction(() => {
         const update = db.prepare('UPDATE source_payload SET content = ? WHERE source_id = ?');
         for (const row of rows) {
           update.run(encrypt(decrypt(row.content, key), nextKey), row.source_id);
         }
+        reencryptTokens(key, nextKey);
       })();
       key = nextKey;
       /* 撤销：把库里刚换成 nextKey 的正文重新用 previousKey 加密回去。
@@ -368,6 +517,7 @@ export function openStore(dbPath: string, secret: string): Store {
           for (const row of current) {
             update.run(encrypt(decrypt(row.content, nextKey), previousKey), row.source_id);
           }
+          reencryptTokens(nextKey, previousKey);
         })();
         key = previousKey;
       };
@@ -420,22 +570,38 @@ export function openStore(dbPath: string, secret: string): Store {
       );
     },
 
-    removeProfile: (id) => {
-      db.prepare('DELETE FROM profile_definition WHERE id = ?').run(id);
+    putProfileRuntime: (profileId, runtime) => {
+      db.prepare('UPDATE profile_definition SET runtime = ? WHERE id = ?').run(
+        runtime === null ? null : JSON.stringify(runtime),
+        profileId,
+      );
     },
 
-    listAnnotations: () =>
-      (db.prepare('SELECT * FROM annotation').all() as AnnotationRow[]).map(toAnnotation),
+    removeProfile: (id) => {
+      // 删除配置要连带清掉它的标注 / 规则 / 策略组覆盖，否则同名配置重建时会继承旧意图。
+      db.transaction(() => {
+        db.prepare('DELETE FROM annotation WHERE profile = ?').run(id);
+        db.prepare('DELETE FROM inline_rule WHERE profile = ?').run(id);
+        db.prepare('DELETE FROM policy_group_override WHERE profile = ?').run(id);
+        db.prepare('DELETE FROM profile_definition WHERE id = ?').run(id);
+      })();
+    },
 
-    putAnnotation: (annotation) => {
+    listAnnotations: (profileId) =>
+      (db.prepare('SELECT * FROM annotation WHERE profile = ?').all(profileId) as AnnotationRow[]).map(
+        toAnnotation,
+      ),
+
+    putAnnotation: (profileId, annotation) => {
       // 写串行化交给 SQLite 事务；单实例单进程，不需要额外的写队列。
       db.transaction(() => {
         db.prepare(
-          `INSERT INTO annotation (node_key, excluded, alias, tag, region, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT(node_key) DO UPDATE SET excluded=excluded.excluded, alias=excluded.alias,
+          `INSERT INTO annotation (profile, node_key, excluded, alias, tag, region, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(profile, node_key) DO UPDATE SET excluded=excluded.excluded, alias=excluded.alias,
              tag=excluded.tag, region=excluded.region, sort_order=excluded.sort_order`,
         ).run(
+          profileId,
           annotation.nodeKey,
           annotation.excluded === true ? 1 : 0,
           annotation.alias ?? null,
@@ -445,10 +611,6 @@ export function openStore(dbPath: string, secret: string): Store {
           annotation.order ?? null,
         );
       })();
-    },
-
-    removeAnnotation: (nodeKey) => {
-      db.prepare('DELETE FROM annotation WHERE node_key = ?').run(nodeKey);
     },
 
     getSetting: (key) => {
@@ -475,22 +637,30 @@ export function openStore(dbPath: string, secret: string): Store {
         )
         .run(key, value).changes === 1,
 
-    listRules: () =>
-      (db.prepare('SELECT payload FROM inline_rule ORDER BY position').all() as { payload: string }[]).map(
-        (row) => JSON.parse(row.payload) as InlineRule,
-      ),
+    listRules: (profileId) =>
+      (
+        db
+          .prepare('SELECT payload FROM inline_rule WHERE profile = ? ORDER BY position')
+          .all(profileId) as { payload: string }[]
+      ).map((row) => JSON.parse(row.payload) as InlineRule),
 
-    replaceRules: (rules) => {
+    replaceRules: (profileId, rules) => {
       db.transaction(() => {
-        db.prepare('DELETE FROM inline_rule').run();
-        const insert = db.prepare('INSERT INTO inline_rule (position, payload) VALUES (?, ?)');
-        rules.forEach((rule, index) => insert.run(index, JSON.stringify(rule)));
+        db.prepare('DELETE FROM inline_rule WHERE profile = ?').run(profileId);
+        const insert = db.prepare(
+          'INSERT INTO inline_rule (profile, position, payload) VALUES (?, ?, ?)',
+        );
+        rules.forEach((rule, index) => insert.run(profileId, index, JSON.stringify(rule)));
       })();
     },
 
-    listGroupOverrides: () =>
+    listGroupOverrides: (profileId) =>
       (
-        db.prepare('SELECT name, members, sort_order FROM policy_group_override ORDER BY sort_order').all() as {
+        db
+          .prepare(
+            'SELECT name, members, sort_order FROM policy_group_override WHERE profile = ? ORDER BY sort_order',
+          )
+          .all(profileId) as {
           name: string;
           members: string;
           sort_order: number;
@@ -501,22 +671,30 @@ export function openStore(dbPath: string, secret: string): Store {
         order: row.sort_order,
       })),
 
-    replaceGroupOverrides: (overrides: readonly PersistedGroupOverride[]) => {
+    replaceGroupOverrides: (profileId, overrides: readonly PersistedGroupOverride[]) => {
       db.transaction(() => {
-        db.prepare('DELETE FROM policy_group_override').run();
+        db.prepare('DELETE FROM policy_group_override WHERE profile = ?').run(profileId);
         const insert = db.prepare(
-          'INSERT INTO policy_group_override (name, members, sort_order) VALUES (?, ?, ?)',
+          'INSERT INTO policy_group_override (profile, name, members, sort_order) VALUES (?, ?, ?, ?)',
         );
         overrides.forEach((override) =>
-          insert.run(override.name, JSON.stringify(override.members), override.order),
+          insert.run(profileId, override.name, JSON.stringify(override.members), override.order),
         );
       })();
     },
 
     createToken: (token) => {
       db.prepare(
-        'INSERT INTO subscription_token (id, token_hash, profile, target, revoked, created_at) VALUES (?, ?, ?, ?, 0, ?)',
-      ).run(token.id, token.tokenHash, token.profile, token.target, token.createdAt);
+        'INSERT INTO subscription_token (id, token_hash, token_secret, profile, target, revoked, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)',
+      ).run(
+        token.id,
+        token.tokenHash,
+        // 只给 hash 时台账再也还原不出链接，所以这里连同明文一起加密落库。
+        token.token === undefined ? null : encrypt(token.token, key),
+        token.profile,
+        token.target,
+        token.createdAt,
+      );
     },
 
     findTokenByHash: (hash) => {
@@ -534,6 +712,9 @@ export function openStore(dbPath: string, secret: string): Store {
     revokeToken: (id) => {
       db.prepare('UPDATE subscription_token SET revoked = 1 WHERE id = ?').run(id);
     },
+
+    renameTokenProfile: (from, to) =>
+      db.prepare('UPDATE subscription_token SET profile = ? WHERE profile = ?').run(to, from).changes,
 
     saveBuildReport: (report) => {
       db.prepare(
