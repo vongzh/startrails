@@ -13,7 +13,7 @@ import {
   applyAnnotations,
   composeCollection,
   dedupeNodes,
-  inferRuleSetShape,
+  describeRuleSet,
   ingest,
   nodeKey,
   parseProfile,
@@ -41,7 +41,17 @@ import type {
 import { buildOne, outputFilename } from '../pipeline.ts';
 import type { BuildOutput } from '../pipeline.ts';
 import { hashToken, newToken, safeEqual, sha256 } from '../store/crypto.ts';
-import type { PersistedCollection, PersistedProfile, PersistedSource, Store } from '../store/port.ts';
+import type {
+  OverlayMode,
+  PersistedCollection,
+  PersistedGroupOverride,
+  PersistedProfile,
+  PersistedSource,
+  Store,
+  StoredMember,
+  StoredRule,
+} from '../store/port.ts';
+import { alignInheritedMembers, applyDnsOverlay, applyGroupOverlay, applyRuleOverlay, effectiveModes } from './section-overlay.ts';
 import { SnapshotCache } from './cache.ts';
 import { dueSourceIds, parseRefreshPolicy } from './schedule.ts';
 import { BuildCache } from './build-cache.ts';
@@ -456,6 +466,96 @@ const parseWebdavConfig = (raw: unknown, inheritPasswordFrom?: WebDavConfig): We
   };
 };
 
+function asOverlayMode(value: unknown): OverlayMode | undefined {
+  return value === 'inherit' || value === 'replace' || value === 'merge' ? value : undefined;
+}
+
+function parseStoredRules(rules: readonly unknown[]): StoredRule[] | null {
+  const parsed: StoredRule[] = [];
+  for (const entry of rules) {
+    if (typeof entry !== 'object' || entry === null) return null;
+    const record = entry as Record<string, unknown>;
+    if (record['kind'] === 'final') {
+      if (typeof record['policy'] !== 'string' || record['policy'].trim().length === 0) return null;
+      parsed.push({ kind: 'final', policy: record['policy'].trim() });
+      continue;
+    }
+    if (record['kind'] === 'external') {
+      const url = record['url'];
+      const policy = record['policy'];
+      if (typeof url !== 'string' || url.trim().length === 0) return null;
+      if (typeof policy !== 'string' || policy.trim().length === 0) return null;
+      const shape = record['shape'];
+      const format = record['format'];
+      parsed.push({
+        kind: 'external',
+        url: url.trim(),
+        policy: policy.trim(),
+        ...(shape === 'domain' || shape === 'ipcidr' || shape === 'rules' ? { shape } : {}),
+        ...(format === 'text' || format === 'yaml' ? { format } : {}),
+      });
+      continue;
+    }
+    let inline: InlineRule;
+    try {
+      const profile = parseProfile({
+        nodes: [],
+        ruleSources: [{ kind: 'inline', rules: [record] }],
+        policyGroups: [],
+      });
+      const source = profile.ruleSources[0];
+      if (source === undefined || source.kind !== 'inline' || source.rules[0] === undefined) return null;
+      inline = source.rules[0];
+    } catch {
+      return null;
+    }
+    parsed.push(inline);
+  }
+  return parsed;
+}
+
+function parseStoredMember(value: unknown): StoredMember | undefined {
+  if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record['kind'] === 'ref' && typeof record['name'] === 'string' && record['name'].trim().length > 0) {
+    return { kind: 'ref', name: record['name'].trim() };
+  }
+  if (record['kind'] === 'match' && typeof record['pattern'] === 'string' && record['pattern'].trim().length > 0) {
+    return { kind: 'match', pattern: record['pattern'].trim() };
+  }
+  if (record['kind'] === 'region' && typeof record['code'] === 'string' && record['code'].trim().length > 0) {
+    return { kind: 'region', code: record['code'].trim() };
+  }
+  if (record['kind'] === 'rest') return { kind: 'rest' };
+  return undefined;
+}
+
+function parseStoredGroups(groups: readonly unknown[]): PersistedGroupOverride[] {
+  const parsed: PersistedGroupOverride[] = [];
+  for (const entry of groups) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const name = record['name'];
+    if (typeof name !== 'string' || name.trim().length === 0 || !Array.isArray(record['members'])) continue;
+    const members = record['members'].map(parseStoredMember).filter((member): member is StoredMember => member !== undefined);
+    const strategy = record['strategy'];
+    const testUrl = record['testUrl'];
+    parsed.push({
+      name: name.trim(),
+      members,
+      order: parsed.length,
+      ...(strategy === 'select' || strategy === 'url-test' || strategy === 'fallback' ? { strategy } : {}),
+      ...(typeof testUrl === 'string' && testUrl.trim().length > 0 ? { testUrl: testUrl.trim() } : {}),
+      ...(typeof record['interval'] === 'number' ? { interval: record['interval'] } : {}),
+      ...(typeof record['tolerance'] === 'number' ? { tolerance: record['tolerance'] } : {}),
+      ...(record['lazy'] === true ? { lazy: true } : {}),
+      ...(record['hidden'] === true ? { hidden: true } : {}),
+    });
+  }
+  return parsed;
+}
+
 export function createApp(options: AppOptions): App {
   const { store } = options;
   const cache = new SnapshotCache(options.cacheDir);
@@ -787,7 +887,10 @@ export function createApp(options: AppOptions): App {
     const parsed = new Map<string, readonly ProxyNode[]>();
     const ruleSources: RuleSource[] = [];
     const groups = new Map<string, PolicyGroup>();
+    const originalNames = new Map<string, string>();
     const provenance = new Map<string, string[]>();
+    let sourceDns: Profile['runtime'] = undefined;
+    const dnsSeen = new Set<string>();
 
     const ensureParsed = (sourceId: string): readonly ProxyNode[] | undefined => {
       const cached = parsed.get(sourceId);
@@ -796,6 +899,9 @@ export function createApp(options: AppOptions): App {
       if (body === undefined) return undefined;
       const result = ingest(body);
       parsed.set(sourceId, result.profile.nodes);
+      for (const node of result.profile.nodes) {
+        if (!originalNames.has(nodeKey(node))) originalNames.set(nodeKey(node), node.name);
+      }
       diagnostics.push(...result.diagnostics);
       // 规则集与策略组只按源取一次：同一源被两个组合订阅引用时不应翻倍。
       ruleSources.push(...result.profile.ruleSources);
@@ -805,8 +911,23 @@ export function createApp(options: AppOptions): App {
           group.name,
           existing === undefined
             ? group
-            : { name: group.name, members: [...new Set([...existing.members, ...group.members])] },
+            : { ...existing, members: [...new Set([...existing.members, ...group.members])] },
         );
+      }
+      if (!dnsSeen.has(sourceId)) {
+        dnsSeen.add(sourceId);
+        const incoming = result.profile.runtime?.dns;
+        if (incoming !== undefined) {
+          if (sourceDns?.dns === undefined) sourceDns = { dns: incoming };
+          else {
+            diagnostics.push({
+              stage: 'ingest',
+              target: null,
+              subject: sourceId,
+              reason: 'dns-ignored',
+            });
+          }
+        }
       }
       return result.profile.nodes;
     };
@@ -876,11 +997,22 @@ export function createApp(options: AppOptions): App {
       });
     }
 
+    const renamed = new Map<string, string>();
+    for (const node of deduped.nodes) {
+      const previous = originalNames.get(nodeKey(node));
+      if (previous !== undefined && previous !== node.name) renamed.set(previous, node.name);
+    }
+    const alignedGroups = [...groups.values()].map((group) =>
+      renamed.size === 0
+        ? group
+        : { ...group, members: group.members.map((member) => renamed.get(member) ?? member) },
+    );
     return {
       profile: parseProfile({
         nodes: [...deduped.nodes],
         ruleSources,
-        policyGroups: [...groups.values()],
+        policyGroups: alignedGroups,
+        ...(sourceDns === undefined ? {} : { runtime: sourceDns }),
       }),
       diagnostics,
       provenance,
@@ -888,27 +1020,20 @@ export function createApp(options: AppOptions): App {
   };
 
   /**
-   * 用户持久化意图注入解析产物：内联规则 + 策略组 + 运行时段，三者都按配置取。
-   *
-   * 策略组是「整份替换」而不是逐条合并：保存时前端交回的就是这份配置当前显示的完整组清单，
-   * 存下来的也就是它。按配置隔离之后，替换只影响自己那份，不会再吃掉别的配置的组。
+   * 用户持久化意图注入解析产物：规则和 DNS 在这里按模式叠上去。
+   * 策略组要等节点改名之后再展开，所以这里先留着订阅里的组。
    */
   const withOverrides = (profile: Readonly<Profile>, definition: PersistedProfile): Profile => {
     const rules = store.listRules(definition.id);
-    const overrides = store.listGroupOverrides(definition.id);
-    const ruleSources: RuleSource[] = [...profile.ruleSources];
-    if (rules.length > 0) ruleSources.push({ kind: 'inline', rules });
-    const policyGroups: PolicyGroup[] =
-      overrides.length > 0
-        ? [...overrides]
-            .sort((left, right) => left.order - right.order)
-            .map((override) => ({ name: override.name, members: override.members }))
-        : [...profile.policyGroups];
+    const overrides = [...store.listGroupOverrides(definition.id)].sort((left, right) => left.order - right.order);
+    const modes = effectiveModes(definition, overrides.length > 0, rules.length > 0);
+    const ruleSources = applyRuleOverlay(profile.ruleSources, rules, modes.rules, modes.rulePlacement);
+    const runtime = applyDnsOverlay(profile.runtime, definition.runtime, modes.dns);
     return parseProfile({
       nodes: [...profile.nodes],
       ruleSources,
-      policyGroups,
-      ...(definition.runtime === undefined ? {} : { runtime: definition.runtime }),
+      policyGroups: [...profile.policyGroups],
+      ...(runtime === undefined ? {} : { runtime }),
     });
   };
 
@@ -940,14 +1065,18 @@ export function createApp(options: AppOptions): App {
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
       let shape = source.shape;
-      if (shape === undefined) {
+      let encoding = source.encoding;
+      if (shape === undefined || encoding === undefined) {
         const entry = eager ? await ruleSets.resolve(source.url) : ruleSets.peek(source.url);
-        shape = entry === null ? undefined : inferRuleSetShape(entry.body);
+        const described = entry === null ? undefined : describeRuleSet(entry.body);
+        if (shape === undefined) shape = described?.shape;
+        if (encoding === undefined) encoding = described?.encoding;
         if (!eager && entry === null) void ruleSets.resolve(source.url);
       }
       ruleSources.push({
         ...source,
         ...(shape === undefined ? {} : { shape }),
+        ...(encoding === undefined ? {} : { encoding }),
         ...(base === undefined ? {} : { url: `${base}/rules/${key}` }),
       });
     }
@@ -996,7 +1125,16 @@ export function createApp(options: AppOptions): App {
       { configVersion: state.configVersion },
       [applyAnnotations(store.listAnnotations(definition.id))],
     );
-    let final: Profile = trace.final;
+    const groupOverrides = [...store.listGroupOverrides(definition.id)].sort((left, right) => left.order - right.order);
+    const groupModes = effectiveModes(definition, groupOverrides.length > 0, store.listRules(definition.id).length > 0);
+    const alignedGroups = alignInheritedMembers(trace.final.policyGroups, configured.nodes, trace.final.nodes);
+    const grouped = applyGroupOverlay(alignedGroups, groupOverrides, trace.final.nodes, groupModes.groups);
+    let final: Profile = parseProfile({
+      nodes: [...trace.final.nodes],
+      ruleSources: [...trace.final.ruleSources],
+      policyGroups: grouped,
+      ...(trace.final.runtime === undefined ? {} : { runtime: trace.final.runtime }),
+    });
     if (queryFilter !== undefined) {
       const applied = applyMemberFilter(final.nodes, queryFilter, 'query');
       diagnostics.push(...applied.diagnostics);
@@ -1527,7 +1665,9 @@ export function createApp(options: AppOptions): App {
         return;
       }
       if (method === 'GET') {
-        sendJson(res, 200, { rules: store.listRules(definition.id) });
+        const rules = store.listRules(definition.id);
+        const modes = effectiveModes(definition, store.listGroupOverrides(definition.id).length > 0, rules.length > 0);
+        sendJson(res, 200, { rules, mode: modes.rules, placement: modes.rulePlacement });
         return;
       }
       if (method === 'POST') {
@@ -1537,21 +1677,23 @@ export function createApp(options: AppOptions): App {
           sendJson(res, 400, { error: 'rules-must-be-array' });
           return;
         }
-        try {
-          parseProfile({
-            nodes: [],
-            ruleSources: [{ kind: 'inline', rules: rules as InlineRule[] }],
-            policyGroups: [],
-          });
-        } catch (cause) {
-          sendJson(res, 400, {
-            error: 'invalid-rules',
-            reason: cause instanceof Error ? cause.message.slice(0, 200) : String(cause),
-          });
+        const parsed = parseStoredRules(rules);
+        if (parsed === null) {
+          sendJson(res, 400, { error: 'invalid-rules' });
           return;
         }
-        store.replaceRules(definition.id, rules as InlineRule[]);
-        sendJson(res, 200, { count: rules.length });
+        store.replaceRules(definition.id, parsed);
+        const requested = asOverlayMode(body['mode']);
+        if (requested !== undefined) {
+          const current = effectiveModes(
+            definition,
+            store.listGroupOverrides(definition.id).length > 0,
+            parsed.length > 0,
+          );
+          const placement = body['placement'] === 'before' ? 'before' : body['placement'] === 'after' ? 'after' : current.rulePlacement;
+          store.putSectionModes(definition.id, { ...current, rules: requested, rulePlacement: placement });
+        }
+        sendJson(res, 200, { count: parsed.length });
         return;
       }
     }
@@ -1565,12 +1707,14 @@ export function createApp(options: AppOptions): App {
         return;
       }
       if (method === 'GET') {
-        // prepareState 只在 profile 缺失时回 null，上面已 404 兜底，这里必然非空。
         const state = (await prepareState(profileName)) as PreparedState;
         const base = composeProfile(definition, state.snapshots).profile;
+        const overrides = store.listGroupOverrides(definition.id);
+        const modes = effectiveModes(definition, overrides.length > 0, store.listRules(definition.id).length > 0);
         sendJson(res, 200, {
-          groups: withOverrides(base, definition).policyGroups,
-          overrides: store.listGroupOverrides(definition.id),
+          mode: modes.groups,
+          groups: overrides,
+          base: base.policyGroups,
         });
         return;
       }
@@ -1581,23 +1725,13 @@ export function createApp(options: AppOptions): App {
           sendJson(res, 400, { error: 'groups-must-be-array' });
           return;
         }
-        const parsedGroups: { name: string; members: string[] }[] = [];
-        for (const entry of groups) {
-          if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
-          const record = entry as Record<string, unknown>;
-          const name = record['name'];
-          const members = record['members'];
-          if (typeof name === 'string' && name.length > 0 && Array.isArray(members)) {
-            parsedGroups.push({
-              name,
-              members: members.filter((member): member is string => typeof member === 'string'),
-            });
-          }
+        const parsedGroups = parseStoredGroups(groups);
+        store.replaceGroupOverrides(definition.id, parsedGroups);
+        const requested = asOverlayMode(body['mode']);
+        if (requested !== undefined) {
+          const current = effectiveModes(definition, parsedGroups.length > 0, store.listRules(definition.id).length > 0);
+          store.putSectionModes(definition.id, { ...current, groups: requested });
         }
-        store.replaceGroupOverrides(
-          definition.id,
-          parsedGroups.map((group, index) => ({ name: group.name, members: group.members, order: index })),
-        );
         sendJson(res, 200, { count: parsedGroups.length });
         return;
       }
@@ -2251,8 +2385,14 @@ export function createApp(options: AppOptions): App {
         return;
       }
       if (method === 'GET') {
+        const modes = effectiveModes(
+          definition,
+          store.listGroupOverrides(definition.id).length > 0,
+          store.listRules(definition.id).length > 0,
+        );
         sendJson(res, 200, {
           runtime: definition.runtime ?? null,
+          dnsMode: modes.dns,
           targets: Object.fromEntries(
             CLIENT_TARGETS.map((target) => [target, verifiedCapabilityTables.runtime[target]]),
           ),
@@ -2265,12 +2405,30 @@ export function createApp(options: AppOptions): App {
         // 传 null / 缺省 = 清空。清空是合法操作（回到「不写 DNS / TUN 段」）。
         if (candidate === null || candidate === undefined) {
           store.putProfileRuntime(definition.id, null);
+          const requested = asOverlayMode(body['dnsMode']);
+          if (requested !== undefined) {
+            const current = effectiveModes(
+              definition,
+              store.listGroupOverrides(definition.id).length > 0,
+              store.listRules(definition.id).length > 0,
+            );
+            store.putSectionModes(definition.id, { ...current, dns: requested });
+          }
           sendJson(res, 200, { ok: true, runtime: null });
           return;
         }
         try {
           const parsed = parseRuntime(candidate);
           store.putProfileRuntime(definition.id, parsed);
+          const requested = asOverlayMode(body['dnsMode']);
+          if (requested !== undefined) {
+            const current = effectiveModes(
+              definition,
+              store.listGroupOverrides(definition.id).length > 0,
+              store.listRules(definition.id).length > 0,
+            );
+            store.putSectionModes(definition.id, { ...current, dns: requested });
+          }
           sendJson(res, 200, { ok: true, runtime: parsed });
         } catch (error) {
           sendJson(res, 400, {

@@ -249,24 +249,26 @@ export const mihomoEmitter = (
     );
   }
 
-  const groups = profile.policyGroups.map((group) => ({
-    name: group.name,
-    type: 'select',
-    proxies: group.members,
-  }));
+  const groups = profile.policyGroups.map((group) => {
+    const strategy = group.strategy ?? 'select';
+    const auto = strategy !== 'select';
+    const url = group.testUrl;
+    if (auto && (url === undefined || url.length === 0)) {
+      diagnostics.push(makeDiagnostic('emit', target, group.name, 'group-strategy-missing-url'));
+    }
+    const useAuto = auto && url !== undefined && url.length > 0;
+    return {
+      name: group.name,
+      type: useAuto ? strategy : 'select',
+      proxies: group.members,
+      ...(useAuto ? { url, interval: group.interval ?? 300 } : {}),
+      ...(useAuto && strategy === 'url-test' && group.tolerance !== undefined ? { tolerance: group.tolerance } : {}),
+      ...(useAuto && group.lazy === true ? { lazy: true } : {}),
+      ...(group.hidden === true ? { hidden: true } : {}),
+    };
+  });
 
   const rules: string[] = [];
-  for (const item of emissionPlan.ruleItems) {
-    if (!item.decision.accepted) continue;
-    const rendered = renderRule(target, item.rule);
-    if (rendered === null) {
-      diagnostics.push(
-        makeDiagnostic('emit', target, `rule:${item.sourceIndex}:${item.index}`, 'rule-not-renderable'),
-      );
-      continue;
-    }
-    rules.push(rendered);
-  }
 
   /**
    * dns 段。键名全部取自 mihomo 官方 dns 页（enable 刻意不写：
@@ -286,6 +288,9 @@ export const mihomoEmitter = (
     if (dns.proxyNameserver !== undefined) dnsBlock['proxy-server-nameserver'] = [...dns.proxyNameserver];
     if (dns.directNameserver !== undefined) dnsBlock['direct-nameserver'] = [...dns.directNameserver];
     if (dns.fallback !== undefined) dnsBlock['fallback'] = [...dns.fallback];
+    if (dns.nameserverPolicy !== undefined && Object.keys(dns.nameserverPolicy).length > 0) {
+      dnsBlock['nameserver-policy'] = { ...dns.nameserverPolicy };
+    }
   }
 
   /**
@@ -299,45 +304,54 @@ export const mihomoEmitter = (
    * `format: text` 是刻意的：我们镜像的就是原始文本，转 yaml/mrs 需要另一个编译器。
    */
   const providers: Fields = {};
-  const providerRules: string[] = [];
   const usedNames = new Set<string>();
-  for (const source of profile.ruleSources) {
-    if (source.kind !== 'external') continue;
-    if (source.policy === undefined) {
+  const inlineLines = new Map<number, string[]>();
+  for (const item of emissionPlan.ruleItems) {
+    if (!item.decision.accepted) continue;
+    const rendered = renderRule(target, item.rule);
+    if (rendered === null) {
       diagnostics.push(
-        makeDiagnostic('emit', target, source.url, 'external-ruleset-policy-missing'),
+        makeDiagnostic('emit', target, `rule:${item.sourceIndex}:${item.index}`, 'rule-not-renderable'),
       );
       continue;
     }
+    const bucket = inlineLines.get(item.sourceIndex) ?? [];
+    bucket.push(rendered);
+    inlineLines.set(item.sourceIndex, bucket);
+  }
+  const ordered: string[] = [];
+  profile.ruleSources.forEach((source, index) => {
+    if (source.kind === 'inline') {
+      ordered.push(...(inlineLines.get(index) ?? []));
+      return;
+    }
+    if (source.policy === undefined) {
+      diagnostics.push(makeDiagnostic('emit', target, source.url, 'external-ruleset-policy-missing'));
+      return;
+    }
     if (source.shape === undefined) {
-      diagnostics.push(
-        makeDiagnostic('emit', target, source.url, 'external-ruleset-shape-unknown'),
-      );
-      continue;
+      diagnostics.push(makeDiagnostic('emit', target, source.url, 'external-ruleset-shape-unknown'));
+      return;
     }
     const name = ruleProviderName(source.url);
     if (usedNames.has(name)) {
-      diagnostics.push(
-        makeDiagnostic('emit', target, source.url, 'external-ruleset-name-collision'),
-      );
-      continue;
+      diagnostics.push(makeDiagnostic('emit', target, source.url, 'external-ruleset-name-collision'));
+      return;
     }
     usedNames.add(name);
     providers[name] = {
       type: 'http',
-      // classical 是 mihomo 对「整条规则」的叫法；domain / ipcidr 两家同名。
       behavior: source.shape === 'rules' ? 'classical' : source.shape,
-      format: 'text',
+      format: source.encoding ?? 'text',
       url: source.url,
-      // 每个 provider 必须有自己的落盘路径，共用会互相覆盖。
       path: `./ruleset/${name}.list`,
       interval: 86_400,
     };
-    providerRules.push(`RULE-SET,${name},${source.policy}`);
-  }
-
-  // 兜底 MATCH 必须排在最后：写在规则集之前会让它们永远不会被查到。
-  rules.push(...providerRules, 'MATCH,DIRECT');
+    ordered.push(`RULE-SET,${name},${source.policy}`);
+  });
+  // 兜底必须在最后。用户已经写了 MATCH 时不再补一条 DIRECT，否则会盖住他的兜底。
+  if (!ordered.some((line) => line.startsWith('MATCH,'))) ordered.push('MATCH,DIRECT');
+  rules.push(...ordered);
 
   const doc: Fields = {
     ...(Object.keys(dnsBlock).length === 0 ? {} : { dns: dnsBlock }),

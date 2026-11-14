@@ -45,7 +45,7 @@ export const PROTOCOL_KINDS: readonly ProtocolKind[] = [
  * 运行时段的能力轴（与节点特性正交）。
  * 语义：`support` = 会写；`unverified` = 没有官方依据，不写；`reject` = 该客户端/该产物形态里没有这段。
  */
-export const RUNTIME_FEATURES = ['dns', 'tun', 'fakeIp', 'ecs', 'enhancedMode'] as const;
+export const RUNTIME_FEATURES = ['dns', 'tun', 'fakeIp', 'ecs', 'enhancedMode', 'nameserverPolicy'] as const;
 
 /**
  * 认证/握手级特性：丢弃它们不是「少一个字段」，而是节点直接连不上。

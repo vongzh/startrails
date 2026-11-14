@@ -103,6 +103,7 @@ export function ingest(raw: string, forcedFormat?: SourceFormat): IngestResult {
       nodes: outcome.nodes,
       ruleSources: outcome.ruleSources,
       policyGroups: outcome.policyGroups,
+      ...(outcome.runtime === undefined ? {} : { runtime: outcome.runtime }),
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

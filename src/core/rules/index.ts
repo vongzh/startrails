@@ -10,7 +10,12 @@ export type RuleConditionKind = RuleCondition['type'];
 export const RULE_CONDITION_KINDS: readonly RuleConditionKind[] = [
   'domain',
   'domainSuffix',
+  'domainKeyword',
+  'geosite',
+  'geoip',
   'ipCidr',
+  'ipCidr6',
+  'match',
   'and',
   'or',
   'not',
@@ -47,7 +52,12 @@ export function evaluateRule(
       return evaluateRule(condition.child, target, table);
     case 'domain':
     case 'domainSuffix':
+    case 'domainKeyword':
+    case 'geosite':
+    case 'geoip':
     case 'ipCidr':
+    case 'ipCidr6':
+    case 'match':
       return { accepted: true, reason: 'rule-capability:support' };
     default:
       return assertNever(condition);
@@ -61,8 +71,18 @@ const renderCondition = (condition: RuleCondition): string => {
       return `DOMAIN,${condition.value}`;
     case 'domainSuffix':
       return `DOMAIN-SUFFIX,${condition.value}`;
+    case 'domainKeyword':
+      return `DOMAIN-KEYWORD,${condition.value}`;
+    case 'geosite':
+      return `GEOSITE,${condition.value}`;
+    case 'geoip':
+      return `GEOIP,${condition.value}`;
     case 'ipCidr':
       return `IP-CIDR,${condition.value}`;
+    case 'ipCidr6':
+      return `IP-CIDR6,${condition.value}`;
+    case 'match':
+      return 'MATCH';
     case 'and':
     case 'or': {
       const type = condition.type.toUpperCase();
@@ -98,6 +118,11 @@ const renderQuanxRule = (rule: InlineRule): string | null => {
       return `host-suffix, ${condition.value}, ${quanxPolicy(rule.policy)}`;
     case 'ipCidr':
       return `ip-cidr, ${condition.value}, ${quanxPolicy(rule.policy)}`;
+    case 'ipCidr6':
+    case 'domainKeyword':
+    case 'geosite':
+    case 'geoip':
+    case 'match':
     case 'and':
     case 'or':
     case 'not':
@@ -117,8 +142,12 @@ export function renderRule(target: ClientTarget, rule: InlineRule): string | nul
   const dialect = dialectOf(target);
   switch (dialect) {
     case 'surge-ini':
-    case 'clash-yaml':
-      return `${renderCondition(rule.condition)},${rule.policy}`;
+    case 'clash-yaml': {
+      const noResolve =
+        (rule.condition.type === 'ipCidr' || rule.condition.type === 'ipCidr6' || rule.condition.type === 'geoip') &&
+        rule.condition.noResolve === true;
+      return `${renderCondition(rule.condition)},${rule.policy}${noResolve ? ',no-resolve' : ''}`;
+    }
     case 'quanx-ini':
       return renderQuanxRule(rule);
     case 'loon-ini':

@@ -8,9 +8,12 @@ import type {
   DedupeView,
   DiagnosticView,
   EvidenceView,
+  GroupMemberView,
   GroupView,
   HistoryEntry,
-  InlineRuleView,
+  OverlayMode,
+  PolicyGroupBaseView,
+  RuleView,
   NodeView,
   NotifyConfigView,
   PreviewView,
@@ -58,9 +61,20 @@ export const DIALECT_LABELS: Record<string, string> = {
   'uri-list': '节点 URI',
 };
 
+export interface GroupMemberDraft {
+  kind: 'ref' | 'match' | 'region' | 'rest';
+  value: string;
+}
+
 export interface GroupDraft {
   name: string;
-  members: string[];
+  strategy: 'select' | 'url-test' | 'fallback';
+  testUrl: string;
+  interval: number | null;
+  tolerance: number | null;
+  lazy: boolean;
+  hidden: boolean;
+  members: GroupMemberDraft[];
 }
 
 /* ---------------- 全局状态 ---------------- */
@@ -139,8 +153,12 @@ export const webdavSettings = ref<{
 export const latencies = ref<Record<string, { ms: number | null; intercepted: boolean }>>({});
 export const probing = ref(false);
 export const profileEntries = ref<ProfileEntryView[]>([]);
-export const rules = ref<InlineRuleView[]>([]);
+export const rules = ref<RuleView[]>([]);
+export const ruleMode = ref<OverlayMode>('inherit');
+export const rulePlacement = ref<'before' | 'after'>('after');
 export const groups = ref<GroupDraft[]>([]);
+export const groupMode = ref<OverlayMode>('inherit');
+export const baseGroups = ref<PolicyGroupBaseView[]>([]);
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type Palette = 'indigo' | 'clay' | 'graphite' | 'celadon' | 'ocean';
@@ -263,8 +281,12 @@ export const excludedCount = computed(
 export const profileDirty = computed(
   () => JSON.stringify(profileEntries.value) !== loadedEntries.value,
 );
-export const rulesDirty = computed(() => JSON.stringify(rules.value) !== loadedRules.value);
-export const groupsDirty = computed(() => JSON.stringify(groups.value) !== loadedGroups.value);
+export const rulesDirty = computed(
+  () => JSON.stringify({ mode: ruleMode.value, placement: rulePlacement.value, rules: rules.value }) !== loadedRules.value,
+);
+export const groupsDirty = computed(
+  () => JSON.stringify({ mode: groupMode.value, groups: groups.value }) !== loadedGroups.value,
+);
 
 export const previewMeta = computed(() => {
   const content = preview.value?.content ?? '';
@@ -431,12 +453,20 @@ async function loadRuleState(force = false): Promise<void> {
   const ruleData = await api.rules();
   if (force || !rulesDirty.value) {
     rules.value = ruleData.rules;
-    loadedRules.value = JSON.stringify(ruleData.rules);
+    ruleMode.value = ruleData.mode;
+    rulePlacement.value = ruleData.placement;
+    loadedRules.value = JSON.stringify({
+      mode: ruleMode.value,
+      placement: rulePlacement.value,
+      rules: rules.value,
+    });
   }
   const groupData = await api.policyGroups();
   if (force || !groupsDirty.value) {
-    groups.value = groupData.groups.map((group) => ({ name: group.name, members: [...group.members] }));
-    loadedGroups.value = JSON.stringify(groups.value);
+    groupMode.value = groupData.mode;
+    baseGroups.value = groupData.base;
+    groups.value = groupData.groups.map(groupDraftOf);
+    loadedGroups.value = JSON.stringify({ mode: groupMode.value, groups: groups.value });
   }
 }
 
@@ -1048,23 +1078,25 @@ export async function revokeToken(id: string): Promise<boolean> {
 
 /* ---------------- 规则 ---------------- */
 
-function syncRules(next: InlineRuleView[]): void {
+function syncRules(next: RuleView[]): void {
   rules.value = next;
 }
 
-export function ruleLabel(rule: InlineRuleView): string {
+export function ruleLabel(rule: RuleView): string {
+  if (rule.kind === 'external') {
+    return `规则集 ${rule.shape ?? '未定形状'} ${rule.format ?? 'text'}: ${rule.url}`;
+  }
+  if (rule.kind === 'final') return '兜底 MATCH';
   const condition = rule.condition;
-  if (condition.value !== undefined) return `${condition.type}: ${condition.value}`;
+  const suffix = condition.noResolve === true ? ' no-resolve' : '';
+  if (condition.value !== undefined) return `${condition.type}: ${condition.value}${suffix}`;
   if (condition.children !== undefined) return `${condition.type} (${condition.children.length} 子条件)`;
   if (condition.child !== undefined) return `${condition.type} (子条件)`;
   return condition.type;
 }
 
-export function addRule(condition: { type: string; value: string }, policy: string): void {
-  syncRules([
-    ...rules.value,
-    { condition: { type: condition.type, value: condition.value }, policy: policy.trim() || 'DIRECT' },
-  ]);
+export function addRule(rule: RuleView): void {
+  syncRules([...rules.value, rule]);
 }
 
 export function moveRule(index: number, direction: number): void {
@@ -1095,25 +1127,53 @@ export function importRules(json: string): boolean {
     notify('error', '规则必须是数组');
     return false;
   }
-  syncRules(parsed as InlineRuleView[]);
+  syncRules(parsed as RuleView[]);
   notify('ok', `已载入 ${parsed.length} 条规则，保存后生效`);
   return true;
 }
 
 export async function saveRules(): Promise<boolean> {
   return run(async () => {
-    await api.saveRules(rules.value);
-    loadedRules.value = JSON.stringify(rules.value);
+    await api.saveRules({ mode: ruleMode.value, placement: rulePlacement.value, rules: rules.value });
+    loadedRules.value = JSON.stringify({
+      mode: ruleMode.value,
+      placement: rulePlacement.value,
+      rules: rules.value,
+    });
     await refreshPreview();
     notify('ok', '规则已保存');
   });
 }
 
 /** 新建策略组：名字是去重键，重复或空名直接忽略，不制造两条同名组。 */
+function memberDraftOf(member: string | GroupMemberView): GroupMemberDraft {
+  if (typeof member === 'string') return { kind: 'ref', value: member };
+  if (member.kind === 'match') return { kind: 'match', value: member.pattern ?? '' };
+  if (member.kind === 'region') return { kind: 'region', value: member.code ?? '' };
+  if (member.kind === 'rest') return { kind: 'rest', value: '' };
+  return { kind: 'ref', value: member.name ?? '' };
+}
+
+function groupDraftOf(group: GroupView): GroupDraft {
+  return {
+    name: group.name,
+    strategy: group.strategy ?? 'select',
+    testUrl: group.testUrl ?? '',
+    interval: group.interval ?? null,
+    tolerance: group.tolerance ?? null,
+    lazy: group.lazy === true,
+    hidden: group.hidden === true,
+    members: group.members.map(memberDraftOf),
+  };
+}
+
 export function addGroup(name: string): boolean {
   const value = name.trim();
   if (value.length === 0 || groups.value.some((item) => item.name === value)) return false;
-  groups.value = [...groups.value, { name: value, members: [] }];
+  groups.value = [
+    ...groups.value,
+    { name: value, strategy: 'select', testUrl: '', interval: null, tolerance: null, lazy: false, hidden: false, members: [] },
+  ];
   return true;
 }
 
@@ -1121,20 +1181,46 @@ export function removeGroup(name: string): void {
   groups.value = groups.value.filter((item) => item.name !== name);
 }
 
-export function addGroupMember(group: GroupDraft, member: string): void {
-  const value = member.trim();
-  if (value.length === 0 || group.members.includes(value)) return;
+export function addGroupMember(group: GroupDraft, member: GroupMemberDraft): void {
+  if (member.kind === 'rest') {
+    if (group.members.some((item) => item.kind === 'rest')) return;
+    groups.value = groups.value.map((item) =>
+      item.name === group.name ? { ...item, members: [...item.members, { kind: 'rest', value: '' }] } : item,
+    );
+    return;
+  }
+  const value = member.value.trim();
+  if (value.length === 0) return;
+  const next = { kind: member.kind, value };
+  if (group.members.some((item) => item.kind === next.kind && item.value === next.value)) return;
   groups.value = groups.value.map((item) =>
-    item.name === group.name ? { ...item, members: [...item.members, value] } : item,
+    item.name === group.name ? { ...item, members: [...item.members, next] } : item,
   );
 }
 
-export function removeGroupMember(group: GroupDraft, member: string): void {
+export function removeGroupMember(group: GroupDraft, member: GroupMemberDraft): void {
   groups.value = groups.value.map((item) =>
     item.name === group.name
-      ? { ...item, members: item.members.filter((value) => value !== member) }
+      ? { ...item, members: item.members.filter((value) => !(value.kind === member.kind && value.value === member.value)) }
       : item,
   );
+}
+
+export function patchGroup(name: string, patch: Partial<GroupDraft>): void {
+  groups.value = groups.value.map((item) => (item.name === name ? { ...item, ...patch, name: item.name } : item));
+}
+
+export function adoptBaseGroups(): void {
+  groups.value = baseGroups.value.map((group) => ({
+    name: group.name,
+    strategy: group.strategy ?? 'select',
+    testUrl: '',
+    interval: group.strategy !== undefined && group.strategy !== 'select' ? 300 : null,
+    tolerance: group.strategy === 'url-test' ? 50 : null,
+    lazy: false,
+    hidden: false,
+    members: group.members.map((member) => ({ kind: 'ref' as const, value: member })),
+  }));
 }
 
 export function moveGroup(index: number, direction: number): void {
@@ -1153,10 +1239,24 @@ export async function saveGroups(): Promise<boolean> {
   return run(async () => {
     const payload: GroupView[] = groups.value.map((group) => ({
       name: group.name,
-      members: group.members,
+      strategy: group.strategy,
+      ...(group.testUrl.trim().length === 0 ? {} : { testUrl: group.testUrl.trim() }),
+      ...(group.interval === null ? {} : { interval: group.interval }),
+      ...(group.tolerance === null ? {} : { tolerance: group.tolerance }),
+      ...(group.lazy ? { lazy: true } : {}),
+      ...(group.hidden ? { hidden: true } : {}),
+      members: group.members.map((member) =>
+        member.kind === 'match'
+          ? { kind: 'match' as const, pattern: member.value }
+          : member.kind === 'region'
+            ? { kind: 'region' as const, code: member.value }
+            : member.kind === 'rest'
+              ? { kind: 'rest' as const }
+              : { kind: 'ref' as const, name: member.value },
+      ),
     }));
-    await api.savePolicyGroups(payload);
-    loadedGroups.value = JSON.stringify(groups.value);
+    await api.savePolicyGroups({ mode: groupMode.value, groups: payload });
+    loadedGroups.value = JSON.stringify({ mode: groupMode.value, groups: groups.value });
     await refreshPreview();
     notify('ok', '策略组已保存');
   });

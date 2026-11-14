@@ -30,6 +30,61 @@ test('订阅 URI：四种协议解析入 IR，不支持的行结构化跳过', (
   assert.equal(vless?.options?.flow, 'xtls-rprx-vision');
 });
 
+test('Clash YAML：测速组、有序规则和 DNS 进入底稿', () => {
+  const raw = [
+    'proxies:',
+    '  - {name: USA 1, type: ss, server: a.example.invalid, port: 443, cipher: aes-256-gcm, password: pw}',
+    'proxy-groups:',
+    '  - {name: 自动选择, type: url-test, url: https://www.gstatic.com/generate_204, interval: 300, tolerance: 50, lazy: true, hidden: true, proxies: [USA 1]}',
+    '  - {name: 负载, type: load-balance, proxies: [USA 1]}',
+    'rule-providers:',
+    '  ads: {type: http, behavior: domain, format: yaml, url: https://rules.example.invalid/ads.txt}',
+    'rules:',
+    '  - DOMAIN-SUFFIX,cn,DIRECT',
+    '  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve',
+    '  - IP-CIDR6,fe80::/10,DIRECT,no-resolve',
+    '  - GEOSITE,google,PROXY',
+    '  - GEOIP,CN,DIRECT,no-resolve',
+    '  - RULE-SET,ads,REJECT',
+    '  - PROCESS-NAME,LINE.exe,PROXY',
+    '  - MATCH,PROXY',
+    'dns:',
+    '  enable: true',
+    '  ipv6: false',
+    '  enhanced-mode: fake-ip',
+    '  fake-ip-range: 198.18.0.1/16',
+    '  nameserver: ["https://dns.alidns.com/dns-query"]',
+    "  nameserver-policy: {'*.example.com': https://dns.example/dns-query, 'a.com,b.com': https://dns.example/dns-query}",
+  ].join('\n');
+  const result = ingest(raw);
+  const auto = result.profile.policyGroups[0];
+  assert.equal(auto?.strategy, 'url-test');
+  assert.equal(auto?.testUrl, 'https://www.gstatic.com/generate_204');
+  assert.equal(auto?.interval, 300);
+  assert.equal(auto?.tolerance, 50);
+  assert.equal(auto?.lazy, true);
+  assert.equal(auto?.hidden, true);
+  assert.equal(result.profile.policyGroups[1]?.strategy, undefined);
+  assert.ok(result.diagnostics.some((item) => item.reason === 'group-strategy-not-modelled:load-balance'));
+  const inline = result.profile.ruleSources.filter((source) => source.kind === 'inline');
+  const rules = inline.flatMap((source) => (source.kind === 'inline' ? source.rules : []));
+  assert.deepEqual(
+    rules.map((rule) => rule.condition.type),
+    ['domainSuffix', 'ipCidr', 'ipCidr6', 'geosite', 'geoip', 'match'],
+  );
+  assert.equal(rules[1]?.condition.type === 'ipCidr' ? rules[1].condition.noResolve : false, true);
+  assert.equal(rules.at(-1)?.policy, 'PROXY');
+  const external = result.profile.ruleSources.find((source) => source.kind === 'external');
+  assert.equal(external?.kind === 'external' ? external.encoding : undefined, 'yaml');
+  assert.equal(external?.kind === 'external' ? external.policy : undefined, 'REJECT');
+  assert.equal(result.profile.runtime?.dns?.mode, 'fake-ip');
+  assert.equal(result.profile.runtime?.dns?.nameserverPolicy?.['*.example.com'], 'https://dns.example/dns-query');
+  assert.equal(result.profile.runtime?.dns?.nameserverPolicy?.['a.com'], 'https://dns.example/dns-query');
+  assert.equal(result.profile.runtime?.dns?.nameserverPolicy?.['b.com'], 'https://dns.example/dns-query');
+  assert.ok(result.diagnostics.some((item) => item.reason === 'nameserver-policy-comma-key'));
+  assert.ok(result.diagnostics.some((item) => item.reason === 'rule-not-modelled:PROCESS-NAME'));
+});
+
 test('Clash YAML：代理 / 策略组 / 外链规则集都进入 IR', () => {
   const result = ingest(read('clash.yaml'));
   assert.equal(result.format, 'clash-yaml');

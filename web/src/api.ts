@@ -154,17 +154,54 @@ export interface SourceStatView {
   diagnostics: DiagnosticView[];
 }
 
+export type OverlayMode = 'inherit' | 'replace' | 'merge';
+
 export interface RuleConditionView {
   type: string;
   value?: string;
+  noResolve?: boolean;
   children?: RuleConditionView[];
   child?: RuleConditionView;
 }
 export interface InlineRuleView {
+  kind?: 'inline';
   condition: RuleConditionView;
   policy: string;
 }
-export interface GroupView { name: string; members: string[] }
+export interface ExternalRuleView {
+  kind: 'external';
+  url: string;
+  policy: string;
+  shape?: 'domain' | 'ipcidr' | 'rules';
+  format?: 'text' | 'yaml';
+}
+export interface FinalRuleView {
+  kind: 'final';
+  policy: string;
+}
+export type RuleView = InlineRuleView | ExternalRuleView | FinalRuleView;
+export interface GroupMemberView {
+  kind: 'ref' | 'match' | 'region' | 'rest';
+  name?: string;
+  pattern?: string;
+  code?: string;
+}
+export interface GroupView {
+  name: string;
+  members: Array<string | GroupMemberView>;
+  order?: number;
+  strategy?: 'select' | 'url-test' | 'fallback';
+  testUrl?: string;
+  interval?: number;
+  tolerance?: number;
+  lazy?: boolean;
+  hidden?: boolean;
+}
+export interface PolicyGroupBaseView {
+  name: string;
+  members: string[];
+  strategy?: 'select' | 'url-test' | 'fallback';
+}
 export interface TraceStepView {
   index: number;
   diff: { kind: string; ref: string; detail: string }[];
@@ -229,6 +266,7 @@ export interface DnsPolicyView {
   proxyNameserver?: string[];
   directNameserver?: string[];
   fallback?: string[];
+  nameserverPolicy?: Record<string, string>;
   ecs?: string;
   fakeIpRange?: string;
   ipv6?: boolean;
@@ -250,6 +288,7 @@ export type RuntimeCapabilityView = Record<
 >;
 export interface RuntimeView {
   runtime: RuntimePolicyView | null;
+  dnsMode?: OverlayMode;
   targets: Record<string, RuntimeCapabilityView>;
 }
 
@@ -375,13 +414,19 @@ export const api = {
   capabilities: () => request<{ evidence: EvidenceView[] }>('/api/capabilities'),
   diagnostics: () => request<{ reports: HistoryEntry[] }>('/api/diagnostics'),
   rules: (profile = activeProfile) =>
-    request<{ rules: InlineRuleView[] }>(withProfile('/api/rules', profile)),
-  saveRules: (rules: InlineRuleView[], profile = activeProfile) =>
-    post<{ count: number }>(withProfile('/api/rules', profile), { rules }),
+    request<{ rules: RuleView[]; mode: OverlayMode; placement: 'before' | 'after' }>(
+      withProfile('/api/rules', profile),
+    ),
+  saveRules: (
+    body: { rules: RuleView[]; mode: OverlayMode; placement: 'before' | 'after' },
+    profile = activeProfile,
+  ) => post<{ count: number }>(withProfile('/api/rules', profile), body),
   policyGroups: (profile = activeProfile) =>
-    request<{ groups: GroupView[] }>(withProfile('/api/policy-groups', profile)),
-  savePolicyGroups: (groups: GroupView[], profile = activeProfile) =>
-    post<{ count: number }>(withProfile('/api/policy-groups', profile), { groups }),
+    request<{ mode: OverlayMode; groups: GroupView[]; base: PolicyGroupBaseView[] }>(
+      withProfile('/api/policy-groups', profile),
+    ),
+  savePolicyGroups: (body: { mode: OverlayMode; groups: GroupView[] }, profile = activeProfile) =>
+    post<{ count: number }>(withProfile('/api/policy-groups', profile), body),
   trace: (profile = activeProfile) =>
     request<{ configVersion: string; steps: TraceStepView[] }>(
       `/api/trace?profile=${encodeURIComponent(profile)}`,
@@ -528,10 +573,14 @@ export const api = {
     post<{ id: string; url: string; token: string }>('/api/tokens', { profile, target }),
   /** DNS / TUN：跟着配置走，改了只换那一份的 configVersion 与 ETag。 */
   runtime: (profile = activeProfile) => request<RuntimeView>(withProfile('/api/runtime', profile)),
-  saveRuntime: (runtime: RuntimePolicyView | null, profile = activeProfile) =>
+  saveRuntime: (
+    runtime: RuntimePolicyView | null,
+    profile = activeProfile,
+    dnsMode?: OverlayMode,
+  ) =>
     request<{ ok: boolean; runtime: RuntimePolicyView | null }>(withProfile('/api/runtime', profile), {
       method: 'PUT',
-      body: JSON.stringify({ runtime }),
+      body: JSON.stringify({ runtime, ...(dnsMode === undefined ? {} : { dnsMode }) }),
     }),
   revokeToken: (id: string) =>
     request<{ ok: boolean }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),

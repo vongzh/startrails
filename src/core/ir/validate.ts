@@ -133,7 +133,12 @@ const conditionSchema: z.ZodType<RuleCondition> = z.lazy(() =>
   z.discriminatedUnion('type', [
     z.object({ type: z.literal('domain'), value: z.string().min(1) }),
     z.object({ type: z.literal('domainSuffix'), value: z.string().min(1) }),
-    z.object({ type: z.literal('ipCidr'), value: z.string().min(1) }),
+    z.object({ type: z.literal('domainKeyword'), value: z.string().min(1) }),
+    z.object({ type: z.literal('geosite'), value: z.string().min(1) }),
+    z.object({ type: z.literal('geoip'), value: z.string().min(1), noResolve: z.boolean().optional() }),
+    z.object({ type: z.literal('ipCidr'), value: z.string().min(1), noResolve: z.boolean().optional() }),
+    z.object({ type: z.literal('ipCidr6'), value: z.string().min(1), noResolve: z.boolean().optional() }),
+    z.object({ type: z.literal('match') }),
     z.object({ type: z.literal('and'), children: z.array(conditionSchema) }),
     z.object({ type: z.literal('or'), children: z.array(conditionSchema) }),
     z.object({ type: z.literal('not'), child: conditionSchema }),
@@ -147,12 +152,19 @@ const ruleSourceSchema: z.ZodType<RuleSource> = z.discriminatedUnion('kind', [
     url: z.string().min(1),
     policy: z.string().min(1).optional(),
     shape: z.enum(['domain', 'ipcidr', 'rules']).optional(),
+    encoding: z.enum(['text', 'yaml']).optional(),
   }),
 ]);
 
 const policyGroupSchema: z.ZodType<PolicyGroup> = z.object({
   name: z.string().min(1),
   members: z.array(z.string().min(1)),
+  strategy: z.enum(['select', 'url-test', 'fallback']).optional(),
+  testUrl: z.string().min(1).optional(),
+  interval: z.number().int().positive().optional(),
+  tolerance: z.number().int().nonnegative().optional(),
+  lazy: z.boolean().optional(),
+  hidden: z.boolean().optional(),
 });
 
 /** 非空字符串数组：`nameserver: []` 没有意义，写出来只会让客户端以为「配了但全是空」。 */
@@ -165,6 +177,7 @@ const dnsSchema = z
     proxyNameserver: serverList.optional(),
     directNameserver: serverList.optional(),
     fallback: serverList.optional(),
+    nameserverPolicy: z.record(z.string().min(1), z.string().min(1)).optional(),
     ecs: z.string().min(1).optional(),
     fakeIpRange: z.string().min(1).optional(),
     ipv6: z.boolean().optional(),

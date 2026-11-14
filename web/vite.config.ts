@@ -27,7 +27,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://127.0.0.1:8787',
-      '/s': 'http://127.0.0.1:8787',
+      // 必须是 /s/，不能是 /s：后者会把开发服务器的 /src/main.ts 也转给后端。
+      '/s/': 'http://127.0.0.1:8787',
     },
   },
 });

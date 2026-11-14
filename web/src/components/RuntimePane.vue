@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { NAlert, NButton, NInput, NInputNumber, NPopconfirm, NRadioButton, NRadioGroup, NSelect, NSwitch, NTag } from 'naive-ui';
 import { Globe, Info } from 'lucide-vue-next';
 import { api } from '../api';
-import type { RuntimeCapabilityView, RuntimePolicyView } from '../api';
+import type { OverlayMode, RuntimeCapabilityView, RuntimePolicyView } from '../api';
 import ClientIcon from './ClientIcon.vue';
 import { activeProfileName, notify } from '../workspace';
 
@@ -21,9 +21,11 @@ const loadedFor = ref<string | null>(null);
 
 type Tri = 'unset' | 'on' | 'off';
 const dnsForm = reactive({
+  overlay: 'inherit' as OverlayMode,
   mode: 'unset' as 'unset' | 'system' | 'redir-host' | 'fake-ip',
   nameserver: '',
   fallback: '',
+  nameserverPolicy: '',
   ecs: '',
   fakeIpRange: '',
   ipv6: 'unset' as Tri,
@@ -70,9 +72,11 @@ const capabilitySplit = computed(() => {
 
 const hasRuntime = computed(
   () =>
+    dnsForm.overlay !== 'inherit' ||
     dnsForm.mode !== 'unset' ||
     splitLines(dnsForm.nameserver).length > 0 ||
     splitLines(dnsForm.fallback).length > 0 ||
+    splitLines(dnsForm.nameserverPolicy).length > 0 ||
     dnsForm.ecs.trim().length > 0 ||
     dnsForm.fakeIpRange.trim().length > 0 ||
     dnsForm.ipv6 !== 'unset' ||
@@ -86,9 +90,13 @@ async function loadRuntime(): Promise<void> {
     const view = await api.runtime(profile);
     runtimeCaps.value = view.targets;
     const dns = view.runtime?.dns;
+    dnsForm.overlay = view.dnsMode ?? 'inherit';
     dnsForm.mode = dns === undefined ? 'unset' : dns.mode;
     dnsForm.nameserver = (dns?.nameserver ?? []).join('\n');
     dnsForm.fallback = (dns?.fallback ?? []).join('\n');
+    dnsForm.nameserverPolicy = Object.entries(dns?.nameserverPolicy ?? {})
+      .map(([domain, server]) => `${domain} ${server}`)
+      .join('\n');
     dnsForm.ecs = dns?.ecs ?? '';
     dnsForm.fakeIpRange = dns?.fakeIpRange ?? '';
     dnsForm.ipv6 = dns?.ipv6 === undefined ? 'unset' : dns.ipv6 ? 'on' : 'off';
@@ -110,19 +118,28 @@ async function saveRuntime(): Promise<void> {
   try {
     const nameserver = splitLines(dnsForm.nameserver);
     const fallback = splitLines(dnsForm.fallback);
+    const nameserverPolicy: Record<string, string> = {};
+    for (const line of splitLines(dnsForm.nameserverPolicy)) {
+      const splitAt = line.indexOf(' ');
+      if (splitAt <= 0) continue;
+      const domain = line.slice(0, splitAt).trim();
+      const server = line.slice(splitAt + 1).trim();
+      if (domain.length > 0 && server.length > 0) nameserverPolicy[domain] = server;
+    }
     const dns: RuntimePolicyView['dns'] =
       dnsForm.mode === 'unset' &&
       nameserver.length === 0 &&
       fallback.length === 0 &&
+      Object.keys(nameserverPolicy).length === 0 &&
       dnsForm.ecs.trim().length === 0 &&
       dnsForm.fakeIpRange.trim().length === 0 &&
       dnsForm.ipv6 === 'unset'
         ? undefined
         : {
-            // mode 是必填项：只填了服务器但没选模式时按 system 落库，语义是「按系统默认方式解析」。
             mode: dnsForm.mode === 'unset' ? 'system' : dnsForm.mode,
             ...(nameserver.length === 0 ? {} : { nameserver }),
             ...(fallback.length === 0 ? {} : { fallback }),
+            ...(Object.keys(nameserverPolicy).length === 0 ? {} : { nameserverPolicy }),
             ...(dnsForm.ecs.trim().length === 0 ? {} : { ecs: dnsForm.ecs.trim() }),
             ...(dnsForm.fakeIpRange.trim().length === 0 ? {} : { fakeIpRange: dnsForm.fakeIpRange.trim() }),
             ...(dnsForm.ipv6 === 'unset' ? {} : { ipv6: dnsForm.ipv6 === 'on' }),
@@ -140,7 +157,11 @@ async function saveRuntime(): Promise<void> {
           }
         : {}),
     };
-    const saved = await api.saveRuntime(Object.keys(runtime).length === 0 ? null : runtime);
+    const saved = await api.saveRuntime(
+      Object.keys(runtime).length === 0 ? null : runtime,
+      activeProfileName.value,
+      dnsForm.overlay,
+    );
     notify(
       'ok',
       saved.runtime === null
@@ -202,6 +223,17 @@ watch(activeProfileName, (name) => {
         拿不准就留空，节点照常可用。
       </p>
       <div class="field">
+        <label>和订阅的关系</label>
+        <n-radio-group v-model:value="dnsForm.overlay" size="small">
+          <n-radio-button value="inherit">继承</n-radio-button>
+          <n-radio-button value="replace">替换</n-radio-button>
+          <n-radio-button value="merge">组合</n-radio-button>
+        </n-radio-group>
+        <span class="text-3" style="font-size: 11.5px; margin-top: 6px">
+          继承时不写这份 DNS。替换用下面的整份。组合时没填的字段留空；按域名指定的解析器按「域名 空格 地址」每行一条，同名键以这里为准。
+        </span>
+      </div>
+      <div class="field">
         <label>DNS 模式</label>
         <n-radio-group v-model:value="dnsForm.mode" size="small">
           <n-radio-button value="unset">不写</n-radio-button>
@@ -223,6 +255,16 @@ watch(activeProfileName, (name) => {
             size="small"
             :autosize="{ minRows: 2, maxRows: 4 }"
             placeholder="https://dns.alidns.com/dns-query"
+          />
+        </div>
+        <div class="field">
+          <label>按域名指定解析器</label>
+          <n-input
+            v-model:value="dnsForm.nameserverPolicy"
+            type="textarea"
+            size="small"
+            :autosize="{ minRows: 2, maxRows: 6 }"
+            placeholder="*.example.com https://dns.example/dns-query"
           />
         </div>
         <div class="field">

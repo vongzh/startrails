@@ -1,11 +1,44 @@
-import type { Annotation, BuildReport, ClientTarget, InlineRule, RuntimePolicy } from '../core/index.ts';
+import type { Annotation, BuildReport, ClientTarget, GroupStrategy, InlineRule, RuleSetShape, RuntimePolicy } from '../core/index.ts';
 import type { CollectionMember, DedupeStrategy } from '../core/index.ts';
+
+export type OverlayMode = 'inherit' | 'replace' | 'merge';
+
+export interface SectionModes {
+  readonly groups: OverlayMode;
+  readonly rules: OverlayMode;
+  readonly rulePlacement: 'before' | 'after';
+  readonly dns: OverlayMode;
+}
+
+export type StoredMember =
+  | string
+  | { readonly kind: 'ref'; readonly name: string }
+  | { readonly kind: 'match'; readonly pattern: string }
+  | { readonly kind: 'region'; readonly code: string }
+  | { readonly kind: 'rest' };
 
 export interface PersistedGroupOverride {
   readonly name: string;
-  readonly members: readonly string[];
+  readonly members: readonly StoredMember[];
   readonly order: number;
+  readonly strategy?: GroupStrategy;
+  readonly testUrl?: string;
+  readonly interval?: number;
+  readonly tolerance?: number;
+  readonly lazy?: boolean;
+  readonly hidden?: boolean;
 }
+
+export type StoredRule =
+  | InlineRule
+  | {
+      readonly kind: 'external';
+      readonly url: string;
+      readonly policy: string;
+      readonly shape?: RuleSetShape;
+      readonly format?: 'text' | 'yaml';
+    }
+  | { readonly kind: 'final'; readonly policy: string };
 
 /** 采集方式：远端链接 / 上传文件 / 直接粘贴。后两者内容存库（加密），不依赖外部可达性。 */
 export type SourceKind = 'remote' | 'file' | 'inline';
@@ -83,6 +116,7 @@ export interface PersistedProfile {
    * 结果是改一次 DNS 让所有配置的产物都换版本；现在跟着配置走，留空即不写段。
    */
   readonly runtime?: RuntimePolicy | undefined;
+  readonly sectionModes?: SectionModes | undefined;
 }
 
 /** auto = 一个链接喂所有客户端，按请求 UA 判定输出方言。 */
@@ -163,8 +197,9 @@ export interface Store {
    */
   claimSetting(key: string, value: string): boolean;
 
-  listRules(profileId: string): readonly InlineRule[];
-  replaceRules(profileId: string, rules: readonly InlineRule[]): void;
+  listRules(profileId: string): readonly StoredRule[];
+  replaceRules(profileId: string, rules: readonly StoredRule[]): void;
+  putSectionModes(profileId: string, modes: SectionModes): void;
   listGroupOverrides(profileId: string): readonly PersistedGroupOverride[];
   replaceGroupOverrides(profileId: string, overrides: readonly PersistedGroupOverride[]): void;
 

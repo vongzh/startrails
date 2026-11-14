@@ -242,6 +242,11 @@ export const surgeEmitter = (
 
   lines.push('', '[Proxy Group]');
   for (const group of profile.policyGroups) {
+    if (group.strategy === 'url-test' || group.strategy === 'fallback') {
+      diagnostics.push(
+        makeDiagnostic('emit', target, group.name, `group-strategy-not-expressible:${group.strategy}`),
+      );
+    }
     const members = group.members.filter((member) => included.includes(member));
     lines.push(`${quote(group.name)} = select, ${members.join(', ') || 'DIRECT'}`);
   }

@@ -123,7 +123,12 @@ export type ProxyNode =
 export type RuleCondition =
   | { readonly type: 'domain'; readonly value: string }
   | { readonly type: 'domainSuffix'; readonly value: string }
-  | { readonly type: 'ipCidr'; readonly value: string }
+  | { readonly type: 'domainKeyword'; readonly value: string }
+  | { readonly type: 'geosite'; readonly value: string }
+  | { readonly type: 'geoip'; readonly value: string; readonly noResolve?: boolean | undefined }
+  | { readonly type: 'ipCidr'; readonly value: string; readonly noResolve?: boolean | undefined }
+  | { readonly type: 'ipCidr6'; readonly value: string; readonly noResolve?: boolean | undefined }
+  | { readonly type: 'match' }
   | { readonly type: 'and'; readonly children: readonly RuleCondition[] }
   | { readonly type: 'or'; readonly children: readonly RuleCondition[] }
   | { readonly type: 'not'; readonly child: RuleCondition };
@@ -160,6 +165,8 @@ export type RuleSource =
       readonly url: string;
       readonly policy?: string | undefined;
       readonly shape?: RuleSetShape | undefined;
+      /** 文件编码。缺省按文本；`payload:` 包装的规则集必须是 yaml，否则 mihomo 拒载。 */
+      readonly encoding?: 'text' | 'yaml' | undefined;
     };
 
 /** DNS 解析模式。`fake-ip` 只在支持该模式的客户端上生效，其余降级为 `redir-host` 并记诊断。 */
@@ -179,6 +186,8 @@ export interface DnsPolicy {
   readonly proxyNameserver?: readonly string[];
   readonly directNameserver?: readonly string[];
   readonly fallback?: readonly string[];
+  /** 域名 → 解析器。键用客户端自己的写法（`*.example.com` / `+.example.com` / 主机名）。 */
+  readonly nameserverPolicy?: Readonly<Record<string, string>> | undefined;
   readonly ecs?: string;
   readonly fakeIpRange?: string;
   readonly ipv6?: boolean;
@@ -201,9 +210,18 @@ export interface RuntimePolicy {
   readonly tun?: TunPolicy;
 }
 
+export type GroupStrategy = 'select' | 'url-test' | 'fallback';
+
 export interface PolicyGroup {
   readonly name: string;
   readonly members: readonly string[];
+  /** 缺省是 select。url-test / fallback 还要有测速地址，否则生成时退回 select 并记诊断。 */
+  readonly strategy?: GroupStrategy | undefined;
+  readonly testUrl?: string | undefined;
+  readonly interval?: number | undefined;
+  readonly tolerance?: number | undefined;
+  readonly lazy?: boolean | undefined;
+  readonly hidden?: boolean | undefined;
 }
 
 /** 解析产物，可重建、不落盘；用户意图只存在 Annotation 里。 */

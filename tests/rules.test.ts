@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  describeRuleSet,
   evaluateRule,
   ingest,
   emit,
@@ -111,6 +112,14 @@ test('规则集形态判定：只有三种文件形状算「判得出来」，�
   assert.equal(inferRuleSetShape('mrs\u0000binary'), undefined);
   // 全是注释 = 没有内容。
   assert.equal(inferRuleSetShape('# only a comment'), undefined);
+});
+
+test('payload 包装标成 yaml，纯文本仍是 text', () => {
+  const payload = ['payload:', "  - '+.example.com'", '  - google.com', ''].join('\n');
+  assert.equal(inferRuleSetShape(payload), undefined);
+  assert.deepEqual(describeRuleSet(payload), { shape: 'domain', encoding: 'yaml' });
+  assert.deepEqual(describeRuleSet('example.com\n+.google.com\n'), { shape: 'domain', encoding: 'text' });
+  assert.equal(describeRuleSet('payload:\n  - example.com\n  - 10.0.0.0/8\n'), undefined);
 });
 
 test('Clash 源声明的 behavior 直接映射成 shape，不需要再猜', () => {

@@ -1,5 +1,7 @@
 import YAML from 'yaml';
 import type {
+  DnsPolicy,
+  InlineRule,
   NodeOptions,
   NodeTransport,
   ObfsOptions,
@@ -8,6 +10,7 @@ import type {
   ProxyNode,
   RuleSource,
   RuleSetShape,
+  RuntimePolicy,
 } from '../ir/index.ts';
 import type { Diagnostic } from '../diagnostics/index.ts';
 import { makeDiagnostic } from '../diagnostics/index.ts';
@@ -16,6 +19,7 @@ export interface ParseOutcome {
   readonly nodes: readonly ProxyNode[];
   readonly ruleSources: readonly RuleSource[];
   readonly policyGroups: readonly PolicyGroup[];
+  readonly runtime?: RuntimePolicy | undefined;
   readonly diagnostics: readonly Diagnostic[];
   readonly parsed: number;
   readonly skipped: number;
@@ -579,58 +583,205 @@ export function parseClashYaml(raw: string): ParseOutcome {
   const groups: PolicyGroup[] = [];
   if (Array.isArray(doc['proxy-groups'])) {
     for (const entry of doc['proxy-groups']) {
-      if (!isRecord(entry)) continue;
-      const name = str(entry['name']);
-      if (name !== undefined && Array.isArray(entry['proxies'])) {
-        groups.push({ name, members: entry['proxies'].filter((m): m is string => typeof m === 'string') });
-      }
+      const group = clashGroup(entry, diagnostics);
+      if (group === null) skippedCount += 1;
+      else groups.push(group);
     }
   }
   const ruleSources: RuleSource[] = [];
-  const providerUrls = new Map<string, string>();
-  // `behavior` 是源配置自己声明的，直接映射成我们中立的 shape——这是「有依据」，不是猜。
-  const providerShapes = new Map<string, RuleSetShape>();
+  const providerUrls = new Map<string, { url: string; shape?: RuleSetShape; encoding?: 'text' | 'yaml' }>();
   const shapeOfBehavior = (value: unknown): RuleSetShape | undefined =>
     value === 'domain' ? 'domain' : value === 'ipcidr' ? 'ipcidr' : value === 'classical' ? 'rules' : undefined;
   if (isRecord(doc['rule-providers'])) {
     for (const [key, value] of Object.entries(doc['rule-providers'])) {
       if (isRecord(value) && typeof value['url'] === 'string') {
-        providerUrls.set(key, value['url']);
         const shape = shapeOfBehavior(value['behavior']);
-        if (shape !== undefined) providerShapes.set(key, shape);
+        const encoding = value['format'] === 'yaml' || value['format'] === 'text' ? value['format'] : undefined;
+        providerUrls.set(key, {
+          url: value['url'],
+          ...(shape === undefined ? {} : { shape }),
+          ...(encoding === undefined ? {} : { encoding }),
+        });
       } else {
         skipped(diagnostics, key, 'rule-provider-without-url');
         skippedCount += 1;
       }
     }
   }
-  // `rules: [RULE-SET,<provider>,<policy>]` 是策略的唯一来源；同一 provider 被引用多次时取第一次，
-  // 因为一份规则集只能落在一个策略上，多条引用本身就是源配置的重复。
+  // 规则按原文顺序留下。同一 provider 被引用多次时只保留第一次：一份规则集只能落在一个策略上。
   const seenRuleUrls = new Set<string>();
+  let inline: InlineRule[] = [];
+  const flushInline = (): void => {
+    if (inline.length === 0) return;
+    ruleSources.push({ kind: 'inline', rules: inline });
+    inline = [];
+  };
   if (Array.isArray(doc['rules'])) {
     for (const entry of doc['rules']) {
-      if (typeof entry !== 'string') continue;
+      if (typeof entry !== 'string') {
+        skipped(diagnostics, 'rule', 'rule-not-modelled');
+        skippedCount += 1;
+        continue;
+      }
       const parts = entry.split(',').map((part) => part.trim());
-      if (parts[0]?.toUpperCase() !== 'RULE-SET') continue;
-      const provider = parts[1];
-      const policy = parts[2];
-      if (provider === undefined || policy === undefined) continue;
-      const url = providerUrls.get(provider);
-      if (url === undefined || seenRuleUrls.has(url)) continue;
-      seenRuleUrls.add(url);
-      const shape = providerShapes.get(provider);
-      ruleSources.push({ kind: 'external', url, policy, ...(shape === undefined ? {} : { shape }) });
+      const head = parts[0]?.toUpperCase();
+      if (head === 'RULE-SET') {
+        const provider = parts[1];
+        const policy = parts[2];
+        const meta = provider === undefined ? undefined : providerUrls.get(provider);
+        if (provider === undefined || policy === undefined || meta === undefined || seenRuleUrls.has(meta.url)) {
+          if (meta === undefined) skipped(diagnostics, entry.slice(0, 80), 'rule-provider-unknown');
+          skippedCount += 1;
+          continue;
+        }
+        flushInline();
+        seenRuleUrls.add(meta.url);
+        ruleSources.push({
+          kind: 'external',
+          url: meta.url,
+          policy,
+          ...(meta.shape === undefined ? {} : { shape: meta.shape }),
+          ...(meta.encoding === undefined ? {} : { encoding: meta.encoding }),
+        });
+        continue;
+      }
+      const rule = clashInlineRule(parts);
+      if (rule === null) {
+        skipped(diagnostics, entry.slice(0, 80), `rule-not-modelled:${head ?? 'rule'}`);
+        skippedCount += 1;
+        continue;
+      }
+      inline.push(rule);
     }
   }
+  flushInline();
   // 有 url 但没被 rules 引用的 provider 仍要记下来（去重 + 镜像），只是拿不到 policy。
-  for (const [key, url] of providerUrls) {
-    if (seenRuleUrls.has(url)) continue;
-    seenRuleUrls.add(url);
-    const shape = providerShapes.get(key);
-    ruleSources.push({ kind: 'external', url, ...(shape === undefined ? {} : { shape }) });
+  for (const [key, meta] of providerUrls) {
+    if (seenRuleUrls.has(meta.url)) continue;
+    seenRuleUrls.add(meta.url);
+    ruleSources.push({
+      kind: 'external',
+      url: meta.url,
+      ...(meta.shape === undefined ? {} : { shape: meta.shape }),
+      ...(meta.encoding === undefined ? {} : { encoding: meta.encoding }),
+    });
     if (!Array.isArray(doc['rules'])) skipped(diagnostics, key, 'rule-provider-without-policy');
   }
-  return { nodes, ruleSources, policyGroups: groups, diagnostics, parsed: nodes.length, skipped: skippedCount };
+  const runtime = clashRuntime(doc['dns'], diagnostics);
+  return {
+    nodes,
+    ruleSources,
+    policyGroups: groups,
+    ...(runtime === undefined ? {} : { runtime }),
+    diagnostics,
+    parsed: nodes.length,
+    skipped: skippedCount,
+  };
+}
+
+function clashGroup(entry: unknown, diagnostics: Diagnostic[]): PolicyGroup | null {
+  if (!isRecord(entry)) return null;
+  const name = str(entry['name']);
+  if (name === undefined || !Array.isArray(entry['proxies'])) return null;
+  const rawType = str(entry['type']);
+  const strategy = rawType === 'select' || rawType === 'url-test' || rawType === 'fallback' ? rawType : undefined;
+  if (rawType !== undefined && strategy === undefined) {
+    skipped(diagnostics, name, `group-strategy-not-modelled:${rawType}`);
+  }
+  const testUrl = str(entry['url']);
+  const interval = positiveInt(entry['interval']);
+  const tolerance = nonNegativeInt(entry['tolerance']);
+  return {
+    name,
+    members: entry['proxies'].filter((member): member is string => typeof member === 'string' && member.length > 0),
+    ...(strategy === undefined ? {} : { strategy }),
+    ...(testUrl === undefined ? {} : { testUrl }),
+    ...(interval === undefined ? {} : { interval }),
+    ...(tolerance === undefined ? {} : { tolerance }),
+    ...(entry['lazy'] === true ? { lazy: true } : {}),
+    ...(entry['hidden'] === true ? { hidden: true } : {}),
+  };
+}
+
+function clashInlineRule(parts: readonly string[]): InlineRule | null {
+  const head = parts[0]?.toUpperCase();
+  const noResolve = parts.at(-1)?.toLowerCase() === 'no-resolve';
+  const policyAt = (index: number): string | undefined => parts[index];
+  if (head === 'MATCH') {
+    const policy = policyAt(1);
+    return policy === undefined || policy.length === 0 ? null : { condition: { type: 'match' }, policy };
+  }
+  const value = parts[1];
+  const policy = parts[2];
+  if (value === undefined || value.length === 0 || policy === undefined || policy.length === 0 || policy.toLowerCase() === 'no-resolve') {
+    return null;
+  }
+  if (head === 'DOMAIN') return { condition: { type: 'domain', value }, policy };
+  if (head === 'DOMAIN-SUFFIX') return { condition: { type: 'domainSuffix', value }, policy };
+  if (head === 'DOMAIN-KEYWORD') return { condition: { type: 'domainKeyword', value }, policy };
+  if (head === 'GEOSITE') return { condition: { type: 'geosite', value }, policy };
+  if (head === 'GEOIP') return { condition: { type: 'geoip', value, ...(noResolve ? { noResolve: true } : {}) }, policy };
+  if (head === 'IP-CIDR') return { condition: { type: 'ipCidr', value, ...(noResolve ? { noResolve: true } : {}) }, policy };
+  if (head === 'IP-CIDR6') return { condition: { type: 'ipCidr6', value, ...(noResolve ? { noResolve: true } : {}) }, policy };
+  return null;
+}
+
+function clashRuntime(value: unknown, diagnostics: Diagnostic[]): RuntimePolicy | undefined {
+  if (!isRecord(value) || value['enable'] === false) return undefined;
+  const enhanced = str(value['enhanced-mode']);
+  const mode = enhanced === 'fake-ip' ? 'fake-ip' : enhanced === 'redir-host' ? 'redir-host' : 'system';
+  const nameserver = stringList(value['nameserver']);
+  const fallback = stringList(value['fallback']);
+  const proxyNameserver = stringList(value['proxy-server-nameserver']);
+  const directNameserver = stringList(value['direct-nameserver']);
+  const nameserverPolicy: Record<string, string> = {};
+  if (isRecord(value['nameserver-policy'])) {
+    for (const [domain, server] of Object.entries(value['nameserver-policy'])) {
+      if (typeof server !== 'string' || server.length === 0) continue;
+      const keys = domain.split(',').map((item) => item.trim()).filter((item) => item.length > 0);
+      if (keys.length > 1) skipped(diagnostics, domain.slice(0, 80), 'nameserver-policy-comma-key');
+      for (const key of keys) nameserverPolicy[key] = server;
+    }
+  }
+  const fakeIpRange = str(value['fake-ip-range']);
+  const ipv6 = typeof value['ipv6'] === 'boolean' ? value['ipv6'] : undefined;
+  const dns: DnsPolicy = {
+    mode,
+    ...(nameserver === undefined ? {} : { nameserver }),
+    ...(fallback === undefined ? {} : { fallback }),
+    ...(proxyNameserver === undefined ? {} : { proxyNameserver }),
+    ...(directNameserver === undefined ? {} : { directNameserver }),
+    ...(Object.keys(nameserverPolicy).length === 0 ? {} : { nameserverPolicy }),
+    ...(ipv6 === undefined ? {} : { ipv6 }),
+    ...(fakeIpRange === undefined ? {} : { fakeIpRange }),
+  };
+  if (
+    dns.nameserver === undefined &&
+    dns.fallback === undefined &&
+    dns.proxyNameserver === undefined &&
+    dns.directNameserver === undefined &&
+    dns.nameserverPolicy === undefined &&
+    dns.fakeIpRange === undefined &&
+    dns.ipv6 === undefined &&
+    enhanced === undefined
+  ) {
+    return undefined;
+  }
+  return { dns };
+}
+
+function stringList(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  return items.length === 0 ? undefined : items;
+}
+
+function positiveInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function nonNegativeInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 /** mihomo 用 up/down，Stash 用 up-speed/down-speed；两种写法都要认。 */

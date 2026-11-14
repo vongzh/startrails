@@ -1,10 +1,11 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import type { Annotation, BuildReport, ClientTarget, CollectionMember, DedupeStrategy, InlineRule, RuntimePolicy } from '../core/index.ts';
+import type { Annotation, BuildReport, ClientTarget, CollectionMember, DedupeStrategy, GroupStrategy, RuntimePolicy } from '../core/index.ts';
 import { parseRuntime } from '../core/index.ts';
 import { decrypt, deriveKey, encrypt } from './crypto.ts';
 import type {
+  OverlayMode,
   PersistedBuildReport,
   PersistedCollection,
   PersistedGroupOverride,
@@ -12,9 +13,85 @@ import type {
   PersistedSource,
   PersistedToken,
   ProfileEntry,
+  SectionModes,
   SourceKind,
+  StoredMember,
+  StoredRule,
   Store,
 } from './port.ts';
+
+const OVERLAY_MODES = ['inherit', 'replace', 'merge'] as const;
+
+function asOverlayMode(value: unknown, fallback: OverlayMode): OverlayMode {
+  return (OVERLAY_MODES as readonly string[]).includes(value as string) ? (value as OverlayMode) : fallback;
+}
+
+export function parseSectionModes(value: unknown): SectionModes | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  return {
+    groups: asOverlayMode(record['groups'], 'inherit'),
+    rules: asOverlayMode(record['rules'], 'inherit'),
+    rulePlacement: record['rulePlacement'] === 'before' ? 'before' : 'after',
+    dns: asOverlayMode(record['dns'], 'inherit'),
+  };
+}
+
+function isStoredMember(value: unknown): value is StoredMember {
+  if (typeof value === 'string' && value.length > 0) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (record['kind'] === 'ref') return typeof record['name'] === 'string' && record['name'].length > 0;
+  if (record['kind'] === 'match') return typeof record['pattern'] === 'string' && record['pattern'].length > 0;
+  if (record['kind'] === 'region') return typeof record['code'] === 'string' && record['code'].length > 0;
+  if (record['kind'] === 'rest') return true;
+  return false;
+}
+
+const GROUP_STRATEGIES = ['select', 'url-test', 'fallback'] as const;
+
+function parseGroupColumn(raw: string): Omit<PersistedGroupOverride, 'name' | 'order'> {
+  const parsed = JSON.parse(raw) as unknown;
+  if (Array.isArray(parsed)) {
+    return { members: parsed.filter((item): item is string => typeof item === 'string' && item.length > 0) };
+  }
+  if (typeof parsed !== 'object' || parsed === null) return { members: [] };
+  const record = parsed as Record<string, unknown>;
+  const strategy = (GROUP_STRATEGIES as readonly string[]).includes(record['strategy'] as string)
+    ? (record['strategy'] as GroupStrategy)
+    : undefined;
+  const members = Array.isArray(record['members']) ? record['members'].filter(isStoredMember) : [];
+  return {
+    members,
+    ...(strategy === undefined ? {} : { strategy }),
+    ...(typeof record['testUrl'] === 'string' && record['testUrl'].length > 0 ? { testUrl: record['testUrl'] } : {}),
+    ...(typeof record['interval'] === 'number' ? { interval: record['interval'] } : {}),
+    ...(typeof record['tolerance'] === 'number' ? { tolerance: record['tolerance'] } : {}),
+    ...(record['lazy'] === true ? { lazy: true } : {}),
+    ...(record['hidden'] === true ? { hidden: true } : {}),
+  };
+}
+
+function serializeGroupColumn(group: PersistedGroupOverride): string {
+  const rich =
+    group.strategy !== undefined ||
+    group.testUrl !== undefined ||
+    group.interval !== undefined ||
+    group.tolerance !== undefined ||
+    group.lazy === true ||
+    group.hidden === true ||
+    group.members.some((member) => typeof member !== 'string');
+  if (!rich) return JSON.stringify(group.members);
+  return JSON.stringify({
+    ...(group.strategy === undefined ? {} : { strategy: group.strategy }),
+    ...(group.testUrl === undefined ? {} : { testUrl: group.testUrl }),
+    ...(group.interval === undefined ? {} : { interval: group.interval }),
+    ...(group.tolerance === undefined ? {} : { tolerance: group.tolerance }),
+    ...(group.lazy === true ? { lazy: true } : {}),
+    ...(group.hidden === true ? { hidden: true } : {}),
+    members: group.members,
+  });
+}
 
 interface SourceRow {
   id: string;
@@ -34,7 +111,14 @@ interface SourceRow {
   updated_at: string;
 }
 interface PayloadRow { content: string; bytes: number; updated_at: string }
-interface ProfileRow { id: string; name: string; source_ids: string; items: string | null; runtime: string | null }
+interface ProfileRow {
+  id: string;
+  name: string;
+  source_ids: string;
+  items: string | null;
+  runtime: string | null;
+  section_modes: string | null;
+}
 interface CollectionRow {
   id: string;
   name: string;
@@ -272,6 +356,7 @@ export function openStore(dbPath: string, secret: string): Store {
   ensureColumn(db, 'source_config', 'suggested_hours', 'suggested_hours REAL');
   ensureColumn(db, 'profile_definition', 'items', 'items TEXT');
   ensureColumn(db, 'profile_definition', 'runtime', 'runtime TEXT');
+  ensureColumn(db, 'profile_definition', 'section_modes', 'section_modes TEXT');
   // 手动覆盖地区：早期版本只存 alias / tag，旧库要补这一列才不会在写入时 500。
   ensureColumn(db, 'annotation', 'region', 'region TEXT');
   // 台账要能重看链接与二维码：token 明文加密存这一列。旧库补列后既有记录仍是 NULL，
@@ -388,7 +473,21 @@ export function openStore(dbPath: string, secret: string): Store {
         runtime = undefined;
       }
     }
-    return { id: row.id, name: row.name, entries, ...(runtime === undefined ? {} : { runtime }) };
+    let sectionModes: SectionModes | undefined;
+    if (row.section_modes !== null && row.section_modes !== undefined) {
+      try {
+        sectionModes = parseSectionModes(JSON.parse(row.section_modes) as unknown);
+      } catch {
+        sectionModes = undefined;
+      }
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      entries,
+      ...(runtime === undefined ? {} : { runtime }),
+      ...(sectionModes === undefined ? {} : { sectionModes }),
+    };
   };
 
   return {
@@ -642,7 +741,7 @@ export function openStore(dbPath: string, secret: string): Store {
         db
           .prepare('SELECT payload FROM inline_rule WHERE profile = ? ORDER BY position')
           .all(profileId) as { payload: string }[]
-      ).map((row) => JSON.parse(row.payload) as InlineRule),
+      ).map((row) => JSON.parse(row.payload) as StoredRule),
 
     replaceRules: (profileId, rules) => {
       db.transaction(() => {
@@ -652,6 +751,13 @@ export function openStore(dbPath: string, secret: string): Store {
         );
         rules.forEach((rule, index) => insert.run(profileId, index, JSON.stringify(rule)));
       })();
+    },
+
+    putSectionModes: (profileId, modes) => {
+      db.prepare('UPDATE profile_definition SET section_modes = ? WHERE id = ?').run(
+        JSON.stringify(modes),
+        profileId,
+      );
     },
 
     listGroupOverrides: (profileId) =>
@@ -667,8 +773,8 @@ export function openStore(dbPath: string, secret: string): Store {
         }[]
       ).map((row) => ({
         name: row.name,
-        members: JSON.parse(row.members) as string[],
         order: row.sort_order,
+        ...parseGroupColumn(row.members),
       })),
 
     replaceGroupOverrides: (profileId, overrides: readonly PersistedGroupOverride[]) => {
@@ -678,7 +784,7 @@ export function openStore(dbPath: string, secret: string): Store {
           'INSERT INTO policy_group_override (profile, name, members, sort_order) VALUES (?, ?, ?, ?)',
         );
         overrides.forEach((override) =>
-          insert.run(profileId, override.name, JSON.stringify(override.members), override.order),
+          insert.run(profileId, override.name, serializeGroupColumn(override), override.order),
         );
       })();
     },

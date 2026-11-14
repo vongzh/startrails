@@ -43,7 +43,7 @@ const createOpen = ref(false);
 const SCOPE_NOTE = {
   composition: '这份配置按顺序合并下列订阅；顺序即合并顺序，换一份配置可以引用完全不同的订阅。',
   nodes: '排除、别名、地区与排序只作用于这份配置；换一份配置，这些取舍各自独立。',
-  rules: '规则与策略组只作用于这份配置；规则的策略名要能在同名策略组或内置策略里找到。',
+  rules: '规则和策略组各自选择继承订阅、整份替换，或和订阅组合。策略名要能在组或内置策略里找到。',
 } as const;
 
 const note = computed(() => SCOPE_NOTE[configSection.value as keyof typeof SCOPE_NOTE] ?? '');

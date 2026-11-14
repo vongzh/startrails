@@ -24,6 +24,59 @@ const meaningfulLines = (body: string): readonly string[] =>
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !COMMENT.test(line));
 
+export interface RuleSetDescription {
+  readonly shape: RuleSetShape;
+  readonly encoding: 'text' | 'yaml';
+}
+
+/** `payload:` 列表里的条目。不是这种包装时返回 undefined，交给纯文本判定。 */
+function payloadItems(body: string): readonly string[] | undefined {
+  if (!/^\s*payload\s*:/m.test(body)) return undefined;
+  const items: string[] = [];
+  let inPayload = false;
+  for (const raw of body.split(/\r?\n/)) {
+    if (/^\s*payload\s*:/.test(raw)) {
+      inPayload = true;
+      continue;
+    }
+    if (!inPayload) continue;
+    if (/^\S/.test(raw)) break;
+    const item = /^\s*-\s+(.+?)\s*$/.exec(raw);
+    if (item === null) continue;
+    let value = item[1] ?? '';
+    if (
+      (value.startsWith("'") && value.endsWith("'")) ||
+      (value.startsWith('"') && value.endsWith('"'))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (value.length > 0) items.push(value);
+  }
+  return items;
+}
+
+function classifyLines(lines: readonly string[]): RuleSetShape | undefined {
+  if (lines.length === 0) return undefined;
+  if (lines.every((line) => CIDR.test(line))) return 'ipcidr';
+  if (lines.every((line) => DOMAIN.test(line))) return 'domain';
+  if (lines.every((line) => line.includes(','))) return 'rules';
+  return undefined;
+}
+
+/**
+ * 形状和编码一起给出。`payload:` 包装必须标 yaml，否则 mihomo 会把 `payload:` 当成域名并拒载。
+ * 判不出形状时返回 undefined，调用方跳过，不猜 behavior。
+ */
+export function describeRuleSet(body: string): RuleSetDescription | undefined {
+  const payload = payloadItems(body);
+  if (payload !== undefined) {
+    const shape = classifyLines(payload);
+    return shape === undefined ? undefined : { shape, encoding: 'yaml' };
+  }
+  const shape = inferRuleSetShape(body);
+  return shape === undefined ? undefined : { shape, encoding: 'text' };
+}
+
 export function inferRuleSetShape(body: string): RuleSetShape | undefined {
   // Clash 的 YAML 包装（`payload:` + `- xxx`）无法用 `format: text` 表达：
   // 原样喂给 text 解析器会把它当成域名 `payload:`。这种直接判定「说不清」。

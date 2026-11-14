@@ -117,6 +117,11 @@ function planRuntime(
         const { ecs: _ecs, ...rest } = next;
         next = rest;
       }
+      if (next.nameserverPolicy !== undefined && table.nameserverPolicy !== 'support') {
+        diagnostics.push(makeDiagnostic('plan', target, 'runtime:dns', 'runtime-dns-policy-dropped'));
+        const { nameserverPolicy: _policy, ...rest } = next;
+        next = rest;
+      }
       dns = next;
     }
   }
