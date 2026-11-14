@@ -20,11 +20,8 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
-  ClipboardPaste,
-  FileUp,
   Globe,
   Layers,
-  Link2,
   Pencil,
   Plus,
   RefreshCw,
@@ -65,6 +62,7 @@ import {
   saveProfile,
   sourceLabel,
   sourceStats,
+  sourceUpdating,
   sources,
   state,
   tab,
@@ -79,6 +77,7 @@ const addTab = ref<string>('remote');
 const adding = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const fileName = ref('');
+const fileBaseName = computed(() => fileName.value.replace(/\.[^.]+$/, ''));
 const draft = reactive({
   name: '',
   url: '',
@@ -131,7 +130,8 @@ async function pickFile(event: Event): Promise<void> {
   }
   draft.content = await file.text();
   fileName.value = file.name;
-  if (draft.name.trim().length === 0) draft.name = file.name.replace(/\.[^.]+$/, '');
+  // 不自动把文件名填进「订阅名称」：那是用户输入框，写入后会让人以为改不动。
+  // 留空时由 submitSource 用去掉扩展名的文件名兜底，placeholder 也如实写出这个名字。
   addTab.value = 'file';
 }
 
@@ -143,13 +143,15 @@ async function submitSource(): Promise<void> {
     return;
   }
   if (addTab.value !== 'remote' && draft.content.trim().length === 0) {
-    notify('error', '请先选择文件或粘贴内容');
+    notify('error', '请先选择订阅文件');
     return;
   }
+  // 文件名只作兜底，绝不写进 draft.name：用户改过的名字不能被后续重选文件覆盖。
+  const finalName = name.length > 0 ? name : fileBaseName.value;
   adding.value = true;
   const result = await createSource({
     kind: addTab.value as SourceKind,
-    ...(name.length === 0 ? {} : { name }),
+    ...(finalName.length === 0 ? {} : { name: finalName }),
     ...(addTab.value === 'remote' ? { url: draft.url.trim() } : { content: draft.content }),
     ...(draft.format.length === 0 ? {} : { format: draft.format }),
     ...(draft.ua.trim().length === 0 || addTab.value !== 'remote' ? {} : { ua: draft.ua.trim() }),
@@ -246,7 +248,12 @@ function statOf(id: string) {
   return sourceStats.value[id];
 }
 
+/**
+ * 状态列只回答「这个源现在能不能用」，不重复节点数——节点数有独立一列。
+ * 时长、跳过条数、上游错误这些细节放 tooltip，避免把列宽撑开。
+ */
 function sourceStatus(sourceId: string): { kind: 'ok' | 'warn' | 'danger' | 'muted'; text: string } {
+  if (sourceUpdating.value.includes(sourceId)) return { kind: 'muted', text: '更新中' };
   const source = sources.value.find((item) => item.id === sourceId);
   if (source === undefined) return { kind: 'muted', text: '未知' };
   if (!source.enabled) return { kind: 'muted', text: '已停用' };
@@ -254,15 +261,27 @@ function sourceStatus(sourceId: string): { kind: 'ok' | 'warn' | 'danger' | 'mut
   // 但失败不必然等于没数据——有旧快照时构建照常出节点，措辞要区分「有兜底」和「彻底没有」。
   if (source.lastError !== null) {
     return source.snapshotStale
-      ? { kind: 'warn', text: `回退旧快照 · ${formatDuration(source.snapshotAgeMs ?? 0)}` }
+      ? { kind: 'warn', text: '旧快照' }
       : { kind: 'danger', text: '拉取失败' };
   }
-  if (source.snapshotStale) return { kind: 'warn', text: `数据已 ${formatDuration(source.snapshotAgeMs ?? 0)}未更新` };
+  if (source.snapshotStale) return { kind: 'warn', text: '已过期' };
   const stat = statOf(sourceId);
-  if (stat === undefined) return { kind: 'muted', text: '未检查' };
+  if (stat === undefined) return { kind: 'muted', text: '待检查' };
   if (stat.nodes === 0) return { kind: 'danger', text: '解析为空' };
-  if (stat.diagnostics.length > 0) return { kind: 'warn', text: `${stat.nodes} 节点 · 有诊断` };
-  return { kind: 'ok', text: `${stat.nodes} 节点` };
+  if (stat.diagnostics.length > 0) return { kind: 'warn', text: '有诊断' };
+  return { kind: 'ok', text: '正常' };
+}
+
+/** 状态列的完整原因：默认给节点数，出问题时优先给上游错误或快照时长。 */
+function statusDetail(sourceId: string): string {
+  const source = sources.value.find((item) => item.id === sourceId);
+  if (source === undefined) return '未知源';
+  if (source.lastError !== null) return source.lastError;
+  if (source.snapshotStale) return `数据已 ${formatDuration(source.snapshotAgeMs ?? 0)} 未更新`;
+  const stat = statOf(sourceId);
+  if (stat === undefined) return '尚未检查';
+  const skipped = stat.skipped > 0 ? `，跳过 ${stat.skipped} 条` : '';
+  return `解析出 ${stat.nodes} 个节点${skipped}`;
 }
 
 /** 流量摘要：上游没给 subscription-userinfo 时返回空串，不编造 0。 */
@@ -284,6 +303,8 @@ function fetchTimeOf(source: SourceView): string {
 }
 
 async function refreshOne(id: string): Promise<void> {
+  // 添加后后台已经拉过一次，别让用户手点再并发打上游。
+  if (sourceUpdating.value.includes(id)) return;
   const result = await refreshSource(id);
   if (result === null || result.failed === 0) await inspectSource(id);
 }
@@ -683,7 +704,7 @@ const derivedNodes = computed(() =>
         <div class="spacer"></div>
         <n-button size="small" quaternary :loading="busy > 0" @click="refreshAll">
           <template #icon><RefreshCw :size="14" /></template>
-          刷新上游
+          更新订阅
         </n-button>
         <n-button size="small" type="primary" @click="openDrawer">
           <template #icon><Plus :size="14" /></template>
@@ -699,7 +720,7 @@ const derivedNodes = computed(() =>
               <template #icon><Plus :size="14" /></template>
               添加订阅源
             </n-button>
-            <span class="text-3" style="font-size: 12px">支持远端链接、上传文件、直接粘贴</span>
+            <span class="text-3" style="font-size: 12px">支持远端链接、上传文件</span>
           </div>
         </template>
       </n-empty>
@@ -730,10 +751,22 @@ const derivedNodes = computed(() =>
                     <div v-if="trafficOf(source.id) !== ''" class="text-3" style="font-size: 11.5px">
                       {{ trafficOf(source.id) }}
                     </div>
-                    <!-- 窄屏会隐藏状态列，但「拉取失败 / 回退旧快照」恰恰是最不能丢的信号。 -->
+                    <!-- 窄屏隐藏状态列，但状态信号与启用开关都不能丢，否则手机上没法启停源。 -->
                     <div class="status-mobile">
-                      <span class="dot" :class="sourceStatus(source.id).kind"></span>
-                      <span class="text-2" style="font-size: 11px">{{ sourceStatus(source.id).text }}</span>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <span class="row tight status-signal" style="gap: 6px; flex-wrap: nowrap">
+                            <span class="dot" :class="sourceStatus(source.id).kind"></span>
+                            <span class="text-2" style="font-size: 11px">{{ sourceStatus(source.id).text }}</span>
+                          </span>
+                        </template>
+                        {{ statusDetail(source.id) }}
+                      </n-tooltip>
+                      <n-switch
+                        size="small"
+                        :value="source.enabled"
+                        @update:value="(value: boolean) => updateSource(source.id, { enabled: value })"
+                      />
                     </div>
                   </div>
                 </div>
@@ -759,36 +792,32 @@ const derivedNodes = computed(() =>
                 </n-tooltip>
                 <span v-else>{{ fetchTimeOf(source) }}</span>
               </td>
-              <td class="col-optional" style="width: 1%; white-space: nowrap">
-                <n-tooltip trigger="hover" :disabled="source.lastError === null">
-                  <template #trigger>
-                    <!-- .row 默认 flex-wrap: wrap；这一格宽度由「N 节点」的文字撑出来，
-                         一旦允许换行，圆点会单独占一行、行高从 40 涨到 49。状态是单行信号，
-                         这里强制不换行。 -->
-                    <span class="row tight" style="gap: 6px; flex-wrap: nowrap">
-                      <span class="dot" :class="sourceStatus(source.id).kind"></span>
-                      <span class="text-2" style="font-size: 12px">{{ sourceStatus(source.id).text }}</span>
-                    </span>
-                  </template>
-                  {{ source.lastError }}
-                </n-tooltip>
+              <td class="col-optional status-cell" style="width: 1%">
+                <div class="status-line">
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <!-- .row 默认 flex-wrap: wrap；允许换行时圆点会单独占一行、行高从 40 涨到 49。 -->
+                      <span class="row tight status-signal" style="gap: 6px; flex-wrap: nowrap">
+                        <span class="dot" :class="sourceStatus(source.id).kind"></span>
+                        <span class="text-2" style="font-size: 12px">{{ sourceStatus(source.id).text }}</span>
+                      </span>
+                    </template>
+                    {{ statusDetail(source.id) }}
+                  </n-tooltip>
+                  <!-- 启用开关归在状态列：它是一个状态，不是一次操作。与圆点文字同一 flex 基线对齐。 -->
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-switch
+                        size="small"
+                        :value="source.enabled"
+                        @update:value="(value: boolean) => updateSource(source.id, { enabled: value })"
+                      />
+                    </template>
+                    参与构建
+                  </n-tooltip>
+                </div>
               </td>
               <td class="actions">
-                <n-tooltip trigger="hover">
-                  <template #trigger>
-                    <n-button
-                      aria-label="刷新此订阅源"
-                      quaternary
-                      circle
-                      size="tiny"
-                      :disabled="source.kind !== 'remote'"
-                      @click="refreshOne(source.id)"
-                    >
-                      <template #icon><RefreshCw :size="13" /></template>
-                    </n-button>
-                  </template>
-                  {{ source.kind === 'remote' ? '立即拉取上游' : '本地源无需拉取' }}
-                </n-tooltip>
                 <n-tooltip trigger="hover">
                   <template #trigger>
                     <n-button aria-label="编辑订阅源" quaternary circle size="tiny" @click="openEdit(source)">
@@ -797,15 +826,22 @@ const derivedNodes = computed(() =>
                   </template>
                   编辑
                 </n-tooltip>
-                <n-tooltip trigger="hover">
+                <!-- 文件源没有上游，干脆不渲染这个按钮；原来只是 disabled，仍占位且破坏对齐。 -->
+                <n-tooltip v-if="source.kind === 'remote'" trigger="hover">
                   <template #trigger>
-                    <n-switch
-                      size="small"
-                      :value="source.enabled"
-                      @update:value="(value: boolean) => updateSource(source.id, { enabled: value })"
-                    />
+                    <n-button
+                      aria-label="更新订阅"
+                      quaternary
+                      circle
+                      size="tiny"
+                      :loading="sourceUpdating.includes(source.id)"
+                      :disabled="sourceUpdating.includes(source.id)"
+                      @click="refreshOne(source.id)"
+                    >
+                      <template #icon><RefreshCw :size="13" /></template>
+                    </n-button>
                   </template>
-                  参与构建
+                  更新订阅
                 </n-tooltip>
                 <n-popconfirm @positive-click="removeSource(source.id)">
                   <template #trigger>
@@ -1029,6 +1065,15 @@ const derivedNodes = computed(() =>
 
           <n-tab-pane name="file" tab="文件">
             <div class="stack" style="gap: 12px; padding-top: 12px">
+              <div class="field">
+                <label>订阅名称</label>
+                <n-input
+                  v-model:value="draft.name"
+                  size="small"
+                  :placeholder="fileName === '' ? '例如 机场 A' : `留空则用 ${fileBaseName}`"
+                />
+                <span class="text-3" style="font-size: 11.5px">名称随时可改，与文件名无关</span>
+              </div>
               <div class="drop-zone" @click="fileInput?.click()">
                 <Upload :size="20" />
                 <div class="strong" style="font-size: 13px">
@@ -1039,29 +1084,6 @@ const derivedNodes = computed(() =>
                 </div>
               </div>
               <input ref="fileInput" type="file" hidden accept=".yaml,.yml,.json,.conf,.txt,.ini" @change="pickFile" />
-              <div class="field">
-                <label>订阅名称</label>
-                <n-input v-model:value="draft.name" size="small" placeholder="留空则用文件名" />
-              </div>
-            </div>
-          </n-tab-pane>
-
-          <n-tab-pane name="inline" tab="粘贴">
-            <div class="stack" style="gap: 12px; padding-top: 12px">
-              <div class="field">
-                <label>订阅名称</label>
-                <n-input v-model:value="draft.name" size="small" placeholder="例如 手工整理的节点" />
-              </div>
-              <div class="field">
-                <label>内容</label>
-                <n-input
-                  v-model:value="draft.content"
-                  type="textarea"
-                  class="mono"
-                  :autosize="{ minRows: 10, maxRows: 18 }"
-                  placeholder="粘贴节点链接或完整配置…"
-                />
-              </div>
             </div>
           </n-tab-pane>
         </n-tabs>
@@ -1074,8 +1096,8 @@ const derivedNodes = computed(() =>
         <template #footer>
           <div class="row" style="width: 100%; justify-content: flex-end; gap: 8px">
             <n-button size="small" quaternary @click="drawerOpen = false">取消</n-button>
-            <n-button size="small" type="primary" :loading="adding || busy > 0" @click="submitSource">
-              添加并解析
+            <n-button size="small" type="primary" :loading="adding" @click="submitSource">
+              添加
             </n-button>
           </div>
         </template>

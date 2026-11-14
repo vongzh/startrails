@@ -139,7 +139,7 @@ WantedBy=multi-user.target
 订阅源（采集）→ 组合订阅（合并 / 过滤 / 去重）→ Profile（发布作用域）
 ```
 
-- **订阅源**：一个 URL、一个文件或一段粘贴文本，可单独停用。远端源可配刷新策略、拉取代理（解决机场按出口 IP 限区）与 User-Agent（拿对格式）。
+- **订阅源**：一个 URL 或一个上传文件，可单独停用。远端源可配刷新策略、拉取代理（解决机场按出口 IP 限区）与 User-Agent（拿对格式）。早先版本创建的粘贴源仍可编辑，只是不再提供新建入口。
 - **组合订阅**：多个源合并成可复用单元，成员可配前缀 / 改名模板 / 保留 / 排除 / 上限，或改用**加工链**；去重按 `nodeKey` / `name` / `none`。
 - **Profile**：有序引用若干源与组合，顺序即合并顺序，顶栏可切换，每个 Profile 有自己的一组订阅地址。
 
@@ -188,7 +188,7 @@ WantedBy=multi-user.target
 ```bash
 npm run serve         # 构建前端 + 起服务（http://127.0.0.1:8787）
 npm run dev:ui        # 只跑前端 dev server（后端另开 dev:server）
-npm test              # 164 个用例
+npm test              # 165 个用例
 npm run verify        # 提交前跑这个：版本一致 → tsc → 绑定检查 → 构建 → 用例 → 备份演练
 ```
 

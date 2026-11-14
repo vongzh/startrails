@@ -73,7 +73,11 @@ export function hostOf(url: string): string {
 
 export function initialOf(value: string): string {
   const trimmed = value.trim();
-  return trimmed.length === 0 ? '·' : trimmed.slice(0, 1);
+  if (trimmed.length === 0) return '·';
+  // 不能用 slice(0, 1)：名字以 emoji 开头会截出半个代理对，浏览器渲染成菱形替换字符，
+  // 源头像看起来就像「图标坏了」。Array.from 按完整码点迭代，取得到整字。
+  const [first] = Array.from(trimmed);
+  return first ?? '·';
 }
 
 export function lineCount(text: string): number {

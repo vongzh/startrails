@@ -101,6 +101,8 @@ export const createdUrls = ref<{ target: string; url: string }[]>([]);
 export const activeProfileName = ref(getActiveProfile());
 
 export const sourceStats = ref<Record<string, SourceStatView>>({});
+/** 保存后在后台补拉上游的源 id。刻意不进 busy：不能因为后台任务让整页按钮一直转。 */
+export const sourceUpdating = ref<string[]>([]);
 
 /** 运维能力状态（通知 / WebDAV / 调度器）；登录后拉一次，避免每屏都问。 */
 export const ops = ref<{ notify: { enabled: boolean; channels: string[] }; webdav: { configured: boolean }; scheduler: { intervalMs: number } } | null>(null);
@@ -435,6 +437,46 @@ export async function loadAll(): Promise<void> {
   webdavSettings.value = await api.webdavSettings();
 }
 
+/**
+ * 保存后的轻量刷新：只取 /api/state（纯读库）。
+ * loadAll 里的 /api/sources/inspect 会对每个远端源真的发一次上游请求，
+ * 再加 nodes / preview / rules 等一串串行接口，机场慢或超时就会把「添加」按钮卡住十几秒。
+ * 加完源只需要立刻关抽屉、立刻看到新的一行，用不着等这些。
+ */
+async function reloadAfterSave(): Promise<void> {
+  const snapshot = await api.state();
+  state.value = snapshot;
+  const preferred = getActiveProfile();
+  const profile =
+    snapshot.profiles.find((item) => item.name === preferred) ??
+    snapshot.profiles.find((item) => item.name === 'default') ??
+    snapshot.profiles[0];
+  profileEntries.value = profile ? [...profile.entries] : [];
+  loadedEntries.value = JSON.stringify(profileEntries.value);
+  annotations.value = [...snapshot.annotations];
+}
+
+/**
+ * 后台补做「拉上游 + 全量状态同步」。刻意不进 busy，也不弹错误打断用户：
+ * 后端会把失败原因写进 source.lastError，状态列的 tooltip 会呈现；
+ * 这里只负责把节点数 / 构建结果在拉完后补齐。
+ */
+export function queueSourceRefresh(id: string, pullUpstream: boolean): void {
+  if (sourceUpdating.value.includes(id)) return;
+  sourceUpdating.value = [...sourceUpdating.value, id];
+  void (async () => {
+    try {
+      if (pullUpstream) await api.refreshSource(id);
+      await loadAll();
+    } catch {
+      // 上游不通或构建失败时退回一次纯读库刷新，至少让列表反映刚保存的状态。
+      try { await reloadAfterSave(); } catch { /* 保存时已经刷过一次，忽略 */ }
+    } finally {
+      sourceUpdating.value = sourceUpdating.value.filter((item) => item !== id);
+    }
+  })();
+}
+
 export async function connect(token: string): Promise<void> {
   loginError.value = '';
   setToken(token.trim());
@@ -538,12 +580,16 @@ export async function createSource(
   input: SourceInput,
 ): Promise<{ ok: boolean; attached: boolean }> {
   let attached = false;
+  let createdId = '';
   const ok = await run(async () => {
     const created = await api.addSource({ ...input, profile: activeProfileName.value });
     attached = created.attached;
-    await loadAll();
+    createdId = created.id;
+    await reloadAfterSave();
     notify('ok', attached ? `已添加 ${created.id}，并加入当前 Profile 构成` : `已添加 ${created.id}`);
   });
+  // 保存已经落库，上游拉取交给后台：remote 源要真去拉一次，file 源只需补齐统计与构建状态。
+  if (ok && createdId !== '') queueSourceRefresh(createdId, input.kind === 'remote');
   return { ok, attached };
 }
 
@@ -597,7 +643,7 @@ export async function refreshSource(id: string): Promise<{ refreshed: number; fa
     if (result.failed > 0) {
       notify('error', `${sourceLabel(id)} 拉取失败：${result.lastError ?? '未知原因'}`);
     } else {
-      notify('ok', `${sourceLabel(id)} 已刷新`);
+      notify('ok', `${sourceLabel(id)} 已更新订阅`);
     }
   });
   return result;
@@ -610,8 +656,8 @@ export async function refreshRemoteSources(): Promise<void> {
     notify(
       outcome.failed > 0 ? 'error' : 'ok',
       outcome.failed > 0
-        ? `${outcome.refreshed} 个已刷新，${outcome.failed} 个失败（原因见订阅源列表）`
-        : `已刷新 ${outcome.refreshed} 个远端源`,
+        ? `${outcome.refreshed} 个已更新，${outcome.failed} 个失败（原因见订阅源列表）`
+        : `已更新 ${outcome.refreshed} 个订阅`,
     );
   });
 }

@@ -455,6 +455,10 @@ table.tbl td { padding: 9px 16px; border-bottom: 1px solid var(--divider); verti
 table.tbl tbody tr:last-child td { border-bottom: 0; }
 table.tbl tbody tr:hover { background: var(--surface-2); }
 table.tbl td.num { font-variant-numeric: tabular-nums; color: var(--text-3); text-align: right; }
+/* 状态列：状态信号与启用开关同一 flex 基线；开关原本混在圆形按钮里会高低错位。
+   信号区固定宽度，否则「正常」和「解析为空」长短不同，开关会跟着左右浮动。 */
+.status-line { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.status-signal { min-width: 68px; flex: 0 0 auto; }
 table.tbl td.actions { white-space: nowrap; }
 table.tbl td.actions .n-button { opacity: 0.55; transition: opacity 0.12s; }
 table.tbl tbody tr:hover td.actions .n-button { opacity: 1; }
@@ -853,7 +857,7 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 /* ---------- 移动端底部标签栏（桌面隐藏） ---------- */
 
 .tabbar { display: none; }
-.status-mobile { display: none; align-items: center; gap: 6px; margin-top: 3px; }
+.status-mobile { display: none; align-items: center; gap: 10px; margin-top: 3px; }
 .qr-mobile-hint { display: none; }
 
 /* ---------- 响应式 ---------- */
