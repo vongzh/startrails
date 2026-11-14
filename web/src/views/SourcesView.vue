@@ -46,7 +46,6 @@ import {
   busy,
   collections,
   createSource,
-  inspectSource,
   moveProfileEntry,
   notify,
   profileDirty,
@@ -123,16 +122,24 @@ function openDrawer(): void {
 async function pickFile(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
-  if (file === undefined) return;
-  if (file.size > 8 * 1024 * 1024) {
-    notify('error', '文件超过 8MB，请改用远端链接');
-    return;
+  try {
+    if (file === undefined) return;
+    if (file.size > 8 * 1024 * 1024) {
+      // 超限后不能留着上一次选中的正文：否则提示报错、点「添加」却把旧文件内容存进去。
+      draft.content = '';
+      fileName.value = '';
+      notify('error', '文件超过 8MB，请改用远端链接');
+      return;
+    }
+    draft.content = await file.text();
+    fileName.value = file.name;
+    // 不自动把文件名填进「订阅名称」：那是用户输入框，写入后会让人以为改不动。
+    // 留空时由 submitSource 用去掉扩展名的文件名兜底，placeholder 也如实写出这个名字。
+    addTab.value = 'file';
+  } finally {
+    // 不清 value 的话重选同名文件不会触发 change，用户会以为「换文件」没生效。
+    input.value = '';
   }
-  draft.content = await file.text();
-  fileName.value = file.name;
-  // 不自动把文件名填进「订阅名称」：那是用户输入框，写入后会让人以为改不动。
-  // 留空时由 submitSource 用去掉扩展名的文件名兜底，placeholder 也如实写出这个名字。
-  addTab.value = 'file';
 }
 
 async function submitSource(): Promise<void> {
@@ -147,7 +154,8 @@ async function submitSource(): Promise<void> {
     return;
   }
   // 文件名只作兜底，绝不写进 draft.name：用户改过的名字不能被后续重选文件覆盖。
-  const finalName = name.length > 0 ? name : fileBaseName.value;
+  // 而且只在「文件」页兜底——选过文件再切回链接页时，不能拿文件名给远端源命名。
+  const finalName = name.length > 0 ? name : addTab.value === 'file' ? fileBaseName.value : '';
   adding.value = true;
   const result = await createSource({
     kind: addTab.value as SourceKind,
@@ -216,19 +224,25 @@ async function submitEdit(): Promise<void> {
     notify('error', '名称不能为空');
     return;
   }
+  // 清空链接要在这里拦掉：服务端会回 400，但用户会先看到一次无谓的请求与错误提示。
+  if (target.kind === 'remote' && editDraft.url.trim().length === 0) {
+    notify('error', '订阅链接不能为空');
+    return;
+  }
   // 本地源没有正文就等于没有内容可构建：后端会拒，这里先拦掉，省一个来回。
   if (target.kind !== 'remote' && editContentDirty.value && editContent.value.trim().length === 0) {
     notify('error', '正文不能为空，删除正文请直接删源');
     return;
   }
   editSaving.value = true;
-  // proxy 传空串表示清除（服务端按 null/空串处理），其余字段只在用户改过时才发。
+  // proxy 传空串表示清除；本地源不发 url / ua / proxy / 自动刷新（写了也不会执行）。
   const ok = await updateSource(target.id, {
     name,
     ...(target.kind === 'remote' ? { url: editDraft.url.trim() } : {}),
     ...(target.kind === 'remote' ? { ua: editDraft.ua.trim() } : {}),
-    ...(editDraft.format.length === 0 ? {} : { format: editDraft.format }),
-    refreshPolicy: editDraft.refreshPolicy,
+    // 空串是「自动识别」，必须显式发过去才能清掉旧的 format；省略键在服务端语义是「本次不改」。
+    format: editDraft.format,
+    ...(target.kind === 'remote' ? { refreshPolicy: editDraft.refreshPolicy } : {}),
     ...(target.kind === 'remote' ? { proxy: editDraft.proxy.trim() } : {}),
     ...(target.kind !== 'remote' && editContentDirty.value ? { content: editContent.value } : {}),
   });
@@ -305,15 +319,13 @@ function fetchTimeOf(source: SourceView): string {
 async function refreshOne(id: string): Promise<void> {
   // 添加后后台已经拉过一次，别让用户手点再并发打上游。
   if (sourceUpdating.value.includes(id)) return;
-  const result = await refreshSource(id);
-  if (result === null || result.failed === 0) await inspectSource(id);
+  await refreshSource(id);
 }
 
 async function refreshAll(): Promise<void> {
+  // refreshRemoteSources 内部的 loadAll 已经算过全源统计；再逐源 inspect 一遍是
+  // N 个纯重复请求，还会让 busy 在两段请求之间归零、按钮闪一下。
   await refreshRemoteSources();
-  for (const source of sources.value) {
-    await inspectSource(source.id);
-  }
 }
 
 /* ---------------- 组合订阅 ---------------- */
@@ -881,6 +893,16 @@ const derivedNodes = computed(() =>
         style="padding: 32px 0"
       >
         <template #icon><Layers :size="30" /></template>
+        <template #extra>
+          <n-button v-if="sources.length > 0" size="small" type="primary" @click="openCollection()">
+            <template #icon><Layers :size="14" /></template>
+            新建组合订阅
+          </n-button>
+          <n-button v-else size="small" type="primary" @click="openDrawer">
+            <template #icon><Plus :size="14" /></template>
+            先添加订阅源
+          </n-button>
+        </template>
       </n-empty>
 
       <div v-else class="list">
@@ -1016,7 +1038,8 @@ const derivedNodes = computed(() =>
             顺序即合并顺序；按节点指纹全局去重，同一源被多个组合订阅引用只出现一次。
           </span>
           <div class="spacer"></div>
-          <span class="mono text-2" style="font-size: 12px">合计 {{ derivedNodes }} 节点</span>
+          <!-- 直接相加是去重前的量，别和旁边的「按节点指纹全局去重」说成同一个数。 -->
+          <span class="mono text-2" style="font-size: 12px">合计 {{ derivedNodes }} 节点（去重前）</span>
         </div>
       </div>
     </section>
@@ -1142,7 +1165,8 @@ const derivedNodes = computed(() =>
             <label>解析格式</label>
             <n-select v-model:value="editDraft.format" size="small" :options="formatOptions" />
           </div>
-          <div class="field">
+          <!-- 本地源没有上游：显示「自动刷新」只会写进一条永不执行的策略。 -->
+          <div v-if="editing?.kind === 'remote'" class="field">
             <label>自动刷新</label>
             <n-select v-model:value="editDraft.refreshPolicy" size="small" :options="refreshOptions" />
             <span v-if="editing?.suggestedRefreshHours !== null && editing?.suggestedRefreshHours !== undefined" class="text-3" style="font-size: 11.5px">

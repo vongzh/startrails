@@ -388,9 +388,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
-  previewSource: (id: string) =>
-    request<SourceStatView>(`/api/sources/${encodeURIComponent(id)}/preview`),
-  /** 真去上游拉一次（ETag 复用），与 preview 的「解析检查」是两件事。 */
+  /** 真去上游拉一次（ETag 复用），与 inspect 的「解析检查」是两件事。 */
   refreshSource: (id: string) =>
     request<{ refreshed: number; failed: number; lastError: string | null; lastFetchedAt: string | null }>(
       `/api/sources/${encodeURIComponent(id)}/refresh`,

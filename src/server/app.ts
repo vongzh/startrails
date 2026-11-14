@@ -1054,6 +1054,11 @@ export function createApp(options: AppOptions): App {
     return presented.length > 0 && expected !== undefined && safeEqual(hashToken(presented), expected);
   };
 
+  /**
+   * 管理面（/api/*）整体在 401 闸门之后，这里的 url / proxy 返回明文。
+   * 编辑抽屉靠它回填输入框：此前走 redact()，`?token=***` 被回填后又被 PUT 写回库，
+   * 用户只改个名字就会把订阅链接永久毁掉。诊断文本、错误原因仍走 redact。
+   */
   const sourceView = (source: PersistedSource): Record<string, unknown> => {
     const info = store.sourcePayloadInfo(source.id);
     return {
@@ -1061,12 +1066,12 @@ export function createApp(options: AppOptions): App {
       name: source.name,
       kind: source.kind,
       enabled: source.enabled,
-      url: source.url === undefined ? null : redact(source.url),
+      url: source.url ?? null,
       format: source.format ?? null,
       ua: source.ua ?? null,
       refreshPolicy: source.refreshPolicy ?? null,
       refreshIntervalMs: parseRefreshPolicy(source.refreshPolicy),
-      proxy: source.proxy === undefined ? null : redact(source.proxy),
+      proxy: source.proxy ?? null,
       lastFetchedAt: source.lastFetchedAt ?? null,
       lastError: source.lastError ?? null,
       // 快照年龄 + 是否已超出 TTL：界面据此把「正在用旧数据」讲清楚，而不是只显示一个红点。
@@ -1662,7 +1667,7 @@ export function createApp(options: AppOptions): App {
         id,
         name,
         kind,
-        url: source.url === undefined ? null : redact(source.url),
+        url: source.url ?? null,
         attached,
       });
       return;
@@ -1691,8 +1696,23 @@ export function createApp(options: AppOptions): App {
       }
       if (method === 'PUT' && action === undefined) {
         const body = await readJson(req);
-        const url = asString(body['url']) ?? existing.url;
-        if (url !== undefined && url !== existing.url) {
+        // 缺省 = 本次不改；显式空串 = 想清空。远端源把链接清成空必须报错，
+        // 不能让 asString('') → undefined → 静默回退旧值之后还回 200（提示「保存成功」是假的）。
+        const urlProvided = 'url' in body;
+        const url = urlProvided ? asString(body['url']) : existing.url;
+        if (existing.kind === 'remote' && urlProvided && url === undefined) {
+          sendJson(res, 400, { error: 'url-required' });
+          return;
+        }
+        // 旧版前端会把脱敏值回填并原样写回；即便用户开着缓存的旧页面，也不让它再次毁掉链接。
+        if (url !== undefined && url.includes('***')) {
+          sendJson(res, 400, {
+            error: 'redacted-url-rejected',
+            hint: '链接里是脱敏值（可能被旧版页面写坏过），请在编辑抽屉重新粘贴完整订阅链接',
+          });
+          return;
+        }
+        if (existing.kind === 'remote' && url !== undefined && url !== existing.url) {
           try {
             await assertPublicUrl(url, { allowPrivate: options.allowPrivate ?? false });
           } catch (error) {
@@ -1700,10 +1720,24 @@ export function createApp(options: AppOptions): App {
             return;
           }
         }
+        const name = 'name' in body ? asString(body['name']) : existing.name;
+        if (name === undefined) {
+          sendJson(res, 400, { error: 'name-required' });
+          return;
+        }
         // 只有请求里显式出现的键才覆盖：开关只带 { enabled } 时不能把 ua / 代理 / 刷新策略顺手清掉。
-        const formatRaw = asString(body['format']);
+        // 例外是 format：显式传空串（「自动识别」）表示清除格式偏好，省略该键才是「不改」。
+        let format = existing.format;
+        if ('format' in body) {
+          const raw = asString(body['format']);
+          format = raw !== undefined && isSourceFormat(raw) ? raw : undefined;
+        }
         const ua = 'ua' in body ? asString(body['ua']) : existing.ua;
-        const refreshPolicy = 'refreshPolicy' in body ? asString(body['refreshPolicy']) : existing.refreshPolicy;
+        // 本地源没有上游，自动刷新策略写进去也不会执行，别让编辑抽屉留下无意义的字段。
+        const refreshPolicy =
+          existing.kind === 'remote' && 'refreshPolicy' in body
+            ? asString(body['refreshPolicy'])
+            : existing.refreshPolicy;
         let proxy: string | undefined = existing.proxy;
         if ('proxy' in body) {
           const parsed = proxyFrom(body['proxy']);
@@ -1718,16 +1752,12 @@ export function createApp(options: AppOptions): App {
         }
         const next: PersistedSource = {
           id,
-          name: asString(body['name']) ?? existing.name,
+          name,
           kind: existing.kind,
           enabled: typeof body['enabled'] === 'boolean' ? body['enabled'] : existing.enabled,
-          ...(url === undefined ? {} : { url }),
+          ...(existing.kind === 'remote' && url !== undefined ? { url } : {}),
           ...(ua === undefined ? {} : { ua }),
-          ...(formatRaw !== undefined && isSourceFormat(formatRaw)
-            ? { format: formatRaw }
-            : existing.format === undefined
-              ? {}
-              : { format: existing.format }),
+          ...(format === undefined ? {} : { format }),
           ...(refreshPolicy === undefined ? {} : { refreshPolicy }),
           ...(proxy === undefined ? {} : { proxy }),
         };

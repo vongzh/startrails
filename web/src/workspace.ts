@@ -288,6 +288,9 @@ function messageOf(cause: unknown): string {
   if (text.includes('admin-token-unchanged')) return '新令牌与当前相同，无需更换';
   if (text.includes('last-profile')) return '至少要保留一个 Profile';
   if (text.includes('notify-not-configured')) return '还没配置通知渠道';
+  if (text.includes('redacted-url-rejected')) return '订阅链接是脱敏值：请在编辑抽屉重新粘贴完整链接';
+  if (text.includes('url-required')) return '订阅链接不能为空';
+  if (text.includes('name-required')) return '名称不能为空';
   if (text.includes('404') && text.includes('profile-not-found')) return 'Profile 不存在，请先在订阅源页重建';
   return text.length > 240 ? `${text.slice(0, 240)}…` : text;
 }
@@ -384,11 +387,15 @@ export async function refreshPreview(): Promise<void> {
 
 async function loadRuleState(): Promise<void> {
   const ruleData = await api.rules();
-  rules.value = ruleData.rules;
-  loadedRules.value = JSON.stringify(ruleData.rules);
+  if (!rulesDirty.value) {
+    rules.value = ruleData.rules;
+    loadedRules.value = JSON.stringify(ruleData.rules);
+  }
   const groupData = await api.policyGroups();
-  groups.value = groupData.groups.map((group) => ({ name: group.name, members: [...group.members] }));
-  loadedGroups.value = JSON.stringify(groups.value);
+  if (!groupsDirty.value) {
+    groups.value = groupData.groups.map((group) => ({ name: group.name, members: [...group.members] }));
+    loadedGroups.value = JSON.stringify(groups.value);
+  }
 }
 
 async function loadTrace(): Promise<void> {
@@ -406,8 +413,13 @@ async function loadNodeState(): Promise<void> {
   nodeDiagnostics.value = nodeData.diagnostics;
 }
 
-export async function loadAll(): Promise<void> {
-  const snapshot = await api.state();
+/**
+ * 把 /api/state 映射成全局状态。后台补拉上游、手动刷新、保存动作都会经过这里，
+ * 所以未保存的草稿必须由它保护：早期实现无条件重写 profileEntries / loadedEntries，
+ * 用户在后台拉上游那几十秒里改构成，保存按钮会自己变回「已保存」，改动静默消失。
+ * 规则与策略组同理，保护放在 loadRuleState 里。
+ */
+function applyStateSnapshot(snapshot: StateView): void {
   state.value = snapshot;
   const preferred = getActiveProfile();
   const profile =
@@ -417,14 +429,21 @@ export async function loadAll(): Promise<void> {
   setActiveProfile(profile?.name ?? 'default');
   activeProfileName.value = getActiveProfile();
 
-  profileEntries.value = profile ? [...profile.entries] : [];
-  loadedEntries.value = JSON.stringify(profileEntries.value);
+  if (!profileDirty.value) {
+    profileEntries.value = profile ? [...profile.entries] : [];
+    loadedEntries.value = JSON.stringify(profileEntries.value);
+  }
+  // 标注是即时保存（没有草稿态），可以放心同步。
   annotations.value = [...snapshot.annotations];
 
   const targetExists = snapshot.clientTargets.some((item) => item.id === target.value);
   if (!targetExists && snapshot.clientTargets[0] !== undefined) {
     target.value = snapshot.clientTargets[0].id;
   }
+}
+
+export async function loadAll(): Promise<void> {
+  applyStateSnapshot(await api.state());
 
   await refreshSourceStats();
   await loadNodeState();
@@ -444,16 +463,7 @@ export async function loadAll(): Promise<void> {
  * 加完源只需要立刻关抽屉、立刻看到新的一行，用不着等这些。
  */
 async function reloadAfterSave(): Promise<void> {
-  const snapshot = await api.state();
-  state.value = snapshot;
-  const preferred = getActiveProfile();
-  const profile =
-    snapshot.profiles.find((item) => item.name === preferred) ??
-    snapshot.profiles.find((item) => item.name === 'default') ??
-    snapshot.profiles[0];
-  profileEntries.value = profile ? [...profile.entries] : [];
-  loadedEntries.value = JSON.stringify(profileEntries.value);
-  annotations.value = [...snapshot.annotations];
+  applyStateSnapshot(await api.state());
 }
 
 /**
@@ -622,30 +632,29 @@ export async function removeSource(id: string): Promise<boolean> {
   });
 }
 
-export async function inspectSource(id: string): Promise<SourceStatView | null> {
-  let result: SourceStatView | null = null;
-  await run(async () => {
-    result = await api.previewSource(id);
-    sourceStats.value = { ...sourceStats.value, [id]: result };
-  });
-  return result;
-}
-
 /**
  * 真去上游拉一次（走服务端 ETag 复用）。失败的源不抛错：
  * body 里带 lastError，交给调用方提示「上游 500」这类原因，而不是弹一个 bare 502。
  */
 export async function refreshSource(id: string): Promise<{ refreshed: number; failed: number; lastError: string | null } | null> {
+  // 手动「更新订阅」也要写 sourceUpdating：按钮的 loading / disabled 只认它，
+  // 否则点下去毫无反馈，还能连点出多个并发的上游请求。
+  if (sourceUpdating.value.includes(id)) return null;
+  sourceUpdating.value = [...sourceUpdating.value, id];
   let result: { refreshed: number; failed: number; lastError: string | null } | null = null;
-  await run(async () => {
-    result = await api.refreshSource(id);
-    await loadAll();
-    if (result.failed > 0) {
-      notify('error', `${sourceLabel(id)} 拉取失败：${result.lastError ?? '未知原因'}`);
-    } else {
-      notify('ok', `${sourceLabel(id)} 已更新订阅`);
-    }
-  });
+  try {
+    await run(async () => {
+      result = await api.refreshSource(id);
+      await loadAll();
+      if (result.failed > 0) {
+        notify('error', `${sourceLabel(id)} 拉取失败：${result.lastError ?? '未知原因'}`);
+      } else {
+        notify('ok', `${sourceLabel(id)} 已更新订阅`);
+      }
+    });
+  } finally {
+    sourceUpdating.value = sourceUpdating.value.filter((item) => item !== id);
+  }
   return result;
 }
 

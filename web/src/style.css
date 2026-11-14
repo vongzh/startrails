@@ -466,7 +466,9 @@ tr.expanded > td { background: var(--surface-2); }
 tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 
 .mono { font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.addr-mobile { display: none; }
+/* 订阅链接常带 32 位 token，是最窄不可断内容：390px 下会把整张表撑宽 88px，
+   编辑/更新/删除被挤到屏幕外。能力矩阵页的 .subject-cell 已修过同类问题。 */
+.addr-mobile { display: none; overflow-wrap: anywhere; word-break: break-all; }
 .n-tag.mono { font-family: var(--mono); }
 .n-input.mono .n-input__input-el,
 .n-input.mono .n-input__textarea-el { font-family: var(--mono); font-size: 12px; }

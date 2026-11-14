@@ -188,7 +188,7 @@ WantedBy=multi-user.target
 ```bash
 npm run serve         # 构建前端 + 起服务（http://127.0.0.1:8787）
 npm run dev:ui        # 只跑前端 dev server（后端另开 dev:server）
-npm test              # 165 个用例
+npm test              # 166 个用例
 npm run verify        # 提交前跑这个：版本一致 → tsc → 绑定检查 → 构建 → 用例 → 备份演练
 ```
 

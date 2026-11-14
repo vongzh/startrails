@@ -449,3 +449,85 @@ test('WebDAV 测试：不可达时报原因，未配置时回 400', async (t) =>
     400,
   );
 });
+
+/**
+ * 编辑远端源的回归：管理面返回明文供抽屉回填，保存时不能把脱敏值或空值写回库。
+ * 这一组覆盖的是「只改个名字就把机场订阅废掉」这个真实事故，以及同源的
+ * 空链接静默回退、格式偏好清不掉（只能删源重建）。
+ */
+test('编辑源：明文回填、只改名不破坏链接、空值与格式清除语义明确', async (t) => {
+  const harness = await boot({ adminToken: 'edit-admin', allowPrivate: true });
+  t.after(() => harness.close());
+
+  const url = 'http://127.0.0.1:1/api/v1/client/subscribe?token=abcdef0123456789abcdef0123456789';
+  const proxy = 'socks5://alice:secret@127.0.0.1:1080';
+  const created = await harness.call('/api/sources', 'POST', {
+    id: 'editable',
+    kind: 'remote',
+    url,
+    proxy,
+    format: 'clash-yaml',
+  });
+  assert.equal(created.status, 201);
+  assert.equal(((await created.json()) as { url: string }).url, url, 'POST 响应也不能给脱敏值');
+
+  const state = (await (await harness.call('/api/state', 'GET')).json()) as {
+    sources: { id: string; url: string | null; proxy: string | null; format: string | null }[];
+  };
+  const view = state.sources.find((item) => item.id === 'editable');
+  assert.equal(view?.url, url, '管理面必须返回明文，编辑抽屉才能原样回填');
+  assert.equal(view?.proxy, proxy, '带凭据的代理同样不能被脱敏后写回');
+  assert.equal(view?.format, 'clash-yaml');
+
+  const detail = (await (await harness.call('/api/sources/editable', 'GET')).json()) as {
+    source: { url: string | null };
+  };
+  assert.equal(detail.source.url, url);
+
+  // 模拟编辑抽屉「只改个名字」：把回填的字段原样 PUT 回去。
+  assert.equal(
+    (
+      await harness.call('/api/sources/editable', 'PUT', {
+        name: '改名后',
+        url,
+        ua: '',
+        format: 'clash-yaml',
+        refreshPolicy: 'off',
+        proxy,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(harness.store.getSource('editable')?.url, url);
+  assert.equal(harness.store.getSource('editable')?.name, '改名后');
+  assert.equal(harness.store.getSource('editable')?.proxy, proxy);
+
+  // 清空链接必须报错且不动库，不能回 200 让界面假报「保存成功」。
+  const empty = await harness.call('/api/sources/editable', 'PUT', { url: '' });
+  assert.equal(empty.status, 400);
+  assert.equal(((await empty.json()) as { error: string }).error, 'url-required');
+  assert.equal(harness.store.getSource('editable')?.url, url);
+
+  // 用户开着缓存的旧页面时，脱敏值直接拒掉，而不是写坏库再说。
+  const stale = await harness.call('/api/sources/editable', 'PUT', {
+    url: url.replace(/token=.*/, 'token=***'),
+  });
+  assert.equal(stale.status, 400);
+  assert.equal(((await stale.json()) as { error: string }).error, 'redacted-url-rejected');
+  assert.equal(harness.store.getSource('editable')?.url, url);
+
+  // 省略 format = 本次不改（开关只带 enabled 不能顺手清掉偏好）。
+  assert.equal((await harness.call('/api/sources/editable', 'PUT', { enabled: false })).status, 200);
+  assert.equal(harness.store.getSource('editable')?.format, 'clash-yaml');
+  // 显式空串 = 选回「自动识别」，必须能清掉。
+  assert.equal((await harness.call('/api/sources/editable', 'PUT', { format: '' })).status, 200);
+  assert.equal(harness.store.getSource('editable')?.format, undefined);
+
+  // 本地源没有上游：编辑抽屉不再显示自动刷新，服务端也不写一条永不执行的策略。
+  assert.equal(
+    (await harness.call('/api/sources', 'POST', { id: 'local-edit', kind: 'inline', content: singleNode })).status,
+    201,
+  );
+  assert.equal((await harness.call('/api/sources/local-edit', 'PUT', { refreshPolicy: '2h' })).status, 200);
+  assert.equal(harness.store.getSource('local-edit')?.refreshPolicy, undefined);
+});
