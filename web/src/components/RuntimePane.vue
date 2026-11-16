@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { NAlert, NButton, NInput, NInputNumber, NPopconfirm, NRadioButton, NRadioGroup, NSelect, NSwitch, NTag } from 'naive-ui';
+import { NAlert, NButton, NCollapse, NCollapseItem, NInput, NInputNumber, NPopconfirm, NRadioButton, NRadioGroup, NSelect, NSwitch, NTag } from 'naive-ui';
 import { Globe, Info } from 'lucide-vue-next';
 import { api } from '../api';
-import type { OverlayMode, RuntimeCapabilityView, RuntimePolicyView } from '../api';
+import type { FallbackFilterView, OverlayMode, RuntimeCapabilityView, RuntimePolicyView } from '../api';
 import ClientIcon from './ClientIcon.vue';
 import { activeProfileName, notify } from '../workspace';
 
@@ -24,11 +24,23 @@ const dnsForm = reactive({
   overlay: 'inherit' as OverlayMode,
   mode: 'unset' as 'unset' | 'system' | 'redir-host' | 'fake-ip',
   nameserver: '',
+  proxyNameserver: '',
+  proxyNameserverEmpty: false,
+  directNameserver: '',
   fallback: '',
   nameserverPolicy: '',
   ecs: '',
   fakeIpRange: '',
   ipv6: 'unset' as Tri,
+  defaultNameserver: '',
+  fakeIpFilter: '',
+  fallbackFilterGeoip: 'unset' as Tri,
+  fallbackFilterGeoipCode: '',
+  fallbackFilterIpCidr: '',
+  fallbackFilterDomain: '',
+  useHosts: 'unset' as Tri,
+  useSystemHosts: 'unset' as Tri,
+  respectRules: 'unset' as Tri,
 });
 const tunForm = reactive({
   enabled: false,
@@ -42,11 +54,12 @@ const ipv6Options = [
   { label: '启用', value: 'on' },
   { label: '关闭', value: 'off' },
 ];
-const strictRouteOptions = [
+const boolOptions = [
   { label: '不写（客户端默认）', value: 'unset' },
-  { label: '启用', value: 'on' },
+  { label: '开启', value: 'on' },
   { label: '关闭', value: 'off' },
 ];
+const strictRouteOptions = boolOptions;
 const stackOptions = [
   { label: 'gvisor（用户态，最稳）', value: 'gvisor' },
   { label: 'system（走内核栈）', value: 'system' },
@@ -75,11 +88,23 @@ const hasRuntime = computed(
     dnsForm.overlay !== 'inherit' ||
     dnsForm.mode !== 'unset' ||
     splitLines(dnsForm.nameserver).length > 0 ||
+    splitLines(dnsForm.proxyNameserver).length > 0 ||
+    dnsForm.proxyNameserverEmpty ||
+    splitLines(dnsForm.directNameserver).length > 0 ||
     splitLines(dnsForm.fallback).length > 0 ||
     splitLines(dnsForm.nameserverPolicy).length > 0 ||
     dnsForm.ecs.trim().length > 0 ||
     dnsForm.fakeIpRange.trim().length > 0 ||
     dnsForm.ipv6 !== 'unset' ||
+    splitLines(dnsForm.defaultNameserver).length > 0 ||
+    splitLines(dnsForm.fakeIpFilter).length > 0 ||
+    dnsForm.fallbackFilterGeoip !== 'unset' ||
+    dnsForm.fallbackFilterGeoipCode.trim().length > 0 ||
+    splitLines(dnsForm.fallbackFilterIpCidr).length > 0 ||
+    splitLines(dnsForm.fallbackFilterDomain).length > 0 ||
+    dnsForm.useHosts !== 'unset' ||
+    dnsForm.useSystemHosts !== 'unset' ||
+    dnsForm.respectRules !== 'unset' ||
     tunForm.enabled,
 );
 
@@ -93,6 +118,9 @@ async function loadRuntime(): Promise<void> {
     dnsForm.overlay = view.dnsMode ?? 'inherit';
     dnsForm.mode = dns === undefined ? 'unset' : dns.mode;
     dnsForm.nameserver = (dns?.nameserver ?? []).join('\n');
+    dnsForm.proxyNameserver = (dns?.proxyNameserver ?? []).join('\n');
+    dnsForm.proxyNameserverEmpty = Array.isArray(dns?.proxyNameserver) && dns.proxyNameserver.length === 0;
+    dnsForm.directNameserver = (dns?.directNameserver ?? []).join('\n');
     dnsForm.fallback = (dns?.fallback ?? []).join('\n');
     dnsForm.nameserverPolicy = Object.entries(dns?.nameserverPolicy ?? {})
       .map(([domain, server]) => `${domain} ${server}`)
@@ -100,6 +128,16 @@ async function loadRuntime(): Promise<void> {
     dnsForm.ecs = dns?.ecs ?? '';
     dnsForm.fakeIpRange = dns?.fakeIpRange ?? '';
     dnsForm.ipv6 = dns?.ipv6 === undefined ? 'unset' : dns.ipv6 ? 'on' : 'off';
+    dnsForm.defaultNameserver = (dns?.defaultNameserver ?? []).join('\n');
+    dnsForm.fakeIpFilter = (dns?.fakeIpFilter ?? []).join('\n');
+    dnsForm.fallbackFilterGeoip =
+      dns?.fallbackFilter?.geoip === undefined ? 'unset' : dns.fallbackFilter.geoip ? 'on' : 'off';
+    dnsForm.fallbackFilterGeoipCode = dns?.fallbackFilter?.geoipCode ?? '';
+    dnsForm.fallbackFilterIpCidr = (dns?.fallbackFilter?.ipCidr ?? []).join('\n');
+    dnsForm.fallbackFilterDomain = (dns?.fallbackFilter?.domain ?? []).join('\n');
+    dnsForm.useHosts = dns?.useHosts === undefined ? 'unset' : dns.useHosts ? 'on' : 'off';
+    dnsForm.useSystemHosts = dns?.useSystemHosts === undefined ? 'unset' : dns.useSystemHosts ? 'on' : 'off';
+    dnsForm.respectRules = dns?.respectRules === undefined ? 'unset' : dns.respectRules ? 'on' : 'off';
     const tun = view.runtime?.tun;
     tunForm.enabled = tun?.enabled === true;
     tunForm.stack = tun?.stack ?? 'gvisor';
@@ -117,6 +155,8 @@ async function saveRuntime(): Promise<void> {
   runtimeSaving.value = true;
   try {
     const nameserver = splitLines(dnsForm.nameserver);
+    const proxyNameserver = splitLines(dnsForm.proxyNameserver);
+    const directNameserver = splitLines(dnsForm.directNameserver);
     const fallback = splitLines(dnsForm.fallback);
     const nameserverPolicy: Record<string, string> = {};
     for (const line of splitLines(dnsForm.nameserverPolicy)) {
@@ -126,24 +166,61 @@ async function saveRuntime(): Promise<void> {
       const server = line.slice(splitAt + 1).trim();
       if (domain.length > 0 && server.length > 0) nameserverPolicy[domain] = server;
     }
-    const dns: RuntimePolicyView['dns'] =
+    const defaultNameserver = splitLines(dnsForm.defaultNameserver);
+    const fakeIpFilter = splitLines(dnsForm.fakeIpFilter);
+    const fallbackIpCidr = splitLines(dnsForm.fallbackFilterIpCidr);
+    const fallbackDomain = splitLines(dnsForm.fallbackFilterDomain);
+    const fallbackFilter: FallbackFilterView = {
+      ...(dnsForm.fallbackFilterGeoip === 'unset' ? {} : { geoip: dnsForm.fallbackFilterGeoip === 'on' }),
+      ...(dnsForm.fallbackFilterGeoipCode.trim() === ''
+        ? {}
+        : { geoipCode: dnsForm.fallbackFilterGeoipCode.trim() }),
+      ...(fallbackIpCidr.length === 0 ? {} : { ipCidr: fallbackIpCidr }),
+      ...(fallbackDomain.length === 0 ? {} : { domain: fallbackDomain }),
+    };
+    const tri = (value: Tri): boolean | undefined => (value === 'unset' ? undefined : value === 'on');
+    const hasFallbackFilter = Object.keys(fallbackFilter).length > 0;
+    const dnsEmpty =
       dnsForm.mode === 'unset' &&
       nameserver.length === 0 &&
+      proxyNameserver.length === 0 &&
+      !dnsForm.proxyNameserverEmpty &&
+      directNameserver.length === 0 &&
       fallback.length === 0 &&
       Object.keys(nameserverPolicy).length === 0 &&
       dnsForm.ecs.trim().length === 0 &&
       dnsForm.fakeIpRange.trim().length === 0 &&
-      dnsForm.ipv6 === 'unset'
-        ? undefined
-        : {
-            mode: dnsForm.mode === 'unset' ? 'system' : dnsForm.mode,
-            ...(nameserver.length === 0 ? {} : { nameserver }),
-            ...(fallback.length === 0 ? {} : { fallback }),
-            ...(Object.keys(nameserverPolicy).length === 0 ? {} : { nameserverPolicy }),
-            ...(dnsForm.ecs.trim().length === 0 ? {} : { ecs: dnsForm.ecs.trim() }),
-            ...(dnsForm.fakeIpRange.trim().length === 0 ? {} : { fakeIpRange: dnsForm.fakeIpRange.trim() }),
-            ...(dnsForm.ipv6 === 'unset' ? {} : { ipv6: dnsForm.ipv6 === 'on' }),
-          };
+      dnsForm.ipv6 === 'unset' &&
+      defaultNameserver.length === 0 &&
+      fakeIpFilter.length === 0 &&
+      !hasFallbackFilter &&
+      dnsForm.useHosts === 'unset' &&
+      dnsForm.useSystemHosts === 'unset' &&
+      dnsForm.respectRules === 'unset';
+    const dns: RuntimePolicyView['dns'] = dnsEmpty
+      ? undefined
+      : {
+          mode: dnsForm.mode === 'unset' ? 'system' : dnsForm.mode,
+          ...(nameserver.length === 0 ? {} : { nameserver }),
+          // 显式留空是刻意写法：写 [] 而不是省略，让节点域名走 nameserver-policy。
+          ...(dnsForm.proxyNameserverEmpty
+            ? { proxyNameserver: [] }
+            : proxyNameserver.length === 0
+              ? {}
+              : { proxyNameserver }),
+          ...(directNameserver.length === 0 ? {} : { directNameserver }),
+          ...(fallback.length === 0 ? {} : { fallback }),
+          ...(Object.keys(nameserverPolicy).length === 0 ? {} : { nameserverPolicy }),
+          ...(dnsForm.ecs.trim().length === 0 ? {} : { ecs: dnsForm.ecs.trim() }),
+          ...(dnsForm.fakeIpRange.trim().length === 0 ? {} : { fakeIpRange: dnsForm.fakeIpRange.trim() }),
+          ...(dnsForm.ipv6 === 'unset' ? {} : { ipv6: dnsForm.ipv6 === 'on' }),
+          ...(defaultNameserver.length === 0 ? {} : { defaultNameserver }),
+          ...(fakeIpFilter.length === 0 ? {} : { fakeIpFilter }),
+          ...(hasFallbackFilter ? { fallbackFilter } : {}),
+          ...(dnsForm.useHosts === 'unset' ? {} : { useHosts: tri(dnsForm.useHosts) }),
+          ...(dnsForm.useSystemHosts === 'unset' ? {} : { useSystemHosts: tri(dnsForm.useSystemHosts) }),
+          ...(dnsForm.respectRules === 'unset' ? {} : { respectRules: tri(dnsForm.respectRules) }),
+        };
     const runtime: RuntimePolicyView = {
       ...(dns === undefined ? {} : { dns }),
       ...(tunForm.enabled
@@ -277,6 +354,30 @@ watch(activeProfileName, (name) => {
             placeholder="tls://8.8.4.4"
           />
         </div>
+        <div class="field">
+          <label>节点域名解析器（proxy-server）</label>
+          <n-input
+            v-model:value="dnsForm.proxyNameserver"
+            type="textarea"
+            size="small"
+            :autosize="{ minRows: 2, maxRows: 3 }"
+            placeholder="解析节点域名用；留空走默认"
+          />
+          <label style="margin-top: 6px; display: flex; align-items: center; gap: 6px">
+            <n-switch v-model:value="dnsForm.proxyNameserverEmpty" size="small" />
+            <span class="text-3">显式留空（写 []，让节点域名走上面的按域名策略）</span>
+          </label>
+        </div>
+        <div class="field">
+          <label>直连域名解析器（direct-nameserver）</label>
+          <n-input
+            v-model:value="dnsForm.directNameserver"
+            type="textarea"
+            size="small"
+            :autosize="{ minRows: 2, maxRows: 3 }"
+            placeholder="https://doh.pub/dns-query"
+          />
+        </div>
       </div>
 
       <div class="form-grid cols-3" style="margin-top: 10px">
@@ -293,6 +394,75 @@ watch(activeProfileName, (name) => {
           <n-select v-model:value="dnsForm.ipv6" size="small" :options="ipv6Options" />
         </div>
       </div>
+
+      <n-collapse style="margin-top: 10px">
+        <n-collapse-item title="mihomo 高级 DNS 字段" name="advanced">
+          <p class="text-3" style="font-size: 11.5px; margin: 0 0 12px; max-width: 640px">
+            这一组只有 mihomo / clash-yaml 系客户端能表达；导出到 Surge、sing-box 等目标时会自动剥掉并留一条诊断。
+            拿不准就全部留空。
+          </p>
+          <div class="form-grid cols-2">
+            <div class="field">
+              <label>default-nameserver（每行一条，引导 DNS）</label>
+              <n-input
+                v-model:value="dnsForm.defaultNameserver"
+                type="textarea" size="small" :autosize="{ minRows: 2, maxRows: 3 }"
+                placeholder="223.5.5.5&#10;119.29.29.29"
+              />
+            </div>
+            <div class="field">
+              <label>fake-ip-filter（每行一条）</label>
+              <n-input
+                v-model:value="dnsForm.fakeIpFilter"
+                type="textarea" size="small" :autosize="{ minRows: 4, maxRows: 7 }"
+                placeholder="*.lan&#10;+.msftconnecttest.com"
+              />
+            </div>
+          </div>
+          <div class="form-grid cols-2" style="margin-top: 10px">
+            <div class="field">
+              <label>fallback-filter · ipcidr（每行一条）</label>
+              <n-input
+                v-model:value="dnsForm.fallbackFilterIpCidr"
+                type="textarea" size="small" :autosize="{ minRows: 3, maxRows: 5 }"
+                placeholder="0.0.0.0/8&#10;10.0.0.0/8"
+              />
+            </div>
+            <div class="field">
+              <label>fallback-filter · domain（每行一条）</label>
+              <n-input
+                v-model:value="dnsForm.fallbackFilterDomain"
+                type="textarea" size="small" :autosize="{ minRows: 3, maxRows: 5 }"
+                placeholder="+.google.com&#10;+.youtube.com"
+              />
+            </div>
+          </div>
+          <div class="form-grid cols-2" style="margin-top: 10px">
+            <div class="field">
+              <label>fallback-filter · geoip</label>
+              <n-select v-model:value="dnsForm.fallbackFilterGeoip" size="small" :options="boolOptions" />
+            </div>
+            <div class="field">
+              <label>fallback-filter · geoip-code</label>
+              <n-input v-model:value="dnsForm.fallbackFilterGeoipCode" size="small" placeholder="CN" />
+            </div>
+          </div>
+          <div class="form-grid cols-3" style="margin-top: 10px">
+            <div class="field">
+              <label>use-hosts</label>
+              <n-select v-model:value="dnsForm.useHosts" size="small" :options="boolOptions" />
+            </div>
+            <div class="field">
+              <label>use-system-hosts</label>
+              <n-select v-model:value="dnsForm.useSystemHosts" size="small" :options="boolOptions" />
+            </div>
+            <div class="field">
+              <label>respect-rules</label>
+              <n-select v-model:value="dnsForm.respectRules" size="small" :options="boolOptions" />
+            </div>
+          </div>
+        </n-collapse-item>
+      </n-collapse>
 
       <div class="setting-row" style="margin-top: 6px">
         <Globe :size="16" class="text-3" />

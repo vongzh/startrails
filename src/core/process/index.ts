@@ -1,6 +1,7 @@
-import type { Annotation, PolicyGroup, Profile, ProxyNode, RuleSource } from '../ir/index.ts';
+import type { Annotation, NodeTransform, PolicyGroup, Profile, ProxyNode, RuleSource } from '../ir/index.ts';
 import { nodeKey } from '../ir/index.ts';
 import { deepFreeze } from '../ir/index.ts';
+import { compileMatcher } from '../collections/index.ts';
 import type { Diagnostic } from '../diagnostics/index.ts';
 import { makeDiagnostic } from '../diagnostics/index.ts';
 
@@ -77,6 +78,48 @@ export function applyAnnotations(annotations: readonly Annotation[]): Processor 
 
     kept.sort((left, right) => left.order - right.order);
     const result = rebuild(profile, kept.map((entry) => entry.node));
+    return { profile: result.profile, diagnostics: [...result.diagnostics, ...diagnostics] };
+  };
+}
+
+/**
+ * 按节点名批量清洗（配置级）：与 annotation 匹配同口径的正则/glob/字面量，按顺序执行。
+ *
+ * 为什么排在 applyAnnotations 之前：清洗做「一类节点」的粗加工（剔除信息节点、加地区前缀），
+ * 标注做「单个节点」的精修。改名用 `{name}` 占原名，且 nodeKey 不含 name——所以后续标注
+ * 依然按原 nodeKey 命中，不会因为批量改名而失效。
+ */
+export function applyNodeTransforms(transforms: readonly NodeTransform[]): Processor {
+  const ordered = [...transforms].sort((left, right) => left.order - right.order);
+  return (profile) => {
+    let nodes: readonly ProxyNode[] = profile.nodes;
+    const diagnostics: Diagnostic[] = [];
+    for (const transform of ordered) {
+      const matcher = compileMatcher(transform.pattern);
+      if (matcher === null) {
+        diagnostics.push(makeDiagnostic('process', null, transform.id, 'invalid-transform-pattern'));
+        continue;
+      }
+      if (transform.action === 'exclude') {
+        const kept = nodes.filter((node) => !matcher.test(node.name));
+        const removed = nodes.length - kept.length;
+        if (removed > 0) {
+          diagnostics.push(
+            makeDiagnostic('process', null, transform.id, `excluded-by-transform:${removed}`),
+          );
+        }
+        nodes = kept;
+        continue;
+      }
+      const template = transform.replacement ?? '{name}';
+      nodes = nodes.map((node) => {
+        if (!matcher.test(node.name)) return node;
+        const name = template.replaceAll('{name}', node.name);
+        if (name === node.name) return node;
+        return { ...node, name } as ProxyNode;
+      });
+    }
+    const result = rebuild(profile, nodes);
     return { profile: result.profile, diagnostics: [...result.diagnostics, ...diagnostics] };
   };
 }

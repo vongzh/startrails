@@ -269,3 +269,59 @@ test('设置接口：写入运行时段后，产物出现 dns 段且 configVersi
   assert.equal(cleared.status, 200);
   assert.doesNotMatch(await (await fetch(url)).text(), /^dns:/m);
 });
+
+test('mihomo 高级 DNS 字段：fallback-filter / fake-ip-filter / hosts 开关全部写出', () => {
+  const { content, diagnostics } = build(
+    {
+      dns: {
+        mode: 'fake-ip',
+        nameserver: ['https://doh.pub/dns-query'],
+        proxyNameserver: [],
+        defaultNameserver: ['223.5.5.5', '119.29.29.29'],
+        fakeIpFilter: ['*.lan', '+.msftconnecttest.com'],
+        useHosts: false,
+        useSystemHosts: false,
+        respectRules: false,
+        fallbackFilter: {
+          geoip: true,
+          geoipCode: 'CN',
+          ipCidr: ['0.0.0.0/8', '10.0.0.0/8'],
+          domain: ['+.google.com', '+.youtube.com'],
+        },
+      },
+    },
+    'mihomo',
+  );
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  assert.match(text, /default-nameserver:/);
+  assert.match(text, /223\.5\.5\.5/);
+  assert.match(text, /proxy-server-nameserver: \[\]/, '显式空数组要写出来，不是省略');
+  assert.match(text, /fake-ip-filter:/);
+  assert.match(text, /fallback-filter:/);
+  assert.match(text, /geoip-code: CN/);
+  assert.match(text, /ipcidr:/);
+  assert.match(text, /use-hosts: false/);
+  assert.match(text, /respect-rules: false/);
+  assert.ok(!diagnostics.some((d) => d.reason === 'runtime-dns-advanced-dropped'));
+});
+
+test('非 clash-yaml 目标：高级 DNS 字段整组剥掉并记诊断，不静默丢', () => {
+  const { content, diagnostics } = build(
+    {
+      dns: {
+        mode: 'system',
+        nameserver: ['1.1.1.1'],
+        fakeIpFilter: ['*.lan'],
+        fallbackFilter: { geoip: true, geoipCode: 'CN' },
+      },
+    },
+    'surge',
+  );
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  assert.ok(
+    diagnostics.some((d) => d.reason === 'runtime-dns-advanced-dropped'),
+    `应有高级字段丢弃诊断，实际：${JSON.stringify(diagnostics.map((d) => d.reason))}`,
+  );
+  assert.doesNotMatch(text, /fake-ip-filter/);
+  assert.doesNotMatch(text, /fallback-filter/);
+});

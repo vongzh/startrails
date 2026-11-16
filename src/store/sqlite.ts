@@ -1,8 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import type { Annotation, BuildReport, ClientTarget, CollectionMember, DedupeStrategy, GroupStrategy, RuntimePolicy } from '../core/index.ts';
-import { parseRuntime } from '../core/index.ts';
+import type { Annotation, BuildReport, ClientTarget, CollectionMember, DedupeStrategy, GroupStrategy, NodeTransform, RuntimePolicy } from '../core/index.ts';
+import { parseNodeTransforms, parseRuntime } from '../core/index.ts';
 import { decrypt, deriveKey, encrypt } from './crypto.ts';
 import type {
   OverlayMode,
@@ -118,6 +118,7 @@ interface ProfileRow {
   items: string | null;
   runtime: string | null;
   section_modes: string | null;
+  node_transforms: string | null;
 }
 interface CollectionRow {
   id: string;
@@ -357,6 +358,8 @@ export function openStore(dbPath: string, secret: string): Store {
   ensureColumn(db, 'profile_definition', 'items', 'items TEXT');
   ensureColumn(db, 'profile_definition', 'runtime', 'runtime TEXT');
   ensureColumn(db, 'profile_definition', 'section_modes', 'section_modes TEXT');
+  // 节点批量清洗规则（配置级）——与 runtime 同构成整份 JSON 存这一列。
+  ensureColumn(db, 'profile_definition', 'node_transforms', 'node_transforms TEXT');
   // 手动覆盖地区：早期版本只存 alias / tag，旧库要补这一列才不会在写入时 500。
   ensureColumn(db, 'annotation', 'region', 'region TEXT');
   // 台账要能重看链接与二维码：token 明文加密存这一列。旧库补列后既有记录仍是 NULL，
@@ -481,10 +484,20 @@ export function openStore(dbPath: string, secret: string): Store {
         sectionModes = undefined;
       }
     }
+    // 清洗规则解析失败按「没有规则」处理：坏 JSON 不该让整份配置读不出来。
+    let nodeTransforms: readonly NodeTransform[] = [];
+    if (row.node_transforms !== null && row.node_transforms !== undefined) {
+      try {
+        nodeTransforms = parseNodeTransforms(JSON.parse(row.node_transforms) as unknown);
+      } catch {
+        nodeTransforms = [];
+      }
+    }
     return {
       id: row.id,
       name: row.name,
       entries,
+      nodeTransforms,
       ...(runtime === undefined ? {} : { runtime }),
       ...(sectionModes === undefined ? {} : { sectionModes }),
     };
@@ -710,6 +723,25 @@ export function openStore(dbPath: string, secret: string): Store {
           annotation.order ?? null,
         );
       })();
+    },
+
+    listNodeTransforms: (profileId) => {
+      const row = db.prepare('SELECT node_transforms FROM profile_definition WHERE id = ?').get(profileId) as
+        | { node_transforms: string | null }
+        | undefined;
+      if (row?.node_transforms === null || row?.node_transforms === undefined) return [];
+      try {
+        return parseNodeTransforms(JSON.parse(row.node_transforms) as unknown);
+      } catch {
+        return [];
+      }
+    },
+
+    replaceNodeTransforms: (profileId, transforms) => {
+      db.prepare('UPDATE profile_definition SET node_transforms = ? WHERE id = ?').run(
+        JSON.stringify(transforms),
+        profileId,
+      );
     },
 
     getSetting: (key) => {

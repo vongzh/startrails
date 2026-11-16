@@ -7,6 +7,16 @@ export interface AnnotationView {
   region?: string;
 }
 
+/** 按节点名批量清洗：正则/glob/字面量匹配，按顺序剔除或改名。 */
+export interface NodeTransformView {
+  id: string;
+  order: number;
+  pattern: string;
+  action: 'exclude' | 'rename';
+  /** rename 用；`{name}` 占位符代表原节点名。 */
+  replacement?: string;
+}
+
 export type SourceKind = 'remote' | 'file' | 'inline';
 
 /** 上游 `subscription-userinfo` 的快照，仅当上游给了才有值。 */
@@ -260,6 +270,12 @@ export interface WebDavProbeView {
 }
 
 /** DNS / TUN：整份配置级的部署设置，与订阅内容无关。 */
+export interface FallbackFilterView {
+  geoip?: boolean;
+  geoipCode?: string;
+  ipCidr?: string[];
+  domain?: string[];
+}
 export interface DnsPolicyView {
   mode: 'system' | 'fake-ip' | 'redir-host';
   nameserver?: string[];
@@ -270,6 +286,13 @@ export interface DnsPolicyView {
   ecs?: string;
   fakeIpRange?: string;
   ipv6?: boolean;
+  /** 以下为 mihomo 专有高级字段，其余目标导出时剥掉并记诊断。 */
+  defaultNameserver?: string[];
+  fallbackFilter?: FallbackFilterView;
+  fakeIpFilter?: string[];
+  useHosts?: boolean;
+  useSystemHosts?: boolean;
+  respectRules?: boolean;
 }
 export interface TunPolicyView {
   enabled: boolean;
@@ -568,6 +591,14 @@ export const api = {
     request<BuildReportView>(`/api/diagnostics?buildId=${encodeURIComponent(buildId)}`),
   saveAnnotation: (annotation: AnnotationView, profile = activeProfile) =>
     post<{ ok: boolean }>(withProfile('/api/annotations', profile), annotation),
+  /** 节点批量清洗规则：整份有序列表，按配置隔离。 */
+  nodeTransforms: (profile = activeProfile) =>
+    request<{ transforms: NodeTransformView[] }>(withProfile('/api/node-transforms', profile)),
+  saveNodeTransforms: (transforms: NodeTransformView[], profile = activeProfile) =>
+    request<{ ok: boolean; transforms: NodeTransformView[] }>(withProfile('/api/node-transforms', profile), {
+      method: 'PUT',
+      body: JSON.stringify({ transforms }),
+    }),
   /** 重新签发旧地址时要指定它原本所属的 Profile，不能跟着当前上下文漂。 */
   createToken: (target: string, profile: string = activeProfile) =>
     post<{ id: string; url: string; token: string }>('/api/tokens', { profile, target }),

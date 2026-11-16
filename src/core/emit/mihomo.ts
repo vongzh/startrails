@@ -291,6 +291,21 @@ export const mihomoEmitter = (
     if (dns.nameserverPolicy !== undefined && Object.keys(dns.nameserverPolicy).length > 0) {
       dnsBlock['nameserver-policy'] = { ...dns.nameserverPolicy };
     }
+    // 以下高级字段只在 clash-yaml 方言写出（plan 已在其余方言剥掉并记诊断）。
+    if (dns.defaultNameserver !== undefined) dnsBlock['default-nameserver'] = [...dns.defaultNameserver];
+    if (dns.fakeIpFilter !== undefined) dnsBlock['fake-ip-filter'] = [...dns.fakeIpFilter];
+    if (dns.useHosts !== undefined) dnsBlock['use-hosts'] = dns.useHosts;
+    if (dns.useSystemHosts !== undefined) dnsBlock['use-system-hosts'] = dns.useSystemHosts;
+    if (dns.respectRules !== undefined) dnsBlock['respect-rules'] = dns.respectRules;
+    if (dns.fallbackFilter !== undefined) {
+      const filter = dns.fallbackFilter;
+      dnsBlock['fallback-filter'] = {
+        ...(filter.geoip === undefined ? {} : { geoip: filter.geoip }),
+        ...(filter.geoipCode === undefined ? {} : { 'geoip-code': filter.geoipCode }),
+        ...(filter.ipCidr === undefined ? {} : { ipcidr: [...filter.ipCidr] }),
+        ...(filter.domain === undefined ? {} : { domain: [...filter.domain] }),
+      };
+    }
   }
 
   /**

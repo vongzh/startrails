@@ -6,6 +6,7 @@ import type { ProfileEntryView } from '../api';
 import NodesView from './NodesView.vue';
 import RulesView from './RulesView.vue';
 import RuntimePane from '../components/RuntimePane.vue';
+import NodeTransformsPane from '../components/NodeTransformsPane.vue';
 import ProfileCreateModal from '../components/ProfileCreateModal.vue';
 import {
   activeProfileName,
@@ -252,6 +253,7 @@ const derivedNodes = computed(() =>
 
       <n-tab-pane name="nodes" tab="节点">
         <div class="scope-note"><Info :size="13" />{{ note }}</div>
+        <NodeTransformsPane />
         <NodesView class="embed" />
       </n-tab-pane>
 

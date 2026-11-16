@@ -71,6 +71,7 @@ const conditionTypes = [
   { label: 'DOMAIN', value: 'domain' },
   { label: 'DOMAIN-KEYWORD', value: 'domainKeyword' },
   { label: 'IP-CIDR', value: 'ipCidr' },
+  { label: 'IP-CIDR6', value: 'ipCidr6' },
   { label: 'GEOSITE', value: 'geosite' },
   { label: 'GEOIP', value: 'geoip' },
   { label: 'MATCH', value: 'match' },
@@ -88,7 +89,7 @@ const formatOptions = [
 ];
 
 const dirty = computed(() => rulesDirty.value || groupsDirty.value);
-const noResolveTypes = new Set(['ipCidr', 'geoip']);
+const noResolveTypes = new Set(['ipCidr', 'ipCidr6', 'geoip']);
 
 const POLICY_BUILTINS = ['direct', 'reject', 'reject-drop', 'proxy', 'pass', 'compatible', 'block'];
 const groupNames = computed(() => new Set(groups.value.map((group) => group.name.toLowerCase())));

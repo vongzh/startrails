@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type {
   InlineRule,
+  NodeTransform,
   PolicyGroup,
   Profile,
   ProxyNode,
@@ -169,18 +170,34 @@ const policyGroupSchema: z.ZodType<PolicyGroup> = z.object({
 
 /** 非空字符串数组：`nameserver: []` 没有意义，写出来只会让客户端以为「配了但全是空」。 */
 const serverList = z.array(z.string().min(1)).min(1);
+/** 允许空数组：`proxyNameserver: []` 即脚本里的 `proxy-server-nameserver: []`，刻意留空让节点域名走 nameserver-policy。 */
+const serverListAllowEmpty = z.array(z.string().min(1));
 
 const dnsSchema = z
   .object({
     mode: z.enum(['system', 'fake-ip', 'redir-host']),
     nameserver: serverList.optional(),
-    proxyNameserver: serverList.optional(),
+    proxyNameserver: serverListAllowEmpty.optional(),
     directNameserver: serverList.optional(),
     fallback: serverList.optional(),
     nameserverPolicy: z.record(z.string().min(1), z.string().min(1)).optional(),
     ecs: z.string().min(1).optional(),
     fakeIpRange: z.string().min(1).optional(),
     ipv6: z.boolean().optional(),
+    defaultNameserver: serverList.optional(),
+    fallbackFilter: z
+      .object({
+        geoip: z.boolean().optional(),
+        geoipCode: z.string().min(1).optional(),
+        ipCidr: z.array(z.string().min(1)).optional(),
+        domain: z.array(z.string().min(1)).optional(),
+      })
+      .strict()
+      .optional(),
+    fakeIpFilter: z.array(z.string().min(1)).optional(),
+    useHosts: z.boolean().optional(),
+    useSystemHosts: z.boolean().optional(),
+    respectRules: z.boolean().optional(),
   })
   .strict();
 
@@ -221,6 +238,24 @@ export function parseProfile(value: unknown): Profile {
 /** 运行时段单独校验：它来自设置接口的 JSON，可能被手工改坏，必须在这里挡住。 */
 export function parseRuntime(value: unknown): RuntimePolicy {
   return runtimeSchema.parse(value) as RuntimePolicy;
+}
+
+/**
+ * 节点清洗规则来自设置接口的 JSON。pattern 只校验非空——正则语法由 compileMatcher 判定，
+ * 写错的规则留一条诊断并跳过（见 applyNodeTransforms），不该让整份配置读不出来。
+ */
+const nodeTransformSchema = z
+  .object({
+    id: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    pattern: z.string().min(1),
+    action: z.enum(['exclude', 'rename']),
+    replacement: z.string().min(1).optional(),
+  })
+  .strict();
+
+export function parseNodeTransforms(value: unknown): readonly NodeTransform[] {
+  return z.array(nodeTransformSchema).parse(value) as NodeTransform[];
 }
 
 export function parseProfileText(raw: string): Profile {

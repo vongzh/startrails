@@ -180,6 +180,14 @@ export type DnsMode = 'system' | 'fake-ip' | 'redir-host';
  * - `directNameserver`：直连域名专用解析器（mihomo 的 `direct-nameserver`）；
  * - `ecs`：EDNS Client Subnet，只在确认支持该后缀的客户端上写。
  */
+/** mihomo 的 `fallback-filter`：决定 fallback 集群何时启用、哪些域名强制走 fallback。 */
+export interface FallbackFilter {
+  readonly geoip?: boolean;
+  readonly geoipCode?: string;
+  readonly ipCidr?: readonly string[];
+  readonly domain?: readonly string[];
+}
+
 export interface DnsPolicy {
   readonly mode: DnsMode;
   readonly nameserver?: readonly string[];
@@ -191,6 +199,17 @@ export interface DnsPolicy {
   readonly ecs?: string;
   readonly fakeIpRange?: string;
   readonly ipv6?: boolean;
+  /**
+   * mihomo/clash-yaml 专有的高级字段。整组只在 clash-yaml 方言写出，其余目标剥掉并记诊断。
+   * 注意 `proxyNameserver`（上面）是跨方言通用的「节点域名解析器」，显式空数组即脚本里的
+   * `proxy-server-nameserver: []`——留空才能让节点域名走 nameserver-policy。
+   */
+  readonly defaultNameserver?: readonly string[];
+  readonly fallbackFilter?: FallbackFilter;
+  readonly fakeIpFilter?: readonly string[];
+  readonly useHosts?: boolean;
+  readonly useSystemHosts?: boolean;
+  readonly respectRules?: boolean;
 }
 
 /** TUN 入站。只建模「各客户端同名概念」，不追求字段全集。 */
@@ -242,6 +261,21 @@ export interface Annotation {
   readonly order?: number;
   /** 手动覆盖的地区码（`JP`/`HK`/…）；空串表示清除覆盖、回退名字推断。 */
   readonly region?: string;
+}
+
+/**
+ * 按节点名批量清洗：正则/glob/字面量匹配，按顺序剔除或改名。
+ * 与 annotation 的分工：这里做「一类节点」的粗加工（机场塞进来的信息节点、地区前缀），
+ * annotation 做「单个节点」的精修（别名、地区、排序）。两者按 nodeKey 关联，改名不会让标注失效。
+ */
+export interface NodeTransform {
+  readonly id: string;
+  readonly order: number;
+  /** 匹配节点名：/regex/flags、glob(*?)、字面量三种写法，与组成员匹配同口径。 */
+  readonly pattern: string;
+  readonly action: 'exclude' | 'rename';
+  /** 仅 rename 使用。`{name}` 占位符代表原节点名；缺省表示保留原名，空串无意义（校验层拒绝）。 */
+  readonly replacement?: string;
 }
 
 export interface SourceConfig {

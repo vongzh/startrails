@@ -162,6 +162,19 @@ const pluginFromSip003 = (value: string): { plugin: string; pluginOpts?: PluginO
     : { plugin: name, pluginOpts: opts as PluginOptions };
 };
 
+/**
+ * 拆出候选 URI：换行之外，还兼容一段里用空白 / 逗号 / 分号拼接的分享链接
+ * （机场 App 的「批量复制」并不总是换行，粘贴进网页也可能被压成一行）。
+ * 只在「分隔符后面紧跟 scheme」处切，避免把 `#香港 01` 这类节点名里的空格拆开。
+ */
+export function splitSubscriptionUris(raw: string): string[] {
+  return raw
+    .split(/\r\n|\n|\r/)
+    .flatMap((line) => line.split(/[\s,;]+(?=[a-z0-9+.-]+:\/\/)/i))
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
 /** 公开分享链接：vless / trojan / vmess / ss / hysteria2 / tuic / anytls。 */
 export function parseSubscriptionUris(raw: string): ParseOutcome {
   const diagnostics: Diagnostic[] = [];
@@ -172,9 +185,7 @@ export function parseSubscriptionUris(raw: string): ParseOutcome {
   const trimmed = raw.trim();
   const body = /^(?:[a-z0-9+.-]+:\/\/)/i.test(trimmed) ? trimmed : (decodeBase64(trimmed) ?? trimmed);
 
-  for (const line of body.split(/\r?\n/)) {
-    const text = line.trim();
-    if (text.length === 0) continue;
+  for (const text of splitSubscriptionUris(body)) {
     if (!/^[a-z0-9+.-]+:\/\//i.test(text)) {
       skipped(diagnostics, text, 'unsupported-line:not-a-uri');
       skippedCount += 1;
@@ -310,6 +321,10 @@ function parseHysteria2Uri(text: string, diagnostics: Diagnostic[]): ProxyNode |
   }
   const obfsType = query.get('obfs');
   const obfs = obfsOf(obfsType);
+  // Hysteria2 官方 URI 的 up / down 是 Mbps（可含小数），与 Clash YAML 路径同口径。
+  const up = positive(query.get('up'));
+  const down = positive(query.get('down'));
+  const bandwidth = up === undefined && down === undefined ? undefined : { ...(up === undefined ? {} : { up }), ...(down === undefined ? {} : { down }) };
   const options = optionsOf({
     sni: query.get('sni') ?? undefined,
     insecure: query.get('insecure') === '1' ? true : undefined,
@@ -317,6 +332,7 @@ function parseHysteria2Uri(text: string, diagnostics: Diagnostic[]): ProxyNode |
       obfs === undefined
         ? undefined
         : { ...obfs, ...(query.get('obfs-password') === null ? {} : { password: query.get('obfs-password') ?? '' }) },
+    bandwidth,
     ports,
   });
   return withOptions(
@@ -469,7 +485,21 @@ function parseProxyUri(text: string, diagnostics: Diagnostic[]): ProxyNode | nul
 }
 
 function parseVmessUri(text: string, diagnostics: Diagnostic[]): ProxyNode | null {
-  const decoded = decodeBase64(text.slice('vmess://'.length));
+  // 名字在 # 后面（常带 %20 与 emoji），不能跟着 base64 一起解码。
+  // 标准 VMess 分享链接的 JSON 里没有 ps 字段，名字只能从这里取。
+  const body = text.slice('vmess://'.length);
+  const hashAt = body.indexOf('#');
+  const main = hashAt >= 0 ? body.slice(0, hashAt) : body;
+  let fragmentName = '';
+  if (hashAt >= 0) {
+    const fragment = body.slice(hashAt + 1);
+    try {
+      fragmentName = decodeURIComponent(fragment);
+    } catch {
+      fragmentName = fragment;
+    }
+  }
+  const decoded = decodeBase64(main);
   if (decoded === null) {
     skipped(diagnostics, text, 'invalid-base64');
     return null;
@@ -485,7 +515,8 @@ function parseVmessUri(text: string, diagnostics: Diagnostic[]): ProxyNode | nul
     skipped(diagnostics, text, 'invalid-vmess-shape');
     return null;
   }
-  const port = num(data['port']);
+  // 分享链接标准是 p；兼容个别实现写的 port。
+  const port = num(data['p'] ?? data['port']);
   const server = str(data['add']);
   const uuid = str(data['id']);
   if (port === undefined || server === undefined || uuid === undefined) {
@@ -506,10 +537,9 @@ function parseVmessUri(text: string, diagnostics: Diagnostic[]): ProxyNode | nul
           : undefined,
     cipher: str(data['scy']),
   });
-  return withOptions(
-    { kind: 'vmess', name: str(data['ps']) ?? `${server}:${port}`, server, port, uuid },
-    options,
-  );
+  const ps = str(data['ps']);
+  const name = ps ?? (fragmentName.length > 0 ? fragmentName : `${server}:${port}`);
+  return withOptions({ kind: 'vmess', name, server, port, uuid }, options);
 }
 
 function parseSsUri(text: string, diagnostics: Diagnostic[]): ProxyNode | null {

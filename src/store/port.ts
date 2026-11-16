@@ -1,4 +1,4 @@
-import type { Annotation, BuildReport, ClientTarget, GroupStrategy, InlineRule, RuleSetShape, RuntimePolicy } from '../core/index.ts';
+import type { Annotation, BuildReport, ClientTarget, GroupStrategy, InlineRule, NodeTransform, RuleSetShape, RuntimePolicy } from '../core/index.ts';
 import type { CollectionMember, DedupeStrategy } from '../core/index.ts';
 
 export type OverlayMode = 'inherit' | 'replace' | 'merge';
@@ -117,6 +117,8 @@ export interface PersistedProfile {
    */
   readonly runtime?: RuntimePolicy | undefined;
   readonly sectionModes?: SectionModes | undefined;
+  /** 按节点名批量剔除/改名，按顺序执行；缺省视为空数组。 */
+  readonly nodeTransforms?: readonly NodeTransform[] | undefined;
 }
 
 /** auto = 一个链接喂所有客户端，按请求 UA 判定输出方言。 */
@@ -184,6 +186,10 @@ export interface Store {
    */
   listAnnotations(profileId: string): readonly Annotation[];
   putAnnotation(profileId: string, annotation: Annotation): void;
+
+  /** 节点批量清洗规则按配置隔离：一整份有序列表，整组替换。 */
+  listNodeTransforms(profileId: string): readonly NodeTransform[];
+  replaceNodeTransforms(profileId: string, transforms: readonly NodeTransform[]): void;
 
   /**
    * 通用键值设置。只放**实例级**的小对象（通知、WebDAV、管理面令牌哈希）。

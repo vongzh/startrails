@@ -606,3 +606,19 @@ test('SOCKS5 / HTTP 直连节点：URI 进 IR，mihomo / sing-box / surge / URI 
     assert.equal(rejected.length, 2, `${target} 应拒绝 socks5/http（未核实）`);
   }
 });
+
+test('Hysteria2 分享链接：query 的 up / down 带宽进入 options.bandwidth', () => {
+  const result = ingest('hysteria2://pw@hy.example.invalid:443/?sni=a.example.invalid&up=30&down=200#HY2');
+  const node = result.profile.nodes[0];
+  assert.ok(node !== undefined);
+  assert.equal(node.kind, 'hysteria2');
+  assert.deepEqual(node.options?.bandwidth, { up: 30, down: 200 });
+
+  // 只给了其中一个也要收下；给小数同样合法（Mbps）。
+  const one = ingest('hysteria2://pw@hy.example.invalid:443/?down=100.5').profile.nodes[0];
+  assert.deepEqual(one?.options?.bandwidth, { down: 100.5 });
+
+  // 没有带宽参数时不应凭空造出一个空对象。
+  const none = ingest('hysteria2://pw@hy.example.invalid:443/?sni=a.example.invalid').profile.nodes[0];
+  assert.equal(none?.options?.bandwidth, undefined);
+});

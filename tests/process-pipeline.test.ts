@@ -8,7 +8,7 @@ import {
   regionOfNode,
 } from '../src/core/collections/index.ts';
 import { ingest } from '../src/core/index.ts';
-import { applyAnnotations } from '../src/core/process/index.ts';
+import { applyAnnotations, applyNodeTransforms } from '../src/core/process/index.ts';
 import { nodeKey } from '../src/core/ir/index.ts';
 
 const nodesOf = (...uris: string[]) => ingest(uris.join('\n')).profile.nodes;
@@ -233,4 +233,66 @@ test('set-property / flag 声明式算子：改属性进 options，标记 toggle
   assert.equal(flagged.nodes[0]?.name, 'HK-01 |机场A');
   const unflagged = applyMemberFilter(flagged.nodes, { process: [{ type: 'flag', value: '|机场A' }] }, 's1');
   assert.equal(unflagged.nodes[0]?.name, 'HK-01', 'flag 应可 toggle 移除');
+});
+
+test('节点批量清洗：exclude 剔除、rename 用 {name} 加前缀、按顺序执行', () => {
+  const nodes = nodesOf(
+    twin('香港 01'),
+    twin('剩余流量：12GB'),
+    other('日本 01', 9003),
+  );
+  const profile = { ...ingest('').profile, nodes };
+  const ctx = { configVersion: 't' };
+
+  // 剔除信息节点 + 给日本节点加前缀。
+  const cleaned = applyNodeTransforms([
+    { id: 'garbage', order: 0, pattern: '/流量|到期|剩余|套餐/', action: 'exclude' },
+    { id: 'jp-prefix', order: 1, pattern: '/日本|Japan/', action: 'rename', replacement: '🇯🇵 {name}' },
+  ])(profile, ctx);
+  assert.deepEqual(names(cleaned.profile.nodes), ['香港 01', '🇯🇵 日本 01']);
+  assert.ok(
+    cleaned.diagnostics.some((item) => item.reason === 'excluded-by-transform:1'),
+    `应报出剔除 1 个，实际：${JSON.stringify(cleaned.diagnostics.map((d) => d.reason))}`,
+  );
+});
+
+test('清洗改名不改 nodeKey：后续标注仍能按原标识命中', () => {
+  const node = nodesOf(twin('香港 01'))[0];
+  assert.ok(node !== undefined);
+  const key = nodeKey(node);
+  const profile = { ...ingest('').profile, nodes: [node] };
+  const ctx = { configVersion: 't' };
+
+  // 先改名为花名，再用原 nodeKey 设别名——别名应盖掉批量改名的结果。
+  const renamed = applyNodeTransforms([
+    { id: 'prefix', order: 0, pattern: '/香港/', action: 'rename', replacement: 'HK-{name}' },
+  ])(profile, ctx);
+  assert.equal(names(renamed.profile.nodes)[0], 'HK-香港 01');
+  assert.equal(nodeKey(renamed.profile.nodes[0]!), key, '改名不改变稳定标识');
+
+  const annotated = applyAnnotations([{ nodeKey: key, alias: '我的香港' }])(renamed.profile, ctx);
+  assert.equal(names(annotated.profile.nodes)[0], '我的香港', '标注应覆盖批量改名');
+});
+
+test('清洗规则：glob / 字面量匹配、无效正则跳过后链继续', () => {
+  const nodes = nodesOf(other('JP Tokyo 01', 9003), other('SG 01', 9004));
+  const profile = { ...ingest('').profile, nodes };
+  const ctx = { configVersion: 't' };
+
+  const glob = applyNodeTransforms([
+    { id: 'jp', order: 0, pattern: '*JP*', action: 'exclude' },
+  ])(profile, ctx);
+  assert.deepEqual(names(glob.profile.nodes), ['SG 01'], 'glob 应命中 JP 节点');
+
+  const literal = applyNodeTransforms([
+    { id: 'sg', order: 0, pattern: 'SG', action: 'exclude' },
+  ])(profile, ctx);
+  assert.deepEqual(names(literal.profile.nodes), ['JP Tokyo 01'], '字面量子串应命中');
+
+  const bad = applyNodeTransforms([
+    { id: 'bad', order: 0, pattern: '/(/', action: 'exclude' },
+    { id: 'sg', order: 1, pattern: 'SG', action: 'exclude' },
+  ])(profile, ctx);
+  assert.deepEqual(names(bad.profile.nodes), ['JP Tokyo 01'], '坏正则跳过，后续规则照常执行');
+  assert.ok(bad.diagnostics.some((item) => item.reason === 'invalid-transform-pattern'));
 });

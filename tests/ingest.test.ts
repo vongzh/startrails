@@ -30,6 +30,51 @@ test('订阅 URI：四种协议解析入 IR，不支持的行结构化跳过', (
   assert.equal(vless?.options?.flow, 'xtls-rprx-vision');
 });
 
+test('订阅 URI：一行内用空格 / 逗号 / 回车拼接的链接逐条解析', () => {
+  const links = [
+    'ss://YWVzLTI1Ni1nY206cGFzczE=@a.example.invalid:443#A',
+    'ss://YWVzLTI1Ni1nY206cGFzczI=@b.example.invalid:443#B',
+    'ss://YWVzLTI1Ni1nY206cGFzczM=@c.example.invalid:443#C',
+  ];
+  for (const separator of ['\n', '\r', ' ', ',', '; ']) {
+    const result = ingest(links.join(separator));
+    assert.equal(result.profile.nodes.length, 3, `separator ${JSON.stringify(separator)}`);
+    assert.deepEqual(result.profile.nodes.map((node) => node.name), ['A', 'B', 'C']);
+  }
+});
+
+test('VMess 分享链接：# 名字片段与 p 端口字段', () => {
+  const payload = Buffer.from(
+    JSON.stringify({
+      v: '2',
+      add: 'node.example.invalid',
+      p: 443,
+      id: '00000000-0000-0000-0000-000000000001',
+      net: 'ws',
+      path: '/ws',
+      type: 'http',
+      aid: 0,
+    }),
+  ).toString('base64');
+  const result = ingest(`vmess://${payload}#🌦️%20My%20Node`);
+  assert.equal(result.profile.nodes.length, 1);
+  const node = result.profile.nodes[0];
+  assert.equal(node?.name, '🌦️ My Node');
+  assert.equal(node?.port, 443);
+  assert.equal(node?.options?.transport, 'ws');
+  assert.equal(result.skipped, 0);
+});
+
+test('订阅 URI：节点名里的空格不会被误拆', () => {
+  const raw = [
+    'ss://YWVzLTI1Ni1nY206cGFzczE=@a.example.invalid:443#香港 01',
+    'ss://YWVzLTI1Ni1nY206cGFzczI=@b.example.invalid:443#B',
+  ].join(' ');
+  const result = ingest(raw);
+  assert.equal(result.profile.nodes.length, 2);
+  assert.deepEqual(result.profile.nodes.map((node) => node.name), ['香港 01', 'B']);
+});
+
 test('Clash YAML：测速组、有序规则和 DNS 进入底稿', () => {
   const raw = [
     'proxies:',

@@ -11,11 +11,13 @@ import {
   TARGETS,
   applyMemberFilter,
   applyAnnotations,
+  applyNodeTransforms,
   composeCollection,
   dedupeNodes,
   describeRuleSet,
   ingest,
   nodeKey,
+  parseNodeTransforms,
   parseProfile,
   parseRuntime,
   renderQrSvg,
@@ -1123,7 +1125,10 @@ export function createApp(options: AppOptions): App {
     const trace = traceProcessors(
       configured,
       { configVersion: state.configVersion },
-      [applyAnnotations(store.listAnnotations(definition.id))],
+      [
+        applyNodeTransforms(store.listNodeTransforms(definition.id)),
+        applyAnnotations(store.listAnnotations(definition.id)),
+      ],
     );
     const groupOverrides = [...store.listGroupOverrides(definition.id)].sort((left, right) => left.order - right.order);
     const groupModes = effectiveModes(definition, groupOverrides.length > 0, store.listRules(definition.id).length > 0);
@@ -2112,6 +2117,35 @@ export function createApp(options: AppOptions): App {
       });
       sendJson(res, 200, { ok: true });
       return;
+    }
+
+    if (pathname === '/api/node-transforms') {
+      // 按节点名批量剔除/改名，整份有序列表按配置隔离。与 annotations 分开：
+      // 这里改「一类节点」，标注改「一个节点」，两者按 nodeKey 关联、顺序执行。
+      const profileName = url.searchParams.get('profile') ?? 'default';
+      const definition = findProfile(profileName);
+      if (definition === undefined) {
+        sendJson(res, 404, { error: 'profile-not-found' });
+        return;
+      }
+      if (method === 'GET') {
+        sendJson(res, 200, { transforms: store.listNodeTransforms(definition.id) });
+        return;
+      }
+      if (method === 'PUT') {
+        const body = await readJson(req);
+        try {
+          const parsed = parseNodeTransforms(body['transforms'] ?? []);
+          store.replaceNodeTransforms(definition.id, parsed);
+          sendJson(res, 200, { ok: true, transforms: parsed });
+        } catch (error) {
+          sendJson(res, 400, {
+            error: 'invalid-node-transforms',
+            detail: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+          });
+        }
+        return;
+      }
     }
 
     if (method === 'POST' && pathname === '/api/tokens') {

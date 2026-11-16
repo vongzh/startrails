@@ -65,6 +65,31 @@ export interface EmissionPlan {
   readonly diagnostics: readonly Diagnostic[];
 }
 
+const ADVANCED_DNS_KEYS = [
+  'defaultNameserver',
+  'fallbackFilter',
+  'fakeIpFilter',
+  'useHosts',
+  'useSystemHosts',
+  'respectRules',
+] as const;
+
+const hasAdvancedDns = (dns: DnsPolicy): boolean =>
+  ADVANCED_DNS_KEYS.some((key) => dns[key] !== undefined);
+
+const stripAdvancedDns = (dns: DnsPolicy): DnsPolicy => {
+  const {
+    defaultNameserver: _defaultNameserver,
+    fallbackFilter: _fallbackFilter,
+    fakeIpFilter: _fakeIpFilter,
+    useHosts: _useHosts,
+    useSystemHosts: _useSystemHosts,
+    respectRules: _respectRules,
+    ...rest
+  } = dns;
+  return rest;
+};
+
 /**
  * 运行时段的能力裁剪。
  *
@@ -121,6 +146,13 @@ function planRuntime(
         diagnostics.push(makeDiagnostic('plan', target, 'runtime:dns', 'runtime-dns-policy-dropped'));
         const { nameserverPolicy: _policy, ...rest } = next;
         next = rest;
+      }
+      // 高级字段（default-nameserver / fallback-filter / fake-ip-filter / hosts 开关…）是 clash-yaml
+      // 专有写法：sing-box 的 dns 是同名的另一套结构、Surge 是 ini，照搬会写出加载失败的段。
+      // 这里整组剥掉并记一条诊断，不静默丢；mihomo 系方言才保留交给 emitter。
+      if (hasAdvancedDns(next) && dialectOf(target) !== 'clash-yaml') {
+        diagnostics.push(makeDiagnostic('plan', target, 'runtime:dns', 'runtime-dns-advanced-dropped'));
+        next = stripAdvancedDns(next);
       }
       dns = next;
     }

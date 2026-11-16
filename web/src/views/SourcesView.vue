@@ -333,9 +333,15 @@ const manualHint = computed(() => {
   return '';
 });
 
+/**
+ * 只数「URI 起点」，不做完整解析——真正的解析在后端。
+ * 规则与 parseSubscriptionUris 的 splitSubscriptionUris 一致：换行之外，
+ * 也认一行内用空白 / 逗号 / 分号拼接的链接，否则「共 N 条」会少报。
+ */
 const bulkLines = computed(() =>
   bulkText.value
-    .split(/\r?\n/)
+    .split(/\r\n|\n|\r/)
+    .flatMap((line) => line.split(/[\s,;]+(?=[a-z0-9+.-]+:\/\/)/i))
     .map((line) => line.trim())
     .filter((line) => line.length > 0),
 );
@@ -1450,14 +1456,14 @@ async function submitCollection(): Promise<void> {
               size="small"
               class="mono"
               :rows="9"
-              placeholder="一行一条：ss://… vmess://… vless://… trojan://… hysteria2://…"
+              placeholder="一行一条或用空格分隔：ss://… vmess://… vless://… trojan://…"
             />
             <span class="text-3" style="font-size: 11.5px">
               <template v-if="bulkLines.length === 0">
                 支持 ss / vmess / vless / trojan / hysteria2 / tuic / anytls / wireguard / socks5
               </template>
               <template v-else>
-                共 {{ bulkLines.length }} 行，{{ bulkValid }} 行格式正确<template v-if="bulkInvalid > 0">，{{ bulkInvalid }} 行不是节点链接</template>
+                共 {{ bulkLines.length }} 条，{{ bulkValid }} 条格式正确<template v-if="bulkInvalid > 0">，{{ bulkInvalid }} 条不是节点链接</template>
               </template>
             </span>
           </div>
@@ -1468,7 +1474,9 @@ async function submitCollection(): Promise<void> {
             style="border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px"
           >
             <div class="row tight">
-              <span class="text-3" style="font-size: 11.5px">保存后在「我的节点」里是一条记录</span>
+              <span class="text-3" style="font-size: 11.5px">
+                这 {{ bulkLines.length }} 条作为一组保存；「我的节点」里是一行，节点数见「节点」列
+              </span>
               <div class="spacer"></div>
               <n-button size="tiny" quaternary @click="copyText(manualContent)">复制</n-button>
             </div>
