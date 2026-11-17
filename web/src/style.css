@@ -1032,10 +1032,20 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
   table.tbl th { padding: 8px 10px; }
   table.tbl td { padding: 9px 10px; }
   table.tbl td.actions .n-button { opacity: 1; }
-  /* 28px 的小按钮拇指按不准：表格操作列与列表行的高频触点抬到 34px。
-     顶栏圆形图标有图标语义且低频，不动。 */
-  table.tbl td.actions .n-button,
-  .row-actions .n-button { --n-height: 34px !important; }
+  /* 高频图标按钮的触控目标：拇指友好标准是 44px，但控制台密度高、按钮成排，
+     抬到 40px 是「够点准」与「不挤散整行」的折中。circle 按钮的 --n-width 在
+     naive-ui 渲染时被固化成 tiny 的 22px（内联），只改 --n-height 高度会变宽不跟着走，
+     所以宽高必须一起覆盖。用 :has() 一次锁定「纯图标按钮」（有 icon 无文字 content），
+     覆盖表格操作列 / 列表行 / 配置构成行 / 预览工具栏等所有 circle 图标触点；
+     顶栏三枚圆形图标低频且有图标语义，下面单独回退到 28px。 */
+  .n-button:not(:has(.n-button__content)) {
+    --n-height: 40px !important;
+    --n-width: 40px !important;
+  }
+  .topbar-actions .n-button:not(:has(.n-button__content)) {
+    --n-height: 28px !important;
+    --n-width: 28px !important;
+  }
   .col-optional, .col-wide-only { display: none; }
   .addr-mobile { display: block; font-size: 10px; color: var(--text-3); margin-top: 1px; }
   .addr-desktop { display: none; }
