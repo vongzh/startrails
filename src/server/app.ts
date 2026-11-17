@@ -1490,18 +1490,23 @@ export function createApp(options: AppOptions): App {
     };
   };
 
-  /** 组合订阅的节点数快速估算：只读本地正文，远端源留给检查接口，避免这里发网络请求。 */
+  /** 组合订阅的节点数快速估算：本地正文直接读，远端源用最后成功快照兜底，不发网络请求。 */
   const offlineNodesOf = (collection: PersistedCollection) => {
-    const cache = new Map<string, readonly ProxyNode[]>();
+    const seen = new Map<string, readonly ProxyNode[]>();
     return (sourceId: string): readonly ProxyNode[] | undefined => {
-      const cached = cache.get(sourceId);
+      const cached = seen.get(sourceId);
       if (cached !== undefined) return cached;
       const source = store.getSource(sourceId);
-      if (source === undefined || source.kind === 'remote') return undefined;
-      const payload = store.readSourcePayload(sourceId);
+      if (source === undefined) return undefined;
+      // 远端源没有 source_payload，但从 lastGood 快照能拿到最近一次成功的正文——
+      // 否则含 remote 成员的组合订阅在构成卡片上会把那部分节点数漏算成 0。
+      const payload =
+        source.kind === 'remote'
+          ? cache.lastGood(sourceId)?.body
+          : store.readSourcePayload(sourceId);
       if (payload === undefined) return undefined;
       const nodes = ingest(payload).profile.nodes;
-      cache.set(sourceId, nodes);
+      seen.set(sourceId, nodes);
       return nodes;
     };
   };

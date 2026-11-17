@@ -3,11 +3,10 @@ import { computed, reactive, ref } from 'vue';
 import {
   NAlert,
   NButton,
-  NDrawer,
-  NDrawerContent,
   NEmpty,
   NInput,
   NInputNumber,
+  NModal,
   NPopconfirm,
   NRadioButton,
   NRadioGroup,
@@ -1248,102 +1247,99 @@ async function submitCollection(): Promise<void> {
     </section>
 
     <!-- 添加源 -->
-    <n-drawer v-model:show="drawerOpen" :width="440" placement="right">
-      <n-drawer-content title="添加订阅" closable>
-        <n-tabs v-model:value="addTab" type="segment" size="small">
-          <n-tab-pane name="remote" tab="链接">
-            <div class="stack" style="gap: 12px; padding-top: 12px">
-              <div class="field">
-                <label>订阅名称</label>
-                <n-input v-model:value="draft.name" size="small" placeholder="例如 机场 A" />
-              </div>
-              <div class="field">
-                <label>订阅链接</label>
-                <n-input
-                  v-model:value="draft.url"
-                  size="small"
-                  class="mono"
-                  placeholder="https://example.com/api/v1/client/subscribe?token=..."
-                />
-              </div>
-              <div class="field">
-                <label>User-Agent（可选）</label>
-                <n-input v-model:value="draft.ua" size="small" placeholder="部分机场按 UA 返回不同格式" />
-              </div>
-              <div class="field">
-                <label>自动刷新</label>
-                <n-select v-model:value="draft.refreshPolicy" size="small" :options="refreshOptions" />
-              </div>
-              <div class="field">
-                <label>拉取代理（可选）</label>
-                <n-input
-                  v-model:value="draft.proxy"
-                  size="small"
-                  class="mono"
-                  placeholder="socks5://127.0.0.1:1080 或 http://10.0.0.2:8080"
-                />
-                <span class="text-3" style="font-size: 11.5px">
-                  机场按来源 IP 限区时填这里：服务端会用该代理去拉订阅，不改变客户端出网。
-                </span>
-              </div>
+    <n-modal v-model:show="drawerOpen" preset="card" title="添加订阅" style="width: 560px; max-width: calc(100vw - 32px)">
+      <n-tabs v-model:value="addTab" type="segment" size="small">
+        <n-tab-pane name="remote" tab="链接">
+          <div class="stack" style="gap: 12px; padding-top: 12px">
+            <div class="field">
+              <label>订阅名称</label>
+              <n-input v-model:value="draft.name" size="small" placeholder="例如 机场 A" />
             </div>
-          </n-tab-pane>
-
-          <n-tab-pane name="file" tab="文件">
-            <div class="stack" style="gap: 12px; padding-top: 12px">
-              <div class="field">
-                <label>订阅名称</label>
-                <n-input
-                  v-model:value="draft.name"
-                  size="small"
-                  :placeholder="fileName === '' ? '例如 机场 A' : `留空则用 ${fileBaseName}`"
-                />
-                <span class="text-3" style="font-size: 11.5px">名称随时可改，与文件名无关</span>
-              </div>
-              <div class="drop-zone" @click="fileInput?.click()">
-                <Upload :size="20" />
-                <div class="strong" style="font-size: 13px">
-                  {{ fileName === '' ? '选择订阅文件' : fileName }}
-                </div>
-                <div class="text-3" style="font-size: 12px">
-                  支持 Clash YAML / sing-box JSON / Surge conf / base64 订阅 / 节点链接，最大 8MB
-                </div>
-              </div>
-              <input ref="fileInput" type="file" hidden accept=".yaml,.yml,.json,.conf,.txt,.ini" @change="pickFile" />
+            <div class="field">
+              <label>订阅链接</label>
+              <n-input
+                v-model:value="draft.url"
+                size="small"
+                class="mono"
+                placeholder="https://example.com/api/v1/client/subscribe?token=..."
+              />
             </div>
-          </n-tab-pane>
-
-        </n-tabs>
-
-        <div class="field" style="margin-top: 14px">
-          <label>解析格式</label>
-          <n-select v-model:value="draft.format" size="small" :options="formatOptions" />
-        </div>
-
-        <template #footer>
-          <div class="row" style="width: 100%; justify-content: flex-end; gap: 8px">
-            <n-button size="small" quaternary @click="drawerOpen = false">取消</n-button>
-            <n-button size="small" type="primary" :loading="adding" @click="submitSource">
-              添加
-            </n-button>
+            <div class="field">
+              <label>User-Agent（可选）</label>
+              <n-input v-model:value="draft.ua" size="small" placeholder="部分机场按 UA 返回不同格式" />
+            </div>
+            <div class="field">
+              <label>自动刷新</label>
+              <n-select v-model:value="draft.refreshPolicy" size="small" :options="refreshOptions" />
+            </div>
+            <div class="field">
+              <label>拉取代理（可选）</label>
+              <n-input
+                v-model:value="draft.proxy"
+                size="small"
+                class="mono"
+                placeholder="socks5://127.0.0.1:1080 或 http://10.0.0.2:8080"
+              />
+              <span class="text-3" style="font-size: 11.5px">
+                机场按来源 IP 限区时填这里：服务端会用该代理去拉订阅，不改变客户端出网。
+              </span>
+            </div>
           </div>
-        </template>
-      </n-drawer-content>
-    </n-drawer>
+        </n-tab-pane>
+
+        <n-tab-pane name="file" tab="文件">
+          <div class="stack" style="gap: 12px; padding-top: 12px">
+            <div class="field">
+              <label>订阅名称</label>
+              <n-input
+                v-model:value="draft.name"
+                size="small"
+                :placeholder="fileName === '' ? '例如 机场 A' : `留空则用 ${fileBaseName}`"
+              />
+              <span class="text-3" style="font-size: 11.5px">名称随时可改，与文件名无关</span>
+            </div>
+            <div class="drop-zone" @click="fileInput?.click()">
+              <Upload :size="20" />
+              <div class="strong" style="font-size: 13px">
+                {{ fileName === '' ? '选择订阅文件' : fileName }}
+              </div>
+              <div class="text-3" style="font-size: 12px">
+                支持 Clash YAML / sing-box JSON / Surge conf / base64 订阅 / 节点链接，最大 8MB
+              </div>
+            </div>
+            <input ref="fileInput" type="file" hidden accept=".yaml,.yml,.json,.conf,.txt,.ini" @change="pickFile" />
+          </div>
+        </n-tab-pane>
+
+      </n-tabs>
+
+      <div class="field" style="margin-top: 14px">
+        <label>解析格式</label>
+        <n-select v-model:value="draft.format" size="small" :options="formatOptions" />
+      </div>
+
+      <template #footer>
+        <div class="row" style="width: 100%; justify-content: flex-end; gap: 8px">
+          <n-button size="small" quaternary @click="drawerOpen = false">取消</n-button>
+          <n-button size="small" type="primary" :loading="adding" @click="submitSource">
+            添加
+          </n-button>
+        </div>
+      </template>
+    </n-modal>
 
     <!-- 添加节点：与「添加订阅」彻底分开——这里的输入是 URI 本身，没有上游可拉。 -->
-    <n-drawer v-model:show="nodeDrawerOpen" :width="440" placement="right">
-      <n-drawer-content title="添加节点" closable>
-        <div class="stack" style="gap: 12px">
-          <div class="field">
-            <label>名称</label>
-            <n-input
-              v-model:value="draft.name"
-              size="small"
-              :placeholder="manualMode === 'single' ? '例如 我的 VPS' : '留空则叫「我的节点」'"
-            />
-            <span class="text-3" style="font-size: 11.5px">节点名写在链接的 # 后面；留空时用服务器地址</span>
-          </div>
+    <n-modal v-model:show="nodeDrawerOpen" preset="card" title="添加节点" style="width: 560px; max-width: calc(100vw - 32px)">
+      <div class="stack" style="gap: 12px">
+        <div class="field">
+          <label>名称</label>
+          <n-input
+            v-model:value="draft.name"
+            size="small"
+            :placeholder="manualMode === 'single' ? '例如 我的 VPS' : '留空则叫「我的节点」'"
+          />
+          <span class="text-3" style="font-size: 11.5px">节点名写在链接的 # 后面；留空时用服务器地址</span>
+        </div>
 
           <n-radio-group v-model:value="manualMode" size="small">
             <n-radio-button value="single">填一个</n-radio-button>
@@ -1491,21 +1487,19 @@ async function submitCollection(): Promise<void> {
 
         <template #footer>
           <div class="row" style="width: 100%; justify-content: flex-end; gap: 8px">
-            <n-button size="small" quaternary @click="nodeDrawerOpen = false">取消</n-button>
-            <n-button size="small" type="primary" :loading="nodeSaving" @click="submitNodes">添加</n-button>
-          </div>
-        </template>
-      </n-drawer-content>
-    </n-drawer>
+          <n-button size="small" quaternary @click="nodeDrawerOpen = false">取消</n-button>
+          <n-button size="small" type="primary" :loading="nodeSaving" @click="submitNodes">添加</n-button>
+        </div>
+      </template>
+    </n-modal>
 
     <!-- 编辑已有源 -->
-    <n-drawer v-model:show="editOpen" :width="440" placement="right">
-      <n-drawer-content :title="editing?.kind === 'inline' ? '编辑节点' : '编辑订阅'" closable>
-        <div class="stack" style="gap: 12px">
-          <div class="field">
-            <label>名称</label>
-            <n-input v-model:value="editDraft.name" size="small" />
-          </div>
+    <n-modal v-model:show="editOpen" preset="card" :title="editing?.kind === 'inline' ? '编辑节点' : '编辑订阅'" style="width: 560px; max-width: calc(100vw - 32px)">
+      <div class="stack" style="gap: 12px">
+        <div class="field">
+          <label>名称</label>
+          <n-input v-model:value="editDraft.name" size="small" />
+        </div>
           <div v-if="editing?.kind === 'remote'" class="field">
             <label>订阅链接</label>
             <n-input v-model:value="editDraft.url" size="small" class="mono" />
@@ -1564,15 +1558,13 @@ async function submitCollection(): Promise<void> {
             <n-button size="small" type="primary" :loading="editSaving || busy > 0" @click="submitEdit">保存</n-button>
           </div>
         </template>
-      </n-drawer-content>
-    </n-drawer>
+    </n-modal>
 
     <!-- 组合订阅编辑 -->
-    <n-drawer v-model:show="collectionOpen" :width="560" placement="right">
-      <n-drawer-content :title="editingId === null ? '新建组合订阅' : '编辑组合订阅'" closable>
-        <div class="stack" style="gap: 12px">
-          <div class="field">
-            <label>名称</label>
+    <n-modal v-model:show="collectionOpen" preset="card" :title="editingId === null ? '新建组合订阅' : '编辑组合订阅'" style="width: 720px; max-width: calc(100vw - 32px)">
+      <div class="stack" style="gap: 12px">
+        <div class="field">
+          <label>名称</label>
             <n-input v-model:value="collectionDraft.name" size="small" placeholder="例如 全部机场合并" />
           </div>
 
@@ -1778,7 +1770,6 @@ async function submitCollection(): Promise<void> {
             </n-button>
           </div>
         </template>
-      </n-drawer-content>
-    </n-drawer>
+    </n-modal>
   </div>
 </template>
