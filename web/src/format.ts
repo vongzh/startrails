@@ -108,9 +108,22 @@ export const REASON_LABELS: Record<string, string> = {
   'source-payload-empty': '订阅没有正文',
   'collection-not-found': '引用的组合订阅已不存在',
   'collection-member-missing': '组合订阅的成员已不存在',
+  // Clash 订阅里常见的非节点条目：它们计入「跳过 N 条」，但不属于节点丢失，
+  // 不给中文解释的话用户会以为少了一批节点。
+  'unsupported-or-incomplete-clash-type': '订阅里的这类代理类型暂不支持，已跳过（不影响其余节点）',
+  'missing-common-fields': '订阅里这条代理缺少必要字段，已跳过',
+  'rule-not-modelled': '订阅自带的规则里有客户端不认识的类型，已跳过（节点不受影响）',
+  'rule-providers': '订阅里的规则集引用无法识别，已跳过',
+  'group-strategy-not-modelled': '订阅里的策略组算法暂不支持，已按普通选择组处理',
 };
 
-export const reasonLabel = (reason: string): string => REASON_LABELS[reason] ?? reason;
+export function reasonLabel(reason: string): string {
+  if (REASON_LABELS[reason] !== undefined) return REASON_LABELS[reason] ?? reason;
+  // 带后缀的原因（如 rule-not-modelled:PROCESS-NAME、group-strategy-not-modelled:load-balance）
+  // 命中不到精确键时退到冒号前的主类，仍给出人话；后缀本身在诊断行里另有原文可对照。
+  const head = reason.split(':')[0];
+  return (head !== undefined ? REASON_LABELS[head] : undefined) ?? reason;
+}
 
 /** 按诊断原因推断严重程度：丢弃节点 > 字段降级 > 跳过 > 信息。 */
 export function severityOf(reason: string): Severity {

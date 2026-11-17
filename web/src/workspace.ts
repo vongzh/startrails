@@ -8,6 +8,7 @@ import type {
   DedupeView,
   DiagnosticView,
   EvidenceView,
+  FetchDefaultsView,
   GroupMemberView,
   GroupView,
   HistoryEntry,
@@ -148,6 +149,10 @@ export const webdavSettings = ref<{
   value: { url: string; username?: string; hasPassword: boolean } | null;
   envDefaults: { url: string; hasPassword: boolean } | null;
   effective: { url: string; hasCredentials: boolean } | null;
+} | null>(null);
+/** 实例级拉取默认（界面覆盖值）；header 值脱敏回显。 */
+export const fetchDefaultsSettings = ref<{
+  value: FetchDefaultsView | null;
 } | null>(null);
 /** TCP 握手延迟：按 nodeKey 索引，不落库（延迟是瞬时属性）。 */
 export const latencies = ref<Record<string, { ms: number | null; intercepted: boolean }>>({});
@@ -532,6 +537,7 @@ export async function loadAll(force = false): Promise<void> {
   ops.value = await api.ops();
   notifySettings.value = await api.notifySettings();
   webdavSettings.value = await api.webdavSettings();
+  fetchDefaultsSettings.value = await api.fetchDefaults();
 }
 
 /**
@@ -1334,6 +1340,15 @@ export async function saveWebdavSettings(next: WebDavConfigView | null): Promise
     webdavSettings.value = await api.webdavSettings();
     ops.value = await api.ops();
     notify('ok', next === null ? '已清除 WebDAV 配置，回退环境变量' : 'WebDAV 配置已保存');
+  });
+}
+
+/** 保存实例级拉取默认。源级若单独配了 UA / 代理，仍压过这里的默认值。 */
+export async function saveFetchDefaults(next: FetchDefaultsView | null): Promise<boolean> {
+  return run(async () => {
+    await api.saveFetchDefaults(next);
+    fetchDefaultsSettings.value = await api.fetchDefaults();
+    notify('ok', next === null ? '已清除采集默认，源按自身配置拉取' : '采集默认已保存，新拉取的订阅下次生效');
   });
 }
 

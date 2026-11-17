@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { NAlert, NButton, NInput, NPopconfirm, NSelect, NTag } from 'naive-ui';
-import { ArrowDown, ArrowUp, Info, Plus, Trash2 } from 'lucide-vue-next';
+import { NAlert, NButton, NInput, NModal, NPopconfirm, NSelect, NTag } from 'naive-ui';
+import { ArrowDown, ArrowUp, Plus, SlidersHorizontal, Trash2 } from 'lucide-vue-next';
 import { api } from '../api';
 import type { NodeTransformView } from '../api';
 import { activeProfileName, nodes, notify } from '../workspace';
@@ -12,6 +12,8 @@ import { activeProfileName, nodes, notify } from '../workspace';
  * 单个节点的别名/地区/排序仍归下面的节点清单（annotation）。
  *
  * 规则先于标注执行，且改名不改 nodeKey——所以已有标注不会因批量改名失效。
+ *
+ * 内容页只做「当前有哪些规则」的速览；编辑收进弹窗，避免十来行表单常驻把节点清单挤下去。
  */
 interface Row {
   id: string;
@@ -23,6 +25,7 @@ const rows = reactive<Row[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const loadedFor = ref<string | null>(null);
+const editorOpen = ref(false);
 let nextId = 1;
 
 const actionOptions = [
@@ -30,10 +33,28 @@ const actionOptions = [
   { label: '改名', value: 'rename' },
 ];
 
+/** 常用匹配式：点一下往列表末尾追加一条预填规则，省得从头敲正则。 */
+const presets: ReadonlyArray<{ label: string; pattern: string; action: Row['action']; replacement?: string }> = [
+  { label: '剔除信息节点', pattern: '/剩余流量|套餐|到期|过期|过滤掉/i', action: 'exclude' },
+  { label: '剔除「过滤掉N条」', pattern: '/过滤掉\\s*\\d+\\s*条/i', action: 'exclude' },
+  { label: '香港加前缀', pattern: '*香港*', action: 'rename', replacement: '🇭🇰 {name}' },
+  { label: '日本加前缀', pattern: '*日本*', action: 'rename', replacement: '🇯🇵 {name}' },
+  { label: '美国加前缀', pattern: '*美国*', action: 'rename', replacement: '🇺🇸 {name}' },
+];
+
 const newId = (): string => `t${Date.now().toString(36)}${(nextId++).toString(36)}`;
 
 function addRow(): void {
   rows.push({ id: newId(), pattern: '', action: 'exclude', replacement: '' });
+}
+
+function addPreset(preset: (typeof presets)[number]): void {
+  rows.push({
+    id: newId(),
+    pattern: preset.pattern,
+    action: preset.action,
+    replacement: preset.replacement ?? '',
+  });
 }
 
 function move(index: number, delta: number): void {
@@ -145,6 +166,7 @@ async function save(): Promise<void> {
       }));
     const saved = await api.saveNodeTransforms(transforms, activeProfileName.value);
     await load();
+    editorOpen.value = false;
     notify('ok', `已保存 ${saved.transforms.length} 条规则；产物预览与订阅下次拉取时生效`);
   } catch (error) {
     notify('error', error instanceof Error ? error.message : '保存清洗规则失败');
@@ -153,9 +175,23 @@ async function save(): Promise<void> {
   }
 }
 
+/** 关弹窗视作放弃未保存草稿：重新读回已落库的规则，摘要才不会显示「看起来生效了」的内容。 */
+function closeEditor(): void {
+  editorOpen.value = false;
+  if (hasChanges.value) void load();
+}
+
+function onEditorChange(show: boolean): void {
+  if (show) editorOpen.value = true;
+  else closeEditor();
+}
+
 onMounted(() => { void load(); });
 watch(activeProfileName, (name) => {
-  if (name !== loadedFor.value) void load();
+  if (name !== loadedFor.value) {
+    editorOpen.value = false;
+    void load();
+  }
 });
 </script>
 
@@ -166,16 +202,75 @@ watch(activeProfileName, (name) => {
       <n-tag size="small" :bordered="false" class="mono">
         {{ loading ? '读取中' : `${actionable.length} 条规则` }}
       </n-tag>
+      <n-tag v-if="!loading && hasChanges" size="small" :bordered="false" type="warning">未保存</n-tag>
+      <div class="spacer"></div>
+      <div class="head-actions">
+        <n-button size="small" secondary :disabled="loading" @click="editorOpen = true">
+          <template #icon><SlidersHorizontal :size="14" /></template>
+          编辑规则
+        </n-button>
+      </div>
     </div>
     <div class="card-body">
       <p class="text-3" style="font-size: 12px; margin: 0 0 12px; max-width: 680px">
-        按节点名匹配，<strong>从上往下依次执行</strong>：剔除机场塞进来的信息节点，或给一类节点加地区前缀。
-        这条只做「一类节点」的粗加工；单个节点的别名、地区、排序在下方节点清单里改。
-        改名不改变节点的稳定标识，已有标注不会失效。
+        按节点名匹配、从上往下执行：剔除机场塞进来的信息节点，或给一类节点加地区前缀。
+        单个节点的别名、地区、排序在下方节点清单里改。
       </p>
 
+      <div v-if="actionable.length === 0" class="transform-empty">
+        <span class="text-3" style="font-size: 12px">
+          还没有清洗规则。点右上角「编辑规则」，可用预置的正则一键剔除「剩余流量 / 到期 / 过滤掉 N 条」这类信息节点。
+        </span>
+      </div>
+      <div v-else class="summary-list">
+        <div v-for="(row, index) in actionable" :key="row.id" class="summary-row">
+          <span class="mono text-3" style="font-size: 11.5px">#{{ index + 1 }}</span>
+          <n-tag size="small" :bordered="false" :type="row.action === 'exclude' ? 'error' : 'info'">
+            {{ row.action === 'exclude' ? '剔除' : '改名' }}
+          </n-tag>
+          <code>{{ row.pattern }}</code>
+          <span v-if="row.action === 'rename' && row.replacement" class="text-3" style="font-size: 12px">
+            → {{ row.replacement }}
+          </span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <n-modal
+    :show="editorOpen"
+    preset="card"
+    title="批量清洗规则"
+    style="width: 720px; max-width: calc(100vw - 32px)"
+    @update:show="onEditorChange"
+  >
+    <div class="editor-body">
+      <n-alert type="info" :bordered="false" style="margin-bottom: 14px">
+        <div style="font-size: 11.5px; line-height: 1.7">
+          规则从上往下依次执行；改名不改节点稳定标识，已有标注不会失效。
+          匹配式支持 <code>/正则/flags</code>（如 <code>/流量|到期/i</code>）、
+          <code>*通配符</code>（如 <code>*香港*</code>）和普通文字（子串、不区分大小写）；
+          改名的 <code>{name}</code> 会替换成原节点名，例如 <code>🇺🇸 {name}</code> 给命中节点加美国前缀。
+        </div>
+      </n-alert>
+
+      <div class="preset-block">
+        <span class="text-3" style="font-size: 11.5px">快速添加</span>
+        <div class="preset-list">
+          <n-button
+            v-for="preset in presets"
+            :key="preset.label"
+            size="tiny"
+            secondary
+            @click="addPreset(preset)"
+          >
+            {{ preset.label }}
+          </n-button>
+        </div>
+      </div>
+
       <div v-if="rows.length === 0" class="transform-empty">
-        <span class="text-3" style="font-size: 12px">还没有规则。节点的名字里带「剩余流量」这类营销信息？加一条剔除规则试试。</span>
+        <span class="text-3" style="font-size: 12px">还没有规则。点上方预设快速添加，或手动新增一条。</span>
       </div>
 
       <div v-for="(row, index) in rows" :key="row.id" class="transform-row">
@@ -221,38 +316,57 @@ watch(activeProfileName, (name) => {
         </div>
       </div>
 
-      <n-alert type="info" :bordered="false" style="margin-top: 12px">
-        <div style="font-size: 11.5px; line-height: 1.7">
-          匹配式三种写法：<code>/正则/flags</code>（如 <code>/流量|到期/i</code>）、
-          <code>*通配符</code>（如 <code>*香港*</code>）、普通文字（子串、不区分大小写）。
-          改名的 <code>{name}</code> 会替换成原节点名，例如 <code>🇺🇸 {name}</code> 给命中的节点加美国前缀。
-        </div>
-      </n-alert>
-
       <div class="row" style="margin-top: 12px; gap: 8px">
         <n-button size="small" secondary @click="addRow">
           <template #icon><Plus :size="14" /></template>
-          添加规则
+          添加空规则
         </n-button>
-        <n-button size="small" type="primary" :loading="saving" :disabled="!hasChanges" @click="save">
-          保存清洗规则
-        </n-button>
-        <n-popconfirm v-if="rows.length > 0" @positive-click="rows.splice(0, rows.length); void save()">
+        <n-popconfirm v-if="rows.length > 0" @positive-click="rows.splice(0, rows.length)">
           <template #trigger>
             <n-button size="small" secondary>清空全部</n-button>
           </template>
-          清空后这份配置的产物不再做批量清洗，确认？
+          清空编辑中的全部规则，仍需点「保存清洗规则」才生效，确认？
         </n-popconfirm>
       </div>
     </div>
-  </section>
+
+    <template #footer>
+      <div class="row end" style="width: 100%">
+        <n-button size="small" quaternary @click="closeEditor">{{ hasChanges ? '放弃修改' : '关闭' }}</n-button>
+        <n-button size="small" type="primary" :loading="saving" :disabled="!hasChanges" @click="save">
+          保存清洗规则
+        </n-button>
+      </div>
+    </template>
+  </n-modal>
 </template>
 
 <style scoped>
 .transform-empty {
   padding: 10px 0 2px;
 }
-.transform-row {
+.summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.summary-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+.preset-block {
+  margin-bottom: 12px;
+}
+.preset-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.editor-body .transform-row {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 10px;

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, validateHeaderName, validateHeaderValue } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { basename, extname, join, resolve, sep } from 'node:path';
 import {
@@ -172,6 +172,8 @@ const MIME: Readonly<Record<string, string>> = {
 /** app_setting 里实例级设置的行键。字符串常量集中一处，避免读写两处拼错。 */
 const SETTING_NOTIFY = 'notify';
 const SETTING_WEBDAV = 'webdav';
+/** 实例级拉取默认：UA / 代理 / 附加请求头，源级配置缺省时回退到这里。 */
+const SETTING_FETCH_DEFAULTS = 'fetch.defaults';
 
 /**
  * app_setting 里管理面令牌的哈希键。只存 hash，明文不落库（备份 .db 时不带明文凭据）。
@@ -467,6 +469,112 @@ const parseWebdavConfig = (raw: unknown, inheritPasswordFrom?: WebDavConfig): We
     ...(hasUser ? { username: username as string, password: effectivePassword as string } : {}),
   };
 };
+
+/**
+ * 实例级拉取默认。影响「怎么取回上游正文」，不进产物语义，因此按实例存而非按配置存。
+ * 字段与源级同名：ua / proxy 可直接回退；headers 是新增的任意请求头（如鉴权头）。
+ */
+interface FetchDefaults {
+  readonly ua?: string;
+  readonly proxy?: string;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+const EMPTY_FETCH_DEFAULTS: FetchDefaults = { headers: {} };
+/** header 值绝不回传明文：一律回这个掩码，提交时识别为「未改、沿用旧值」。 */
+const FETCH_HEADER_MASK = '••••••';
+/**
+ * 受控头：由系统另行维护（UA 走 options.ua、缓存协商走 If-None-Match），
+ * 不允许从「附加请求头」入口注入——否则会静默覆盖掉 UA 下拉里选的值，
+ * 两个配置入口写同一个 HTTP 头，语义打架。大小写不敏感比对。
+ */
+const RESERVED_HEADER_NAMES = new Set([
+  'user-agent',
+  'if-none-match',
+  'host',
+  'content-length',
+  'content-type',
+  'accept-encoding',
+  'connection',
+  'transfer-encoding',
+]);
+
+/**
+ * 解析界面提交的拉取默认。非法项就地丢弃而不是整份拒绝：一个写错的 header 名
+ * 不该让已经配好的 UA / 代理全部失效。代理走 parseProxyUrl 校验，header 名值走
+ * node:http 的校验器（与 url-guard / proxy-fetch 同一口径）。
+ * `inheritFrom`：header 值回显时是脱敏的，原样提交时从旧配置继承原值（同 WebDAV 密码）。
+ */
+const parseFetchDefaults = (raw: unknown, inheritFrom?: FetchDefaults): FetchDefaults | null => {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const record = raw as Record<string, unknown>;
+  const ua = asString(record['ua']);
+  const proxyText = asString(record['proxy']);
+  const proxy = proxyText !== undefined && parseProxyUrl(proxyText) !== null ? proxyText : undefined;
+
+  const headers: Record<string, string> = {};
+  const rawHeaders = record['headers'];
+  // 两种形态都要认：UI 提交的是 [{name,value}] 数组，落库的是 {name:value} 对象。
+  const pairs: Array<{ name: string; value: string }> = [];
+  if (Array.isArray(rawHeaders)) {
+    for (const item of rawHeaders) {
+      if (typeof item !== 'object' || item === null) continue;
+      const pair = item as Record<string, unknown>;
+      const name = asString(pair['name']);
+      const value = asString(pair['value']);
+      if (name !== undefined && value !== undefined) pairs.push({ name, value });
+    }
+  } else if (typeof rawHeaders === 'object' && rawHeaders !== null) {
+    for (const [name, value] of Object.entries(rawHeaders)) {
+      if (typeof value === 'string' && value.trim().length > 0) pairs.push({ name, value: value.trim() });
+    }
+  }
+  for (const { name, value: submitted } of pairs) {
+    if (hasRedactionMarkers(name)) continue;
+    // 受控头由系统维护，从「附加请求头」注入会覆盖 UA / 缓存协商，直接拒收。
+    if (RESERVED_HEADER_NAMES.has(name.trim().toLowerCase())) continue;
+    // 掩码 / 脱敏痕迹 = 界面没改这一项，沿用旧值（header 值不回传明文，回显的是掩码）。
+    const unchanged = submitted === FETCH_HEADER_MASK || hasRedactionMarkers(submitted);
+    const value = unchanged ? inheritFrom?.headers[name] : submitted;
+    if (value === undefined) continue;
+    try {
+      validateHeaderName(name);
+      validateHeaderValue(name, value);
+    } catch {
+      continue;
+    }
+    headers[name] = value;
+  }
+  return {
+    ...(ua === undefined ? {} : { ua }),
+    ...(proxy === undefined ? {} : { proxy }),
+    headers,
+  };
+};
+
+/** 读取实例级拉取默认；库里没有或坏 JSON 时用空默认（= 等价未配置）。 */
+const fetchDefaults = (store: Store): FetchDefaults => {
+  const raw = store.getSetting(SETTING_FETCH_DEFAULTS);
+  if (raw === undefined) return EMPTY_FETCH_DEFAULTS;
+  try {
+    return parseFetchDefaults(JSON.parse(raw)) ?? EMPTY_FETCH_DEFAULTS;
+  } catch {
+    return EMPTY_FETCH_DEFAULTS;
+  }
+};
+
+/**
+ * 回显给界面的拉取默认：header 值可能含 token/password，一律脱敏后返回掩码。
+ * 前端凭「值是否为掩码」判断该项是否已配置（与 WebDAV 密码同构），不额外传布尔。
+ */
+const fetchDefaultsView = (config: FetchDefaults) => ({
+  ua: config.ua ?? null,
+  proxy: config.proxy ?? null,
+  headers: Object.entries(config.headers).map(([name]) => ({
+    name,
+    value: FETCH_HEADER_MASK,
+  })),
+});
 
 function asOverlayMode(value: unknown): OverlayMode | undefined {
   return value === 'inherit' || value === 'replace' || value === 'merge' ? value : undefined;
@@ -769,10 +877,14 @@ export function createApp(options: AppOptions): App {
     // ETag 取 lastGood 而不是 get：即使正文已过 TTL，用旧 ETag 做条件请求依然正确（能省一次全量传输），
     // 而 304 回来说明内容未变，正好把新鲜度重新续期。
     const cached = cache.lastGood(source.id);
+    // 源级优先、全局回退：单独给某个源配的 UA / 代理压过实例默认；
+    // headers 目前只在全局配置（源级没有这个字段），整份透传。
+    const defaults = fetchDefaults(store);
     const fetched = await fetchSnapshot(source.url, cached?.etag ?? null, {
       allowPrivate: options.allowPrivate ?? false,
-      ua: source.ua ?? null,
-      proxy: source.proxy ?? null,
+      ua: source.ua ?? defaults.ua ?? null,
+      proxy: source.proxy ?? defaults.proxy ?? null,
+      headers: defaults.headers,
     });
     const body = fetched.notModified ? cached?.body : fetched.body;
     if (body === undefined || body === null) throw new Error('upstream-empty-after-304');
@@ -2564,6 +2676,43 @@ export function createApp(options: AppOptions): App {
         }
         store.putSetting(SETTING_WEBDAV, JSON.stringify(parsed));
         sendJson(res, 200, { ok: true, webdav: { url: parsed.url, hasCredentials: parsed.username !== undefined } });
+        return;
+      }
+    }
+
+    if (pathname === '/api/settings/fetch-defaults') {
+      if (method === 'GET') {
+        const raw = store.getSetting(SETTING_FETCH_DEFAULTS);
+        let stored: FetchDefaults = EMPTY_FETCH_DEFAULTS;
+        if (raw !== undefined && raw !== 'null') {
+          try {
+            stored = parseFetchDefaults(JSON.parse(raw)) ?? EMPTY_FETCH_DEFAULTS;
+          } catch {
+            stored = EMPTY_FETCH_DEFAULTS;
+          }
+        }
+        sendJson(res, 200, {
+          value: raw === undefined || raw === 'null' ? null : fetchDefaultsView(stored),
+        });
+        return;
+      }
+      if (method === 'PUT') {
+        const body = await readJson(req);
+        const candidate = body['defaults'];
+        if (candidate === null || candidate === undefined) {
+          // 与 WebDAV 清除同构：存字符串 'null' 表示「未配置」，GET 据此返回 value: null。
+          store.putSetting(SETTING_FETCH_DEFAULTS, 'null');
+          sendJson(res, 200, { ok: true, value: null });
+          return;
+        }
+        // header 值回显是脱敏的，原样提交时从旧值继承（同 WebDAV 密码）。
+        const parsed = parseFetchDefaults(candidate, fetchDefaults(store));
+        if (parsed === null) {
+          sendJson(res, 400, { error: 'invalid-fetch-defaults' });
+          return;
+        }
+        store.putSetting(SETTING_FETCH_DEFAULTS, JSON.stringify(parsed));
+        sendJson(res, 200, { ok: true, value: fetchDefaultsView(parsed) });
         return;
       }
     }

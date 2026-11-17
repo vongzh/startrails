@@ -424,6 +424,10 @@ body .n-message-container.n-message-container--top { top: 62px; }
 .field-row .field { flex: 1; }
 .settings-form { display: flex; flex-direction: column; gap: 10px; padding: 10px 0 12px 28px; border-bottom: 1px solid var(--divider); }
 .form-actions { display: flex; align-items: center; gap: 8px; }
+/* 采集默认的 UA 快捷预设与自定义请求头行。窄屏纵向堆叠，按钮不挤压输入框。 */
+.ua-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.fetch-header-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-bottom: 6px; }
+@media (max-width: 640px) { .fetch-header-row { grid-template-columns: 1fr; } }
 /* 确认气泡里的副文案：主问句只说「做什么」，这一行补「代价是什么」。
    Naive 的 popconfirm 没有 description 插槽，只能放进默认插槽里的第二行。 */
 .n-popconfirm__body .pc-sub { margin-top: 3px; font-size: 11.5px; line-height: 1.5; color: var(--text-3); }

@@ -331,6 +331,18 @@ export interface WebDavConfigView {
   password?: string;
 }
 
+/** 实例级拉取默认：默认 UA / 代理 / 附加请求头。 */
+export interface FetchHeaderView {
+  name: string;
+  /** 回显时脱敏为掩码；原样提交表示「未改，沿用旧值」。 */
+  value: string;
+}
+export interface FetchDefaultsView {
+  ua: string | null;
+  proxy: string | null;
+  headers: FetchHeaderView[];
+}
+
 export interface SourceInput {
   kind: SourceKind;
   name?: string;
@@ -509,6 +521,14 @@ export const api = {
     request<{ ok: boolean; webdav: unknown }>('/api/settings/webdav', {
       method: 'PUT',
       body: JSON.stringify({ webdav }),
+    }),
+  /** 实例级拉取默认：源级 UA / 代理缺省时回退到这里，headers 对所有源生效。 */
+  fetchDefaults: () =>
+    request<{ value: FetchDefaultsView | null }>('/api/settings/fetch-defaults'),
+  saveFetchDefaults: (defaults: FetchDefaultsView | null) =>
+    request<{ ok: boolean; value: FetchDefaultsView | null }>('/api/settings/fetch-defaults', {
+      method: 'PUT',
+      body: JSON.stringify({ defaults }),
     }),
   backupRemote: () =>
     request<{ ok: boolean; remoteUrl: string; bytes: number; local: string }>('/api/backup/remote', {

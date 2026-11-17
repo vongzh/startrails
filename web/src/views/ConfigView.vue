@@ -57,7 +57,9 @@ const entryOptions = computed(() =>
       type: 'group' as const,
       label: '组合订阅',
       key: 'collections',
-      children: collections.value.map((item) => ({ label: item.name, value: `collection:${item.id}` })),
+      // n-dropdown 的 @select 回传的是选项的 key，不是 value——用 value 会让回调收到 undefined，
+      // addEntry 拆不出 id 就静默丢弃，表现就是「点了没反应」。
+      children: collections.value.map((item) => ({ label: item.name, key: `collection:${item.id}` })),
     },
     {
       type: 'group' as const,
@@ -65,7 +67,7 @@ const entryOptions = computed(() =>
       key: 'subscriptions',
       children: sources.value
         .filter((item) => item.kind !== 'inline')
-        .map((item) => ({ label: item.name, value: `source:${item.id}` })),
+        .map((item) => ({ label: item.name, key: `source:${item.id}` })),
     },
     {
       type: 'group' as const,
@@ -73,7 +75,7 @@ const entryOptions = computed(() =>
       key: 'nodes',
       children: sources.value
         .filter((item) => item.kind === 'inline')
-        .map((item) => ({ label: item.name, value: `source:${item.id}` })),
+        .map((item) => ({ label: item.name, key: `source:${item.id}` })),
     },
   ].filter((group) => group.children.length > 0),
 );
@@ -168,10 +170,10 @@ const derivedNodes = computed(() =>
                 trigger="click"
                 placement="bottom-end"
                 :options="entryOptions"
-                :disabled="sources.length === 0"
+                :disabled="entryOptions.length === 0"
                 @select="addEntry"
               >
-                <n-button size="small" type="primary" :secondary="profileDirty" :disabled="sources.length === 0">
+                <n-button size="small" type="primary" :secondary="profileDirty" :disabled="entryOptions.length === 0">
                   <template #icon><Plus :size="14" /></template>
                   加入订阅
                 </n-button>

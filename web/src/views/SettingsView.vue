@@ -17,6 +17,7 @@ import {
   Bell,
   Cloud,
   Database,
+  DownloadCloud,
   HardDriveDownload,
   Info,
   KeyRound,
@@ -24,8 +25,10 @@ import {
   Monitor,
   Moon,
   Palette,
+  Plus,
   ShieldCheck,
   Sun,
+  Trash2,
 } from 'lucide-vue-next';
 import { UI_CORE_VERSION } from '../version';
 import CapabilitiesView from './CapabilitiesView.vue';
@@ -38,11 +41,13 @@ import {
   busy,
   clearCache,
   disconnect,
+  fetchDefaultsSettings,
   notify,
   notifySettings,
   ops,
   palette,
   rotateAdminToken,
+  saveFetchDefaults,
   saveNotifySettings,
   saveWebdavSettings,
   setPalette,
@@ -54,7 +59,7 @@ import {
   type Palette as PaletteId,
 } from '../workspace';
 import { api } from '../api';
-import type { NotifyConfigView, NotifyTestResultView, WebDavProbeView } from '../api';
+import type { FetchDefaultsView, NotifyConfigView, NotifyTestResultView, WebDavProbeView } from '../api';
 
 const origin = window.location.origin;
 const dialectCount = computed(
@@ -81,6 +86,7 @@ type SectionId =
   | 'appearance'
   | 'backup'
   | 'notify'
+  | 'fetch'
   | 'session'
   | 'info'
   | 'diagnostics'
@@ -112,6 +118,7 @@ const SETTING_GROUPS: readonly { readonly label: string; readonly items: readonl
     label: '运维',
     items: [
       { id: 'backup', label: '备份与缓存', hint: '本地快照、WebDAV 远端副本与上游缓存', icon: Database },
+      { id: 'fetch', label: '采集默认', hint: '所有订阅拉取时的默认 UA / 代理 / 请求头', icon: DownloadCloud },
       { id: 'notify', label: '通知', hint: '刷新失败时推送到 Telegram 或 Bark', icon: Bell },
     ],
   },
@@ -238,6 +245,104 @@ function notifyHasInput(): boolean {
 
 function webdavHasInput(): boolean {
   return webdavForm.url.trim().length > 0;
+}
+
+/* ---------------- 采集默认（实例级拉取 UA / 代理 / 请求头） ---------------- */
+
+/**
+ * UA 快捷预设。值是实测过的机场端点行为：Clash/Stash UA 拿到含规则与策略组的 clash-yaml，
+ * mihomo 拿到纯节点订阅，Surge 拿到 Managed Config。选一个即填入下方输入框，仍可手改。
+ */
+const UA_PRESETS: ReadonlyArray<{ label: string; value: string; hint: string }> = [
+  { label: 'Clash', value: 'Clash', hint: '多数机场返回 clash-yaml：保住规则与策略组' },
+  { label: 'Stash', value: 'Stash', hint: '返回 clash-yaml，含规则与策略组' },
+  { label: 'mihomo', value: 'mihomo', hint: '返回纯节点订阅，规则与策略组会缺失' },
+  { label: 'Surge', value: 'Surge', hint: '返回 Surge Managed Config' },
+];
+
+interface HeaderRow {
+  /** 仅作 v-for 的稳定 key（删除中间项时避免 DOM 复用错位），不参与脏判断与提交。 */
+  id: string;
+  name: string;
+  value: string;
+}
+/** 与后端 FETCH_HEADER_MASK 一致：已配置的 header 值回显成掩码，原样提交即「未改、继承旧值」。 */
+const HEADER_MASK: string = '••••••';
+let headerSeq = 0;
+const nextHeaderId = (): string => `h${(headerSeq++).toString(36)}`;
+const fetchForm = reactive({
+  ua: '',
+  proxy: '',
+  headers: [] as HeaderRow[],
+});
+const fetchSaving = ref(false);
+const fetchBaseline = ref('');
+// 只比较 ua/proxy/headers 的 name+value：header 的 id 是纯前端 key，随 load 重新生成，
+// 掺进比较会让「没改也判脏」。这里剥离 id 后再序列化。
+const fetchFormFingerprint = (): string =>
+  JSON.stringify({
+    ua: fetchForm.ua,
+    proxy: fetchForm.proxy,
+    headers: fetchForm.headers.map((h) => ({ name: h.name, value: h.value })),
+  });
+const fetchDirty = computed(() => fetchFormFingerprint() !== fetchBaseline.value);
+
+function loadFetchForm(): void {
+  const value = fetchDefaultsSettings.value?.value;
+  fetchForm.ua = value?.ua ?? '';
+  fetchForm.proxy = value?.proxy ?? '';
+  // header 值回显是掩码，是否「已配置」靠值本身判断，不额外存布尔。
+  fetchForm.headers = (value?.headers ?? []).map((h) => ({ id: nextHeaderId(), name: h.name, value: h.value }));
+  fetchBaseline.value = fetchFormFingerprint();
+}
+
+function addHeader(): void {
+  fetchForm.headers.push({ id: nextHeaderId(), name: '', value: '' });
+}
+
+function removeHeader(row: HeaderRow): void {
+  const index = fetchForm.headers.findIndex((h) => h.id === row.id);
+  if (index >= 0) fetchForm.headers.splice(index, 1);
+}
+
+function applyUaPreset(value: string): void {
+  fetchForm.ua = value;
+}
+
+/** 已配置的 header 值回显成掩码，据此决定 placeholder 提示「留空保持不变」。 */
+function isMasked(value: string): boolean {
+  return value === HEADER_MASK;
+}
+
+/** 有任意输入即存为覆盖；全空则清除回退到「源按自身配置拉取」。 */
+function fetchHasInput(): boolean {
+  return (
+    fetchForm.ua.trim().length > 0 ||
+    fetchForm.proxy.trim().length > 0 ||
+    fetchForm.headers.some((h) => h.name.trim().length > 0 && h.value.trim().length > 0)
+  );
+}
+
+async function saveFetch(): Promise<void> {
+  fetchSaving.value = true;
+  try {
+    if (!fetchHasInput()) {
+      await saveFetchDefaults(null);
+      loadFetchForm();
+      return;
+    }
+    const payload: FetchDefaultsView = {
+      ua: fetchForm.ua.trim(),
+      proxy: fetchForm.proxy.trim(),
+      headers: fetchForm.headers
+        .filter((h) => h.name.trim().length > 0 && h.value.trim().length > 0)
+        .map((h) => ({ name: h.name.trim(), value: h.value.trim() })),
+    };
+    await saveFetchDefaults(payload);
+    loadFetchForm();
+  } finally {
+    fetchSaving.value = false;
+  }
 }
 
 /** 两个渠道各自的就绪判断，tab 标签与状态行共用。 */
@@ -418,6 +523,7 @@ async function rotateToken(): Promise<void> {
 onMounted(() => {
   loadNotifyForm();
   loadWebdavForm();
+  loadFetchForm();
   window.history.replaceState(null, '', `#sec-${activeSection.value}`);
   window.addEventListener('hashchange', syncFromHash);
 });
@@ -426,11 +532,17 @@ onMounted(() => {
 onActivated(() => {
   void (async () => {
     try {
-      const [notify, webdav] = await Promise.all([api.notifySettings(), api.webdavSettings()]);
+      const [notify, webdav, fetchDefs] = await Promise.all([
+        api.notifySettings(),
+        api.webdavSettings(),
+        api.fetchDefaults(),
+      ]);
       notifySettings.value = notify;
       webdavSettings.value = webdav;
+      fetchDefaultsSettings.value = fetchDefs;
       if (!notifyDirty.value) loadNotifyForm();
       if (!webdavDirty.value) loadWebdavForm();
+      if (!fetchDirty.value) loadFetchForm();
     } catch {
       // 拉不到就保留现有表单，不拿空值覆盖用户正在编辑的内容。
     }
@@ -725,6 +837,83 @@ onUnmounted(() => {
               <span class="text-3" style="font-size: 11px">全部留空并保存 = 清除界面配置，回退环境变量</span>
               <span class="spacer"></span>
               <n-button size="small" type="primary" :loading="notifySaving" @click="saveNotify">保存通知</n-button>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="activeSection === 'fetch'" class="card">
+          <div class="card-head">
+            <h2>采集默认</h2>
+            <div class="spacer"></div>
+            <DownloadCloud :size="14" class="text-3" />
+          </div>
+          <div class="card-body">
+            <n-alert type="info" :bordered="false" style="margin-bottom: 14px">
+              <div style="font-size: 11.5px; line-height: 1.7">
+                所有订阅拉取时共用这组默认值，改动只对<strong>下次拉取</strong>生效。
+                某个订阅单独配了 UA 或代理，就以它自己的为准；这里的值只在它没配时兜底。
+                请求头（如鉴权用的 <code>Authorization</code>）对所有订阅生效，值脱敏保存、不回传明文。
+              </div>
+            </n-alert>
+
+            <div class="field">
+              <label>默认 User-Agent</label>
+              <div class="ua-presets" style="margin-bottom: 6px">
+                <n-button
+                  v-for="preset in UA_PRESETS"
+                  :key="preset.label"
+                  size="tiny"
+                  secondary
+                  :type="fetchForm.ua === preset.value ? 'primary' : 'default'"
+                  :title="preset.hint"
+                  @click="applyUaPreset(preset.value)"
+                >
+                  {{ preset.label }}
+                </n-button>
+              </div>
+              <n-input v-model:value="fetchForm.ua" size="small" placeholder="留空 = 用运行时默认 UA（拿到的格式不可控）" />
+              <span class="text-3" style="font-size: 11px; margin-top: 5px">
+                Clash / Stash 通常拿到含规则与策略组的 clash-yaml；mihomo 拿到纯节点订阅；Surge 拿到 Managed Config。
+              </span>
+            </div>
+
+            <div class="field" style="margin-top: 14px">
+              <label>默认拉取代理</label>
+              <n-input
+                v-model:value="fetchForm.proxy"
+                size="small"
+                placeholder="socks5://127.0.0.1:1080 或 http://10.0.0.2:8080（留空 = 直连）"
+              />
+              <span class="text-3" style="font-size: 11px; margin-top: 5px">
+                支持 http / https / socks5。用于机场按出口 IP 限区的场景。
+              </span>
+            </div>
+
+            <div class="field" style="margin-top: 14px">
+              <label>附加请求头</label>
+              <div v-for="row in fetchForm.headers" :key="row.id" class="fetch-header-row">
+                <n-input v-model:value="row.name" size="small" placeholder="头名，如 Authorization" />
+                <n-input
+                  v-model:value="row.value"
+                  size="small"
+                  :placeholder="isMasked(row.value) ? '已配置，留空或保持原值不改' : '头值'"
+                />
+                <n-button size="small" quaternary type="error" title="删除" @click="removeHeader(row)">
+                  <template #icon><Trash2 :size="14" /></template>
+                </n-button>
+              </div>
+              <n-button size="small" secondary style="margin-top: 6px" @click="addHeader">
+                <template #icon><Plus :size="14" /></template>
+                添加请求头
+              </n-button>
+            </div>
+
+            <div class="form-actions" style="margin-top: 16px">
+              <span class="text-3" style="font-size: 11px">全部留空并保存 = 清除采集默认，订阅按自身配置拉取</span>
+              <span class="spacer"></span>
+              <n-button size="small" type="primary" :loading="fetchSaving" :disabled="!fetchDirty" @click="saveFetch">
+                保存采集默认
+              </n-button>
             </div>
           </div>
         </section>

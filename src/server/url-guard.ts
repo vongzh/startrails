@@ -1,4 +1,5 @@
 import { lookup } from 'node:dns/promises';
+import { validateHeaderName, validateHeaderValue } from 'node:http';
 import { isIP } from 'node:net';
 import { fetchThroughProxy, parseProxyUrl } from './proxy-fetch.ts';
 
@@ -42,6 +43,11 @@ export interface SafeFetchOptions {
   readonly ua?: string | null;
   /** 源级代理（http / https / socks5），用于机场按出口 IP 限区的场景。 */
   readonly proxy?: string | null;
+  /**
+   * 附加请求头（如鉴权用的 Authorization）。调用方（app.ts）负责从源级与全局默认合并，
+   * 这里只负责校验后写进请求。UA / If-None-Match 仍由上面单独处理，避免被同名的空值覆盖。
+   */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /** 与请求体上限保持一致：正常订阅远小于这个量级。 */
@@ -158,6 +164,16 @@ export async function fetchSnapshot(
   if (etag !== null) headers['If-None-Match'] = etag;
   if (options.ua !== undefined && options.ua !== null && options.ua.length > 0) {
     headers['User-Agent'] = options.ua;
+  }
+  // 自定义头在直连路径上先校验一遍：fetch() 遇到非法头名/值会抛得晚且难定位，
+  // 代理路径本身也做同样校验（proxy-fetch.ts），两处口径保持一致。
+  // UA / If-None-Match 先写、自定义头后写，允许显式覆盖（例如统一鉴权头）。
+  if (options.headers !== undefined) {
+    for (const [name, value] of Object.entries(options.headers)) {
+      validateHeaderName(name);
+      validateHeaderValue(name, value);
+      headers[name] = value;
+    }
   }
   const timeoutMs = options.timeoutMs ?? 10_000;
   const maxBytes = options.maxBytes ?? MAX_UPSTREAM_BYTES;
