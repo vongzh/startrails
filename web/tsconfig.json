@@ -7,13 +7,17 @@
     "moduleDetection": "force",
     "jsx": "preserve",
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "strict": true,
     "skipLibCheck": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true,
     "useDefineForClassFields": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "paths": {
+      "@core/*": ["../src/core/*"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.vue"]
 }

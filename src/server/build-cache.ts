@@ -45,7 +45,12 @@ export class BuildCache {
   }
 
   getL3(irKey: string): Profile | undefined {
-    return this.l3.get(irKey);
+    const value = this.l3.get(irKey);
+    if (value !== undefined) {
+      this.l3.delete(irKey);
+      this.l3.set(irKey, value); // LRU 提到队尾
+    }
+    return value;
   }
 
   setL3(irKey: string, profile: Profile): void {

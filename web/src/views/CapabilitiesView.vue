@@ -98,7 +98,8 @@ function sourceOf(item: { source: string }): string {
         <n-select v-model:value="clientTarget" :options="targetOptions" size="small" style="width: 168px" />
       </div>
 
-      <n-empty v-if="list.length === 0" description="没有匹配的条目" style="padding: 40px 0">
+      <n-empty v-if="evidence.length === 0" description="暂无能力核实记录" style="padding: 40px 0" />
+      <n-empty v-else-if="list.length === 0" description="没有匹配的条目" style="padding: 40px 0">
         <template #icon><Search :size="30" /></template>
         <template #extra>
           <n-button size="small" quaternary @click="search = ''; value = ''; clientTarget = ''">清除筛选</n-button>
@@ -125,6 +126,19 @@ function sourceOf(item: { source: string }): string {
                 </span>
                 <div class="addr-mobile subject-cell">{{ item.subject }}<template v-if="item.scope !== 'node'"> · {{ item.scope }}</template></div>
                 <div class="addr-mobile" style="white-space: normal; line-height: 1.5; overflow-wrap: anywhere">{{ item.note }}</div>
+                <div v-if="sourceOf(item).startsWith('http')" class="addr-mobile">
+                  <a
+                    :href="sourceOf(item)"
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    class="mono text-3"
+                    style="display: inline-flex; align-items: center; gap: 3px; word-break: break-all; margin-top: 2px"
+                  >
+                    {{ sourceOf(item) }}
+                    <ExternalLink :size="10" />
+                  </a>
+                </div>
+                <div v-else-if="item.source" class="addr-mobile mono text-3" style="word-break: break-all">{{ item.source }}</div>
               </td>
               <td class="text-3 col-optional" style="font-size: 12px">{{ item.scope }}</td>
               <td class="mono col-wide-only subject-cell">{{ item.subject }}</td>

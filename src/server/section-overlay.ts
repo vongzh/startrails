@@ -221,10 +221,20 @@ function moveFinalLast(sources: readonly RuleSource[]): RuleSource[] {
   return [...rest, { kind: 'inline', rules: finals }];
 }
 
+function mergeFallbackFilter(
+  base: DnsPolicy['fallbackFilter'],
+  overlay: DnsPolicy['fallbackFilter'],
+): DnsPolicy['fallbackFilter'] {
+  if (overlay === undefined) return base;
+  if (base === undefined) return overlay;
+  return { ...base, ...overlay };
+}
+
 function mergeDns(base: DnsPolicy | undefined, overlay: DnsPolicy | undefined): DnsPolicy | undefined {
   if (overlay === undefined) return base;
   if (base === undefined) return overlay;
   const nameserverPolicy = { ...(base.nameserverPolicy ?? {}), ...(overlay.nameserverPolicy ?? {}) };
+  const fallbackFilter = mergeFallbackFilter(base.fallbackFilter, overlay.fallbackFilter);
   return {
     mode: overlay.mode,
     ...(overlay.nameserver !== undefined ? { nameserver: overlay.nameserver } : base.nameserver !== undefined ? { nameserver: base.nameserver } : {}),
@@ -247,6 +257,28 @@ function mergeDns(base: DnsPolicy | undefined, overlay: DnsPolicy | undefined): 
         : {}),
     ...(overlay.ipv6 !== undefined ? { ipv6: overlay.ipv6 } : base.ipv6 !== undefined ? { ipv6: base.ipv6 } : {}),
     ...(Object.keys(nameserverPolicy).length === 0 ? {} : { nameserverPolicy }),
+    ...(overlay.defaultNameserver !== undefined
+      ? { defaultNameserver: overlay.defaultNameserver }
+      : base.defaultNameserver !== undefined
+        ? { defaultNameserver: base.defaultNameserver }
+        : {}),
+    ...(fallbackFilter !== undefined ? { fallbackFilter } : {}),
+    ...(overlay.fakeIpFilter !== undefined
+      ? { fakeIpFilter: overlay.fakeIpFilter }
+      : base.fakeIpFilter !== undefined
+        ? { fakeIpFilter: base.fakeIpFilter }
+        : {}),
+    ...(overlay.useHosts !== undefined ? { useHosts: overlay.useHosts } : base.useHosts !== undefined ? { useHosts: base.useHosts } : {}),
+    ...(overlay.useSystemHosts !== undefined
+      ? { useSystemHosts: overlay.useSystemHosts }
+      : base.useSystemHosts !== undefined
+        ? { useSystemHosts: base.useSystemHosts }
+        : {}),
+    ...(overlay.respectRules !== undefined
+      ? { respectRules: overlay.respectRules }
+      : base.respectRules !== undefined
+        ? { respectRules: base.respectRules }
+        : {}),
   };
 }
 

@@ -45,6 +45,7 @@ const SCOPE_NOTE = {
   composition: '这份配置按顺序合并下列订阅；顺序即合并顺序，换一份配置可以引用完全不同的订阅。',
   nodes: '排除、别名、地区与排序只作用于这份配置；换一份配置，这些取舍各自独立。',
   rules: '规则和策略组各自选择继承订阅、整份替换，或和订阅组合。策略名要能在组或内置策略里找到。',
+  runtime: '只作用于当前配置：手机要 fake-ip + TUN、路由器要 redir-host，各配各的。',
 } as const;
 
 const note = computed(() => SCOPE_NOTE[configSection.value as keyof typeof SCOPE_NOTE] ?? '');
@@ -189,7 +190,7 @@ const derivedNodes = computed(() =>
           <div v-if="unattachedSources.length > 0" class="card-foot attach-hint">
             <AlertTriangle :size="14" class="text-3" />
             <span class="text-2" style="font-size: 12px">
-              {{ unattachedSources.length }} 个已启用的订阅还没加入构成，构建不会用到它们
+              {{ unattachedSources.length }} 个已启用的订阅或我的节点还没加入构成，构建不会用到它们
             </span>
             <span class="text-3" style="font-size: 11.5px" :title="unattachedSources.map((item) => item.name).join('、')">
               {{ unattachedSources.slice(0, 3).map((item) => item.name).join('、') }}{{ unattachedSources.length > 3 ? ' 等' : '' }}
@@ -265,6 +266,7 @@ const derivedNodes = computed(() =>
       </n-tab-pane>
 
       <n-tab-pane name="runtime" tab="DNS/TUN">
+        <div class="scope-note"><Info :size="13" />{{ note }}</div>
         <RuntimePane />
       </n-tab-pane>
     </n-tabs>

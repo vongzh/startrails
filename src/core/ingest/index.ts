@@ -11,6 +11,8 @@ import {
 } from './parsers.ts';
 import type { ParseOutcome } from './parsers.ts';
 
+export { splitSubscriptionUris } from './uri-split.ts';
+
 export type SourceFormat =
   | 'startrails-json'
   | 'sing-box-json'

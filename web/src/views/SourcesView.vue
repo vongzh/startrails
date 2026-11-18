@@ -38,6 +38,7 @@ import type {
   SourceView,
 } from '../api';
 import { api } from '../api';
+import { splitSubscriptionUris } from '@core/ingest/uri-split.ts';
 import { formatBytes, formatDuration, formatExpire, formatTime, formatTraffic, initialOf, timeAgo } from '../format';
 import {
   busy,
@@ -73,6 +74,9 @@ const adding = ref(false);
  * 「更新订阅」这类整表动作就会指向半张表。
  */
 const subscriptions = computed(() => sources.value.filter((source) => source.kind !== 'inline'));
+const hasEnabledRemote = computed(() =>
+  subscriptions.value.some((source) => source.kind === 'remote' && source.enabled),
+);
 const manualNodes = computed(() => sources.value.filter((source) => source.kind === 'inline'));
 const manualNodeTotal = computed(() =>
   manualNodes.value.reduce((sum, source) => sum + (sourceStats.value[source.id]?.nodes ?? 0), 0),
@@ -242,7 +246,9 @@ const manualForm = reactive({
 });
 
 const manualNeedsUuid = computed(() => manualForm.protocol === 'vmess' || manualForm.protocol === 'vless');
-const manualNeedsPassword = computed(() => manualForm.protocol !== 'vmess' && manualForm.protocol !== 'vless');
+const manualNeedsPassword = computed(
+  () => manualForm.protocol !== 'vmess' && manualForm.protocol !== 'vless' && manualForm.protocol !== 'socks5',
+);
 const manualNeedsMethod = computed(() => manualForm.protocol === 'ss');
 const manualNeedsTransport = computed(
   () => manualForm.protocol === 'vmess' || manualForm.protocol === 'vless' || manualForm.protocol === 'trojan',
@@ -334,16 +340,9 @@ const manualHint = computed(() => {
 
 /**
  * 只数「URI 起点」，不做完整解析——真正的解析在后端。
- * 规则与 parseSubscriptionUris 的 splitSubscriptionUris 一致：换行之外，
- * 也认一行内用空白 / 逗号 / 分号拼接的链接，否则「共 N 条」会少报。
+ * 直接复用 core 的 splitSubscriptionUris，与 parseSubscriptionUris 保持单点同源。
  */
-const bulkLines = computed(() =>
-  bulkText.value
-    .split(/\r\n|\n|\r/)
-    .flatMap((line) => line.split(/[\s,;]+(?=[a-z0-9+.-]+:\/\/)/i))
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0),
-);
+const bulkLines = computed(() => splitSubscriptionUris(bulkText.value));
 
 /** 只校验「像个 URI」，不做完整解析——真正的解析在后端，这里不该出现第二个解析器。 */
 const bulkValid = computed(() => bulkLines.value.filter((line) => /^[a-z0-9+.-]+:\/\//i.test(line)).length);
@@ -404,6 +403,7 @@ const editDraft = reactive({
   refreshPolicy: 'off',
   proxy: '',
 });
+let editInitial = { url: '', proxy: '' };
 
 const editContentDirty = computed(
   () => editing.value !== null && editing.value.kind !== 'remote' && editContent.value !== editContentLoaded.value,
@@ -417,6 +417,7 @@ async function openEdit(source: SourceView): Promise<void> {
   editDraft.format = source.format ?? '';
   editDraft.refreshPolicy = source.refreshPolicy ?? 'off';
   editDraft.proxy = source.proxy ?? '';
+  editInitial = { url: source.url ?? '', proxy: source.proxy ?? '' };
   editContent.value = '';
   editContentLoaded.value = '';
   editOpen.value = true;
@@ -453,15 +454,20 @@ async function submitEdit(): Promise<void> {
     return;
   }
   editSaving.value = true;
-  // proxy 传空串表示清除；本地源不发 url / ua / proxy / 自动刷新（写了也不会执行）。
+  // proxy 传空串表示清除；url / proxy 未改动时不发送，避免把脱敏值写回触发 redacted-*-rejected；
+  // 本地源不发 url / ua / proxy / 自动刷新（写了也不会执行）。
+  const nextUrl = editDraft.url.trim();
+  const nextProxy = editDraft.proxy.trim();
+  const urlChanged = target.kind === 'remote' && nextUrl !== editInitial.url;
+  const proxyChanged = target.kind === 'remote' && nextProxy !== editInitial.proxy;
   const ok = await updateSource(target.id, {
     name,
-    ...(target.kind === 'remote' ? { url: editDraft.url.trim() } : {}),
+    ...(urlChanged ? { url: nextUrl } : {}),
     ...(target.kind === 'remote' ? { ua: editDraft.ua.trim() } : {}),
     // 空串是「自动识别」，必须显式发过去才能清掉旧的 format；省略键在服务端语义是「本次不改」。
     format: editDraft.format,
     ...(target.kind === 'remote' ? { refreshPolicy: editDraft.refreshPolicy } : {}),
-    ...(target.kind === 'remote' ? { proxy: editDraft.proxy.trim() } : {}),
+    ...(proxyChanged ? { proxy: nextProxy } : {}),
     ...(target.kind !== 'remote' && editContentDirty.value ? { content: editContent.value } : {}),
   });
   editSaving.value = false;
@@ -553,6 +559,7 @@ async function refreshAll(): Promise<void> {
  * 换类型时不清空已填的值——改回上一个类型能接着用，比每次重填友好。
  */
 interface StepDraft {
+  uid: number;
   type: 'filter' | 'rename' | 'prefix' | 'sort' | 'dedupe' | 'limit' | 'set-property' | 'flag';
   by: string;
   keep: boolean;
@@ -564,6 +571,7 @@ interface StepDraft {
 }
 
 interface MemberDraft {
+  uid: number;
   sourceId: string;
   enabled: boolean;
   prefix: string;
@@ -574,10 +582,15 @@ interface MemberDraft {
   /** 非空时按链执行，上面的旧字段全部不生效（服务端也是这个优先级）。 */
   process: StepDraft[];
   chainOpen: boolean;
+  legacyOpen: boolean;
   newType: StepDraft['type'];
 }
 
+let nextDraftUid = 1;
+const allocUid = (): number => nextDraftUid++;
+
 const emptyStep = (type: StepDraft['type']): StepDraft => ({
+  uid: allocUid(),
   type,
   by: type === 'sort' ? 'name' : 'regex',
   keep: false,
@@ -630,18 +643,23 @@ function openCollection(collection?: {
   editingId.value = collection?.id ?? null;
   collectionDraft.name = collection?.name ?? '';
   collectionDraft.dedupe = collection?.dedupe ?? 'nodeKey';
-  collectionDraft.members = (collection?.members ?? []).map((member) => ({
-    sourceId: member.sourceId,
-    enabled: member.filter?.enabled !== false,
-    prefix: member.filter?.prefix ?? '',
-    include: (member.filter?.include ?? []).join(', '),
-    exclude: (member.filter?.exclude ?? []).join(', '),
-    rename: member.filter?.rename ?? '',
-    limit: member.filter?.limit ?? null,
-    process: (member.filter?.process ?? []).map(toStepDraft),
-    chainOpen: (member.filter?.process ?? []).length > 0,
-    newType: 'filter' as const,
-  }));
+  collectionDraft.members = (collection?.members ?? []).map((member) => {
+    const process = (member.filter?.process ?? []).map(toStepDraft);
+    return {
+      uid: allocUid(),
+      sourceId: member.sourceId,
+      enabled: member.filter?.enabled !== false,
+      prefix: member.filter?.prefix ?? '',
+      include: (member.filter?.include ?? []).join(', '),
+      exclude: (member.filter?.exclude ?? []).join(', '),
+      rename: member.filter?.rename ?? '',
+      limit: member.filter?.limit ?? null,
+      process,
+      chainOpen: process.length > 0,
+      legacyOpen: process.length === 0,
+      newType: 'filter' as const,
+    };
+  });
   collectionOpen.value = true;
 }
 
@@ -652,6 +670,7 @@ function addMember(): void {
     return;
   }
   collectionDraft.members.push({
+    uid: allocUid(),
     sourceId: first.id,
     enabled: true,
     prefix: '',
@@ -661,6 +680,7 @@ function addMember(): void {
     limit: null,
     process: [],
     chainOpen: false,
+    legacyOpen: true,
     newType: 'filter',
   });
 }
@@ -843,6 +863,16 @@ async function submitCollection(): Promise<void> {
     notify('error', '组合订阅至少要有一个成员');
     return;
   }
+  for (let mIdx = 0; mIdx < collectionDraft.members.length; mIdx++) {
+    const member = collectionDraft.members[mIdx]!;
+    for (let sIdx = 0; sIdx < member.process.length; sIdx++) {
+      if (toProcessStep(member.process[sIdx]!) === null) {
+        member.chainOpen = true;
+        notify('error', `第 ${mIdx + 1} 个成员的第 ${sIdx + 1} 步参数未填完整，请补全或删除该步骤`);
+        return;
+      }
+    }
+  }
   collectionSaving.value = true;
   const members: CollectionMemberView[] = collectionDraft.members.map((member) => {
     const include = splitPatterns(member.include);
@@ -898,7 +928,14 @@ async function submitCollection(): Promise<void> {
         <h2>订阅</h2>
         <span class="count">{{ subscriptions.length }}</span>
         <div class="spacer"></div>
-        <n-button size="small" quaternary :loading="busy > 0" :disabled="busy > 0" @click="refreshAll">
+        <n-button
+          size="small"
+          quaternary
+          :loading="busy > 0"
+          :disabled="busy > 0 || !hasEnabledRemote"
+          :title="hasEnabledRemote ? '拉取全部已启用的远端订阅' : '没有已启用的远端订阅'"
+          @click="refreshAll"
+        >
           <template #icon><RefreshCw :size="14" /></template>
           更新订阅
         </n-button>
@@ -972,6 +1009,13 @@ async function submitCollection(): Promise<void> {
                         :value="source.enabled"
                         @update:value="(value: boolean) => updateSource(source.id, { enabled: value })"
                       />
+                    </div>
+                    <div
+                      v-if="source.enabled && (source.lastError !== null || source.snapshotStale)"
+                      class="status-error-mobile"
+                      :style="{ color: source.lastError !== null && !source.snapshotStale ? 'var(--danger)' : 'var(--warn)' }"
+                    >
+                      {{ statusDetail(source.id) }}
                     </div>
                   </div>
                 </div>
@@ -1353,7 +1397,7 @@ async function submitCollection(): Promise<void> {
             </div>
 
             <div class="row" style="gap: 10px; align-items: flex-start">
-              <div class="field" style="flex: 1">
+              <div class="field" style="flex: 1; min-width: 160px">
                 <label>服务器</label>
                 <n-input
                   v-model:value="manualForm.server"
@@ -1471,7 +1515,8 @@ async function submitCollection(): Promise<void> {
           >
             <div class="row tight">
               <span class="text-3" style="font-size: 11.5px">
-                这 {{ bulkLines.length }} 条作为一组保存；「我的节点」里是一行，节点数见「节点」列
+                <template v-if="manualMode === 'single'">生成 1 条节点记录；保存后可在「我的节点」中编辑</template>
+                <template v-else>这 {{ bulkLines.length }} 条作为一组保存；「我的节点」里是一行，节点数见「节点」列</template>
               </span>
               <div class="spacer"></div>
               <n-button size="tiny" quaternary @click="copyText(manualContent)">复制</n-button>
@@ -1494,7 +1539,13 @@ async function submitCollection(): Promise<void> {
     </n-modal>
 
     <!-- 编辑已有源 -->
-    <n-modal v-model:show="editOpen" preset="card" :title="editing?.kind === 'inline' ? '编辑节点' : '编辑订阅'" style="width: 560px; max-width: calc(100vw - 32px)">
+    <n-modal
+      v-model:show="editOpen"
+      preset="card"
+      :mask-closable="!editContentDirty"
+      :title="editing?.kind === 'inline' ? '编辑节点' : '编辑订阅'"
+      style="width: 560px; max-width: calc(100vw - 32px)"
+    >
       <div class="stack" style="gap: 12px">
         <div class="field">
           <label>名称</label>
@@ -1503,6 +1554,7 @@ async function submitCollection(): Promise<void> {
           <div v-if="editing?.kind === 'remote'" class="field">
             <label>订阅链接</label>
             <n-input v-model:value="editDraft.url" size="small" class="mono" />
+            <span class="text-3" style="font-size: 11.5px">含密钥的参数已脱敏展示；不修改此栏则保留原链接</span>
           </div>
           <div v-if="editing?.kind === 'remote'" class="field">
             <label>User-Agent</label>
@@ -1546,6 +1598,7 @@ async function submitCollection(): Promise<void> {
               class="mono"
               placeholder="留空表示直连"
             />
+            <span class="text-3" style="font-size: 11.5px">已脱敏；不修改此栏则保留原代理，清空后保存可改为直连</span>
           </div>
           <n-alert v-if="editing?.lastError !== null && editing?.lastError !== undefined" type="error" :bordered="false">
             最近一次拉取失败：<span class="mono">{{ editing.lastError }}</span>
@@ -1555,13 +1608,19 @@ async function submitCollection(): Promise<void> {
         <template #footer>
           <div class="row" style="width: 100%; justify-content: flex-end; gap: 8px">
             <n-button size="small" quaternary @click="editOpen = false">取消</n-button>
-            <n-button size="small" type="primary" :loading="editSaving || busy > 0" @click="submitEdit">保存</n-button>
+            <n-button size="small" type="primary" :loading="editSaving || busy > 0" :disabled="editContentLoading" @click="submitEdit">保存</n-button>
           </div>
         </template>
     </n-modal>
 
     <!-- 组合订阅编辑 -->
-    <n-modal v-model:show="collectionOpen" preset="card" :title="editingId === null ? '新建组合订阅' : '编辑组合订阅'" style="width: 720px; max-width: calc(100vw - 32px)">
+    <n-modal
+      v-model:show="collectionOpen"
+      preset="card"
+      :mask-closable="collectionDraft.members.length === 0 && collectionDraft.name.trim() === ''"
+      :title="editingId === null ? '新建组合订阅' : '编辑组合订阅'"
+      style="width: 720px; max-width: calc(100vw - 32px)"
+    >
       <div class="stack" style="gap: 12px">
         <div class="field">
           <label>名称</label>
@@ -1576,7 +1635,7 @@ async function submitCollection(): Promise<void> {
           <div class="field">
             <label>成员（顺序即合并顺序）</label>
             <div class="member-list">
-              <div v-for="(member, index) in collectionDraft.members" :key="index" class="member-card">
+              <div v-for="(member, index) in collectionDraft.members" :key="member.uid" class="member-card">
                 <div class="row" style="gap: 8px">
                   <n-select v-model:value="member.sourceId" size="small" :options="sourceOptions" style="flex: 1" />
                   <n-switch v-model:value="member.enabled" size="small" />
@@ -1596,20 +1655,35 @@ async function submitCollection(): Promise<void> {
                     <template #icon><X :size="13" /></template>
                   </n-button>
                 </div>
-                <div class="member-grid">
-                  <n-input v-model:value="member.prefix" size="small" :disabled="member.process.length > 0" placeholder="前缀，如 HK-" />
-                  <n-input v-model:value="member.rename" size="small" :disabled="member.process.length > 0" placeholder="改名，如 {index}-{name}" />
-                  <n-input v-model:value="member.include" size="small" :disabled="member.process.length > 0" placeholder="只保留，逗号分隔" />
-                  <n-input v-model:value="member.exclude" size="small" :disabled="member.process.length > 0" placeholder="排除，逗号分隔" />
-                  <n-input-number
-                    v-model:value="member.limit"
-                    size="small"
-                    :disabled="member.process.length > 0"
-                    :min="0"
-                    :max="9999"
-                    placeholder="最多保留"
-                    style="width: 100%"
-                  />
+                <div v-if="member.process.length === 0 || member.legacyOpen" class="member-grid">
+                  <div class="member-field">
+                    <span class="member-field-label">前缀</span>
+                    <n-input v-model:value="member.prefix" size="small" :disabled="member.process.length > 0" placeholder="如 HK-" />
+                  </div>
+                  <div class="member-field">
+                    <span class="member-field-label">改名模板</span>
+                    <n-input v-model:value="member.rename" size="small" :disabled="member.process.length > 0" placeholder="如 {index}-{name}" />
+                  </div>
+                  <div class="member-field">
+                    <span class="member-field-label">只保留</span>
+                    <n-input v-model:value="member.include" size="small" :disabled="member.process.length > 0" placeholder="逗号分隔" />
+                  </div>
+                  <div class="member-field">
+                    <span class="member-field-label">排除</span>
+                    <n-input v-model:value="member.exclude" size="small" :disabled="member.process.length > 0" placeholder="逗号分隔" />
+                  </div>
+                  <div class="member-field">
+                    <span class="member-field-label">上限</span>
+                    <n-input-number
+                      v-model:value="member.limit"
+                      size="small"
+                      :disabled="member.process.length > 0"
+                      :min="0"
+                      :max="9999"
+                      placeholder="不限"
+                      style="width: 100%"
+                    />
+                  </div>
                 </div>
 
                 <div class="row" style="gap: 8px; margin-top: 6px; flex-wrap: wrap">
@@ -1622,17 +1696,25 @@ async function submitCollection(): Promise<void> {
                     <template #icon><Layers :size="13" /></template>
                     加工链{{ member.process.length > 0 ? `（${member.process.length} 步）` : '' }}
                   </n-button>
+                  <n-button
+                    v-if="member.process.length > 0"
+                    size="tiny"
+                    quaternary
+                    @click="member.legacyOpen = !member.legacyOpen"
+                  >
+                    {{ member.legacyOpen ? '收起旧字段' : '查看旧字段' }}
+                  </n-button>
                   <span class="text-3" style="font-size: 11.5px">
                     {{
                       member.process.length > 0
-                        ? '按链顺序执行；上面的前缀 / 过滤 / 改名 / 上限已停用'
+                        ? '已启用加工链（按链顺序执行，旧字段停用）'
                         : '需要「先去重再改名」这类顺序敏感的加工时才用'
                     }}
                   </span>
                 </div>
 
                 <div v-if="member.chainOpen" class="chain">
-                  <div v-for="(step, stepIndex) in member.process" :key="stepIndex" class="chain-step">
+                  <div v-for="(step, stepIndex) in member.process" :key="step.uid" class="chain-step">
                     <div class="row" style="gap: 6px">
                       <span class="chain-index mono">{{ stepIndex + 1 }}</span>
                       <n-select v-model:value="step.type" size="tiny" :options="stepTypeOptions" style="width: 132px" />

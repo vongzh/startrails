@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseProfile, plan, emit } from '../src/core/index.ts';
+import { BuildCache } from '../src/server/build-cache.ts';
+import { createBuilder } from '../src/server/builder.ts';
+import { SnapshotCache } from '../src/server/cache.ts';
+import { createNotifier } from '../src/server/notify.ts';
+import { RuleSetCache } from '../src/server/ruleset.ts';
 import { alignInheritedMembers, applyDnsOverlay, applyGroupOverlay, applyRuleOverlay } from '../src/server/section-overlay.ts';
+import { openStore } from '../src/store/sqlite.ts';
 import type { PersistedGroupOverride, StoredRule } from '../src/store/port.ts';
 
 test('匹配成员按当前节点展开，引用保留组名和内置策略', () => {
@@ -166,4 +175,109 @@ test('mihomo 写出测速组、GEOSITE 和按域名的解析器', () => {
   const surge = emit(profile, plan(profile, 'surge'));
   assert.ok(surge.diagnostics.some((item) => item.reason === 'group-strategy-not-expressible:url-test'));
   assert.match(surge.content, /= select,/);
+});
+
+test('组合模式保留订阅的 mihomo 高级 DNS 字段并合并 fallbackFilter', () => {
+  const source = {
+    dns: {
+      mode: 'fake-ip' as const,
+      nameserver: ['https://dns.alidns.com/dns-query'],
+      defaultNameserver: ['223.5.5.5'],
+      fakeIpFilter: ['*.lan', '*.local'],
+      fallbackFilter: {
+        geoip: true,
+        geoipCode: 'CN',
+        ipCidr: ['10.0.0.0/8'],
+        domain: ['+.google.com'],
+      },
+      useHosts: false,
+      useSystemHosts: true,
+      respectRules: false,
+    },
+  };
+  const saved = {
+    dns: {
+      mode: 'fake-ip' as const,
+      nameserverPolicy: { '*.mine.example': 'https://user.example/dns-query' },
+      fallbackFilter: {
+        domain: ['+.youtube.com'],
+      },
+      respectRules: true,
+    },
+  };
+  const merged = applyDnsOverlay(source, saved, 'merge');
+  assert.deepEqual(merged?.dns?.defaultNameserver, ['223.5.5.5']);
+  assert.deepEqual(merged?.dns?.fakeIpFilter, ['*.lan', '*.local']);
+  assert.equal(merged?.dns?.useHosts, false);
+  assert.equal(merged?.dns?.useSystemHosts, true);
+  assert.equal(merged?.dns?.respectRules, true);
+  assert.equal(merged?.dns?.fallbackFilter?.geoip, true);
+  assert.equal(merged?.dns?.fallbackFilter?.geoipCode, 'CN');
+  assert.deepEqual(merged?.dns?.fallbackFilter?.ipCidr, ['10.0.0.0/8']);
+  assert.deepEqual(merged?.dns?.fallbackFilter?.domain, ['+.youtube.com']);
+});
+
+test('多订阅来源合成时合并各源的 nameserver-policy，同域名以先入源为准', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'startrails-dns-merge-'));
+  const store = openStore(join(dir, 'state.db'), 'dns-merge-secret');
+  try {
+    const subA = [
+      'proxies:',
+      '  - { name: A1, type: ss, server: a.example, port: 443, cipher: aes-128-gcm, password: p }',
+      'dns:',
+      '  enable: true',
+      '  enhanced-mode: fake-ip',
+      '  nameserver:',
+      '    - https://dns.alidns.com/dns-query',
+      '  nameserver-policy:',
+      '    "*.shared.example": https://sub-a.example/dns-query',
+      '    "*.only-a.example": https://sub-a.example/dns-query',
+    ].join('\n');
+    const subB = [
+      'proxies:',
+      '  - { name: B1, type: ss, server: b.example, port: 443, cipher: aes-128-gcm, password: p }',
+      'dns:',
+      '  enable: true',
+      '  enhanced-mode: fake-ip',
+      '  nameserver:',
+      '    - https://doh.pub/dns-query',
+      '  nameserver-policy:',
+      '    "*.shared.example": https://sub-b.example/dns-query',
+      '    "*.only-b.example": https://sub-b.example/dns-query',
+    ].join('\n');
+    store.putSource({ id: 'sub-a', name: 'A', kind: 'inline', enabled: true });
+    store.writeSourcePayload('sub-a', subA);
+    store.putSource({ id: 'sub-b', name: 'B', kind: 'inline', enabled: true });
+    store.writeSourcePayload('sub-b', subB);
+    store.putProfile({
+      id: 'default',
+      name: 'default',
+      entries: [
+        { kind: 'source', id: 'sub-a' },
+        { kind: 'source', id: 'sub-b' },
+      ],
+    });
+    const builder = createBuilder({
+      store,
+      cache: new SnapshotCache(join(dir, 'cache')),
+      buildCache: new BuildCache(),
+      ruleSets: new RuleSetCache(join(dir, 'rulesets'), undefined, true),
+      notifier: createNotifier(() => undefined),
+      allowPrivate: true,
+    });
+    const profile = builder.findProfile('default');
+    assert.ok(profile !== undefined);
+    const composed = builder.composeProfile(profile, [
+      { id: 'sub-a', body: subA },
+      { id: 'sub-b', body: subB },
+    ]);
+    assert.deepEqual(composed.profile.runtime?.dns?.nameserver, ['https://dns.alidns.com/dns-query']);
+    assert.equal(composed.profile.runtime?.dns?.nameserverPolicy?.['*.shared.example'], 'https://sub-a.example/dns-query');
+    assert.equal(composed.profile.runtime?.dns?.nameserverPolicy?.['*.only-a.example'], 'https://sub-a.example/dns-query');
+    assert.equal(composed.profile.runtime?.dns?.nameserverPolicy?.['*.only-b.example'], 'https://sub-b.example/dns-query');
+    assert.ok(composed.diagnostics.some((d) => d.subject === 'sub-b' && d.reason === 'dns-ignored'));
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

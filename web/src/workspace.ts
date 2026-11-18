@@ -28,6 +28,8 @@ import type {
 } from './api';
 import { formatTraffic, lineCount } from './format';
 import { clientLabelOf } from './client-icons';
+import { formatRuleText, parseRuleText } from './rule-text';
+import type { RuleTextParseResult } from './rule-text';
 
 /**
  * 一级页面只留需要频繁切换的：诊断与能力都是只读参考，收在设置的分区里；
@@ -90,6 +92,10 @@ export const secretRequired = ref(false);
 /** 状态查询未回来前禁用提交，避免首帧按「普通登录」形态把令牌送去 401。 */
 export const setupChecking = ref(true);
 export const busy = ref(0);
+export const reloading = ref(false);
+export const nodeBusy = ref(false);
+export const runtimeDirty = ref(false);
+export const pendingBuildId = ref<string | null>(null);
 export const tab = ref<Tab>('overview');
 /**
  * 配置页当前分段。默认落在「构成」：那是这份配置最上游、也最常改的一段。
@@ -107,6 +113,11 @@ export const settingsSection = ref<string | null>(null);
 export function openSettingsSection(id: string): void {
   settingsSection.value = id;
   tab.value = 'settings';
+}
+
+export function openBuildDiagnostic(buildId: string): void {
+  pendingBuildId.value = buildId;
+  openSettingsSection('diagnostics');
 }
 
 export const state = ref<StateView | null>(null);
@@ -129,7 +140,7 @@ export const traceSteps = ref<TraceStepView[]>([]);
 export const target = ref('surge');
 /** 签发默认走「自动识别」：多数人只想要一条能喂给所有客户端的地址，先让他点生成就能拿到。 */
 export const publishTarget = ref('auto');
-export const createdUrls = ref<{ target: string; url: string }[]>([]);
+export const createdUrls = ref<{ profile: string; target: string; url: string }[]>([]);
 export const activeProfileName = ref(getActiveProfile());
 
 export const sourceStats = ref<Record<string, SourceStatView>>({});
@@ -206,11 +217,19 @@ interface Messenger {
   error: (text: string) => void;
 }
 
-let messenger: Messenger | null = null;
+interface Dialoger {
+  confirmDiscard: (detail: string) => Promise<boolean>;
+}
 
-/** 由 Shell 注入 Naive UI 的 message 实例，workspace 不直接依赖组件库。 */
+let messenger: Messenger | null = null;
+let dialoger: Dialoger | null = null;
+
+/** 由 Shell 注入 Naive UI 的 message 与 dialog 实例，workspace 不直接依赖组件库。 */
 export const setMessenger = (api: Messenger): void => {
   messenger = api;
+};
+export const setDialoger = (api: Dialoger): void => {
+  dialoger = api;
 };
 
 /* ---------------- 派生数据 ---------------- */
@@ -326,21 +345,21 @@ function messageOf(cause: unknown): string {
   if (text.includes('secret-file-desync'))
     return '密钥文件没写成，但数据库已切到新密钥：重启前把密钥文件内容改成刚才设置的密钥，否则正文解不开';
   if (text.includes('secret-persist-failed')) return '加密密钥写入失败，已回滚，请检查 data 目录权限';
-  if (text.includes('profile-empty')) return '当前配置没有任何内容：先在订阅页把源加入构成';
+  if (text.includes('profile-empty')) return '当前配置没有任何内容：先在配置页把订阅加入构成';
   if (text.includes('admin-token-from-env'))
     return '管理令牌由环境变量提供，请在部署侧修改后重启';
   if (text.includes('admin-token-unchanged')) return '新令牌与当前相同，无需更换';
   if (text.includes('last-profile')) return '至少要保留一个配置';
   if (text.includes('profile-name-taken')) return '已有同名配置，换一个名字';
   if (text.includes('notify-not-configured')) return '还没配置通知渠道';
-  if (text.includes('redacted-url-rejected')) return '订阅链接是脱敏值：请在编辑抽屉重新粘贴完整链接';
+  if (text.includes('redacted-url-rejected')) return '订阅链接是脱敏值：请在编辑弹窗重新粘贴完整链接';
   if (text.includes('redacted-proxy-rejected')) return '代理地址是脱敏值：请重新粘贴完整代理地址';
   if (text.includes('invalid-source-format')) return '订阅格式不支持：请选择已列出的格式或留空自动识别';
   if (text.includes('invalid-enabled')) return '启用状态只能是开或关';
   if (text.includes('content-required')) return '正文不能为空，删除正文请直接删源';
   if (text.includes('url-required')) return '订阅链接不能为空';
   if (text.includes('name-required')) return '名称不能为空';
-  if (text.includes('404') && text.includes('profile-not-found')) return '配置不存在，请先在订阅页重建';
+  if (text.includes('404') && text.includes('profile-not-found')) return '配置不存在，请在配置页新建';
   return text.length > 240 ? `${text.slice(0, 240)}…` : text;
 }
 
@@ -398,10 +417,10 @@ export function toggleTheme(): void {
   setThemeMode(theme.value === 'dark' ? 'light' : 'dark');
 }
 
-export async function copyText(text: string): Promise<void> {
+export async function copyText(text: string, label = '已复制'): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
-    notify('ok', '已复制');
+    notify('ok', label);
   } catch {
     notify('error', '复制失败，请手动选择文本');
   }
@@ -585,7 +604,7 @@ export async function connect(token: string): Promise<void> {
   setToken(token.trim());
   connecting.value = true;
   try {
-    await loadAll();
+    await loadAll(true);
     connected.value = true;
     tab.value = 'overview';
   } catch (cause) {
@@ -641,7 +660,7 @@ export async function initialize(token: string, secret = ''): Promise<void> {
     setupRequired.value = false;
     secretRequired.value = false;
     if (trimmedToken.length > 0) setToken(trimmedToken);
-    await loadAll();
+    await loadAll(true);
     connected.value = true;
     tab.value = 'overview';
   } catch (cause) {
@@ -653,6 +672,10 @@ export async function initialize(token: string, secret = ''): Promise<void> {
 }
 
 export function disconnect(): void {
+  if (previewTimer !== null) {
+    clearTimeout(previewTimer);
+    previewTimer = null;
+  }
   setToken('');
   connected.value = false;
   state.value = null;
@@ -660,9 +683,22 @@ export function disconnect(): void {
   preview.value = null;
   annotations.value = [];
   createdUrls.value = [];
+  latestTokenId.value = null;
+  runtimeDirty.value = false;
+  pendingBuildId.value = null;
   rules.value = [];
+  ruleMode.value = 'inherit';
+  rulePlacement.value = 'after';
   groups.value = [];
+  groupMode.value = 'inherit';
+  baseGroups.value = [];
   profileEntries.value = [];
+  loadedEntries.value = '[]';
+  loadedRules.value = '[]';
+  loadedGroups.value = '[]';
+  nodeDiagnostics.value = [];
+  evidence.value = [];
+  traceSteps.value = [];
   sourceStats.value = {};
   buildReport.value = null;
   history.value = [];
@@ -670,11 +706,16 @@ export function disconnect(): void {
   setActiveProfile('default');
 }
 
-export function reload(): Promise<boolean> {
-  return run(async () => {
-    await loadAll();
-    notify('ok', '已刷新');
-  });
+export async function reload(): Promise<boolean> {
+  reloading.value = true;
+  try {
+    return await run(async () => {
+      await loadAll();
+      notify('ok', '已刷新');
+    });
+  } finally {
+    reloading.value = false;
+  }
 }
 
 /* ---------------- 订阅 ---------------- */
@@ -839,19 +880,35 @@ export async function onProfileChange(value: string): Promise<void> {
   await switchProfile(value);
 }
 
+function dirtyPartsLabel(): string {
+  const parts: string[] = [];
+  if (profileDirty.value) parts.push('构成');
+  if (rulesDirty.value) parts.push('规则');
+  if (groupsDirty.value) parts.push('策略组');
+  if (runtimeDirty.value) parts.push('DNS / TUN');
+  return parts.join('、');
+}
+
+async function confirmLeaveDirty(actionLabel: string): Promise<boolean> {
+  const what = dirtyPartsLabel();
+  if (what === '') return true;
+  if (dialoger !== null) {
+    return dialoger.confirmDiscard(`当前配置「${activeProfileName.value}」有未保存的${what}修改，${actionLabel}将会丢弃这些草稿。`);
+  }
+  return true;
+}
+
 export async function switchProfile(name: string): Promise<boolean> {
   if (name === activeProfileName.value) return true;
   const previous = activeProfileName.value;
-  const hadDraft = profileDirty.value;
-  // 规则与策略组也按配置存了，切走同样会丢掉未保存的草稿——不能只提示构成。
-  const hadRuleDraft = rulesDirty.value || groupsDirty.value;
+  const hadDraft = dirtyPartsLabel();
+  if (!(await confirmLeaveDirty('切换配置'))) return false;
   return run(async () => {
     setActiveProfile(name);
     activeProfileName.value = name;
     await loadAll(true);
-    if (hadDraft || hadRuleDraft) {
-      const what = hadDraft && hadRuleDraft ? '构成与规则' : hadDraft ? '构成' : '规则';
-      notify('error', `切换配置，「${previous}」未保存的${what}修改已丢弃`);
+    if (hadDraft !== '' && dialoger === null) {
+      notify('error', `切换配置，「${previous}」未保存的${hadDraft}修改已丢弃`);
     } else notify('ok', `已切换到配置「${name}」`);
   });
 }
@@ -863,8 +920,8 @@ export async function createProfile(name: string): Promise<boolean> {
     return false;
   }
   const previous = activeProfileName.value;
-  const hadDraft = profileDirty.value;
-  const hadRuleDraft = rulesDirty.value || groupsDirty.value;
+  const hadDraft = dirtyPartsLabel();
+  if (!(await confirmLeaveDirty('新建并切换配置'))) return false;
   return run(async () => {
     const created = await api.createProfile(value);
     if (!created.created) {
@@ -874,9 +931,8 @@ export async function createProfile(name: string): Promise<boolean> {
     setActiveProfile(value);
     activeProfileName.value = value;
     await loadAll(true);
-    if (hadDraft || hadRuleDraft) {
-      const what = hadDraft && hadRuleDraft ? '构成与规则' : hadDraft ? '构成' : '规则';
-      notify('error', `新建配置，「${previous}」未保存的${what}修改已丢弃`);
+    if (hadDraft !== '' && dialoger === null) {
+      notify('error', `新建配置，「${previous}」未保存的${hadDraft}修改已丢弃`);
     }
     notify('ok', `已新建配置「${value}」，接着往构成里加订阅`);
   });
@@ -884,10 +940,11 @@ export async function createProfile(name: string): Promise<boolean> {
 
 export async function removeProfile(name: string): Promise<boolean> {
   const previous = activeProfileName.value;
-  const hadDraft = profileDirty.value;
-  const hadRuleDraft = rulesDirty.value || groupsDirty.value;
+  const hadDraft = dirtyPartsLabel();
+  if (name === activeProfileName.value && !(await confirmLeaveDirty('删除当前配置'))) return false;
   return run(async () => {
     const result = await api.removeProfile(name);
+    createdUrls.value = createdUrls.value.filter((item) => item.profile !== name);
     if (name === activeProfileName.value) {
       // 删的是当前 Profile：先切到一个还存在的，否则后续每个请求都会 404。
       const fallback = profiles.value.find((item) => item.name !== name)?.name ?? 'default';
@@ -895,9 +952,8 @@ export async function removeProfile(name: string): Promise<boolean> {
       activeProfileName.value = fallback;
     }
     await loadAll(true);
-    if (hadDraft || hadRuleDraft) {
-      const what = hadDraft && hadRuleDraft ? '构成与规则' : hadDraft ? '构成' : '规则';
-      notify('error', `删除配置，「${previous}」未保存的${what}修改已丢弃`);
+    if (hadDraft !== '' && dialoger === null) {
+      notify('error', `删除配置，「${previous}」未保存的${hadDraft}修改已丢弃`);
     }
     notify(
       'ok',
@@ -966,40 +1022,75 @@ function upsertAnnotation(next: AnnotationView): void {
   annotations.value = [...rest, next];
 }
 
+let previewTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePreviewRefresh(): void {
+  if (previewTimer !== null) clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => {
+    previewTimer = null;
+    void refreshPreview();
+  }, 350);
+}
+
 export async function toggleExcluded(node: NodeView): Promise<boolean> {
-  const payload = annotationOf(node);
-  payload.excluded = !(payload.excluded === true);
-  return run(async () => {
+  const prev = annotationOf(node);
+  const payload: AnnotationView = { ...prev, excluded: !(prev.excluded === true) };
+  upsertAnnotation(payload);
+  nodeBusy.value = true;
+  try {
     await api.saveAnnotation(payload);
-    upsertAnnotation(payload);
-    await refreshPreview();
-  });
+    schedulePreviewRefresh();
+    return true;
+  } catch (cause) {
+    upsertAnnotation(prev);
+    notify('error', messageOf(cause));
+    return false;
+  } finally {
+    nodeBusy.value = false;
+  }
 }
 
 export async function saveAlias(node: NodeView, value: string): Promise<boolean> {
-  const payload = annotationOf(node);
+  const prev = annotationOf(node);
+  const payload: AnnotationView = { ...prev };
   const trimmed = value.trim();
   if (trimmed.length > 0) payload.alias = trimmed;
   else delete payload.alias;
-  return run(async () => {
+  upsertAnnotation(payload);
+  nodeBusy.value = true;
+  try {
     await api.saveAnnotation(payload);
-    upsertAnnotation(payload);
-    await refreshPreview();
+    schedulePreviewRefresh();
     notify('ok', trimmed.length > 0 ? `已重命名为 ${trimmed}` : '已恢复原名');
-  });
+    return true;
+  } catch (cause) {
+    upsertAnnotation(prev);
+    notify('error', messageOf(cause));
+    return false;
+  } finally {
+    nodeBusy.value = false;
+  }
 }
 
 /** 手动改地区：覆盖值存进 Annotation.region，空串 = 清除覆盖、回退名字推断。 */
 export async function saveRegion(node: NodeView, code: string): Promise<boolean> {
-  const payload = annotationOf(node);
+  const prev = annotationOf(node);
+  const payload: AnnotationView = { ...prev };
   if (code === '') delete payload.region;
   else payload.region = code;
-  return run(async () => {
+  upsertAnnotation(payload);
+  nodeBusy.value = true;
+  try {
     await api.saveAnnotation(payload);
-    upsertAnnotation(payload);
-    await refreshPreview();
+    schedulePreviewRefresh();
     notify('ok', code === '' ? '已清除地区覆盖' : `地区已改为 ${code}`);
-  });
+    return true;
+  } catch (cause) {
+    upsertAnnotation(prev);
+    notify('error', messageOf(cause));
+    return false;
+  } finally {
+    nodeBusy.value = false;
+  }
 }
 
 export async function moveNode(index: number, direction: number): Promise<boolean> {
@@ -1008,22 +1099,36 @@ export async function moveNode(index: number, direction: number): Promise<boolea
   const current = nodes.value[index];
   const other = nodes.value[next];
   if (current === undefined || other === undefined) return false;
-  const left = { ...annotationOf(current), order: next };
-  const right = { ...annotationOf(other), order: index };
-  return run(async () => {
-    await api.saveAnnotation(left);
-    await api.saveAnnotation(right);
-    upsertAnnotation(left);
-    upsertAnnotation(other);
-    const reordered = [...nodes.value];
-    reordered[index] = other;
-    reordered[next] = current;
-    nodes.value = reordered;
-    await refreshPreview();
-  });
+  const prevCurrent = annotationOf(current);
+  const prevOther = annotationOf(other);
+  const prevNodes = [...nodes.value];
+  const left = { ...prevCurrent, order: next };
+  const right = { ...prevOther, order: index };
+  const reordered = [...nodes.value];
+  reordered[index] = other;
+  reordered[next] = current;
+  nodes.value = reordered;
+  upsertAnnotation(left);
+  upsertAnnotation(right);
+  nodeBusy.value = true;
+  try {
+    await Promise.all([api.saveAnnotation(left), api.saveAnnotation(right)]);
+    schedulePreviewRefresh();
+    return true;
+  } catch (cause) {
+    nodes.value = prevNodes;
+    upsertAnnotation(prevCurrent);
+    upsertAnnotation(prevOther);
+    notify('error', messageOf(cause));
+    return false;
+  } finally {
+    nodeBusy.value = false;
+  }
 }
 
 /* ---------------- 订阅 URL ---------------- */
+
+export const latestTokenId = ref<string | null>(null);
 
 /** 签发成功返回明文地址，失败返回 null；调用方拿到就能立刻给用户复制。 */
 export async function createToken(
@@ -1034,9 +1139,10 @@ export async function createToken(
   const ok = await run(async () => {
     const result = await api.createToken(forTarget, forProfile);
     url = result.url;
+    latestTokenId.value = result.id;
     createdUrls.value = [
-      { target: forTarget, url: result.url },
-      ...createdUrls.value.filter((item) => item.target !== forTarget),
+      { profile: forProfile, target: forTarget, url: result.url },
+      ...createdUrls.value.filter((item) => !(item.profile === forProfile && item.target === forTarget)),
     ];
     applyStateSnapshot(await api.state());
     notify('ok', '订阅地址已生成');
@@ -1057,9 +1163,10 @@ export async function reissueToken(
   return run(async () => {
     // 先建新地址：这一步失败就整体失败，旧地址原样保留，用户不会被锁在门外。
     const result = await api.createToken(forTarget, forProfile);
+    latestTokenId.value = result.id;
     createdUrls.value = [
-      { target: forTarget, url: result.url },
-      ...createdUrls.value.filter((item) => item.target !== forTarget),
+      { profile: forProfile, target: forTarget, url: result.url },
+      ...createdUrls.value.filter((item) => !(item.profile === forProfile && item.target === forTarget)),
     ];
     try {
       await api.revokeToken(id);
@@ -1105,6 +1212,11 @@ export function addRule(rule: RuleView): void {
   syncRules([...rules.value, rule]);
 }
 
+export function updateRule(index: number, rule: RuleView): void {
+  if (index < 0 || index >= rules.value.length) return;
+  syncRules(rules.value.map((item, position) => (position === index ? rule : item)));
+}
+
 export function moveRule(index: number, direction: number): void {
   const next = index + direction;
   if (next < 0 || next >= rules.value.length) return;
@@ -1119,6 +1231,23 @@ export function moveRule(index: number, direction: number): void {
 
 export function removeRule(index: number): void {
   syncRules(rules.value.filter((_, position) => position !== index));
+}
+
+export function exportRuleText(): string {
+  return formatRuleText(rules.value);
+}
+
+export function importRuleText(text: string, mode: 'append' | 'replace'): RuleTextParseResult {
+  const result = parseRuleText(text);
+  if (result.rules.length === 0) {
+    notify('error', result.skipped.length > 0 ? '未识别到可导入的规则，请检查下方跳过说明' : '没有可导入的规则行');
+    return result;
+  }
+  syncRules(mode === 'append' ? [...rules.value, ...result.rules] : result.rules);
+  const action = mode === 'append' ? '已追加' : '已替换为';
+  const suffix = result.skipped.length > 0 ? `，另有 ${result.skipped.length} 行未导入` : '';
+  notify('ok', `${action} ${result.rules.length} 条规则${suffix}，保存后生效`);
+  return result;
 }
 
 export function importRules(json: string): boolean {
@@ -1149,6 +1278,23 @@ export async function saveRules(): Promise<boolean> {
     await refreshPreview();
     notify('ok', '规则已保存');
   });
+}
+
+export function discardRules(): void {
+  if (loadedRules.value === '') return;
+  try {
+    const parsed = JSON.parse(loadedRules.value) as {
+      mode: OverlayMode;
+      placement: 'before' | 'after';
+      rules: RuleView[];
+    };
+    ruleMode.value = parsed.mode;
+    rulePlacement.value = parsed.placement;
+    syncRules(parsed.rules);
+    notify('ok', '已恢复为上次保存的规则');
+  } catch {
+    // 忽略异常快照
+  }
 }
 
 /** 新建策略组：名字是去重键，重复或空名直接忽略，不制造两条同名组。 */
@@ -1212,6 +1358,18 @@ export function removeGroupMember(group: GroupDraft, member: GroupMemberDraft): 
   );
 }
 
+export function moveGroupMember(group: GroupDraft, index: number, direction: number): void {
+  const next = index + direction;
+  if (next < 0 || next >= group.members.length) return;
+  const list = [...group.members];
+  const current = list[index];
+  const other = list[next];
+  if (current === undefined || other === undefined) return;
+  list[index] = other;
+  list[next] = current;
+  groups.value = groups.value.map((item) => (item.name === group.name ? { ...item, members: list } : item));
+}
+
 export function patchGroup(name: string, patch: Partial<GroupDraft>): void {
   groups.value = groups.value.map((item) => (item.name === name ? { ...item, ...patch, name: item.name } : item));
 }
@@ -1266,6 +1424,21 @@ export async function saveGroups(): Promise<boolean> {
     await refreshPreview();
     notify('ok', '策略组已保存');
   });
+}
+
+export function discardGroups(): void {
+  if (loadedGroups.value === '') return;
+  try {
+    const parsed = JSON.parse(loadedGroups.value) as {
+      mode: OverlayMode;
+      groups: GroupDraft[];
+    };
+    groupMode.value = parsed.mode;
+    groups.value = parsed.groups;
+    notify('ok', '已恢复为上次保存的策略组');
+  } catch {
+    // 忽略异常快照
+  }
 }
 
 /* ---------------- 维护 ---------------- */

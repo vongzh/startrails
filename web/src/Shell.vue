@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue';
+import { computed, onMounted, onUnmounted, watch } from 'vue';
 import {
   NButton,
   NSelect,
   NSpin,
   NTooltip,
+  useDialog,
   useMessage,
 } from 'naive-ui';
 import {
@@ -37,15 +38,20 @@ import {
   connect,
   connecting,
   connected,
-  loadAll,
+  groupsDirty,
   nodes,
   onProfileChange,
+  profileDirty,
   profileEntries,
   profileOptions,
   publishTarget,
   publishTargetName,
   reload,
+  reloading,
   rules,
+  rulesDirty,
+  runtimeDirty,
+  setDialoger,
   setMessenger,
   setupRequired,
   sources,
@@ -59,9 +65,25 @@ import {
 } from './workspace';
 
 const message = useMessage();
+const dialog = useDialog();
 setMessenger({
   success: (text) => message.success(text),
   error: (text) => message.error(text),
+});
+setDialoger({
+  confirmDiscard: (detail) =>
+    new Promise((resolve) => {
+      dialog.warning({
+        title: '有未保存的修改',
+        content: detail,
+        positiveText: '放弃并继续',
+        negativeText: '留下保存',
+        onPositiveClick: () => resolve(true),
+        onNegativeClick: () => resolve(false),
+        onClose: () => resolve(false),
+        onMaskClick: () => resolve(false),
+      });
+    }),
 });
 
 const VIEWS = {
@@ -137,7 +159,8 @@ const PAGE_SUMMARY: Record<Tab, string> = {
   publish: '把这份配置签发出各客户端的订阅地址。',
   settings: '调整外观、通知与备份，并在同一页查看诊断、能力与运行信息。',
 };
-const pageSummary = computed(() => PAGE_SUMMARY[tab.value]);const subtitle = computed(() => {
+const pageSummary = computed(() => PAGE_SUMMARY[tab.value]);
+const subtitle = computed(() => {
   switch (tab.value) {
     case 'overview':
       // 「源」是内部统称：订阅与我的节点已经拆开，摘要里就别再合成一个数。
@@ -165,10 +188,22 @@ const pageSummary = computed(() => PAGE_SUMMARY[tab.value]);const subtitle = com
  */
 watch(tab, () => window.scrollTo(0, 0));
 
+function onBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!connected.value) return;
+  if (!profileDirty.value && !rulesDirty.value && !groupsDirty.value && !runtimeDirty.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
 onMounted(async () => {
+  window.addEventListener('beforeunload', onBeforeUnload);
   await checkSetup();
   const stored = sessionStorage.getItem('startrails_admin');
   if (stored && !setupRequired.value) void connect(stored);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload);
 });
 </script>
 
@@ -246,9 +281,19 @@ onMounted(async () => {
           <strong>{{ title }}</strong>
         </div>
         <div class="topbar-actions">
+          <n-select
+            v-if="profileOptions.length > 0"
+            class="topbar-profile show-narrow"
+            size="small"
+            aria-label="当前配置"
+            :value="activeProfileName"
+            :options="profileOptions"
+            :consistent-menu-width="false"
+            @update:value="onProfileChange"
+          />
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button quaternary circle size="small" aria-label="重新加载数据" :loading="busy > 0" @click="reload()">
+              <n-button quaternary circle size="small" aria-label="重新加载数据" :loading="reloading" @click="reload()">
                 <template #icon><RefreshCw :size="15" /></template>
               </n-button>
             </template>

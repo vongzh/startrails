@@ -340,11 +340,19 @@ function pick(code: string): void {
   color: var(--accent);
 }
 
-/* 窄屏：段内只留旗帜与数字，名字进 tooltip；内边距收到 4px，
-   否则 390 宽下 7 段的可用宽度（约 31px）会被 padding 吃掉一半。 */
+/* 窄屏：允许横滑并保证最小段宽（46px），防止仅 1-2 个节点的地区被压缩成点不开的细条。 */
 @media (max-width: 620px) {
+  .rst-segs {
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .rst-segs::-webkit-scrollbar {
+    display: none;
+  }
   .seg {
-    padding: 0 4px;
+    min-width: 46px;
+    padding: 0 6px;
     align-items: center;
   }
   .seg .nm {
@@ -352,7 +360,7 @@ function pick(code: string): void {
   }
   .seg .r {
     gap: 0;
-    font-size: 10.5px;
+    font-size: 11px;
   }
   .seg .n {
     font-size: 13px;

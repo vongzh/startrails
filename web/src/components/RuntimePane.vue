@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { NAlert, NButton, NCollapse, NCollapseItem, NInput, NInputNumber, NPopconfirm, NRadioButton, NRadioGroup, NSelect, NSwitch, NTag } from 'naive-ui';
-import { Globe, Info } from 'lucide-vue-next';
+import { Globe } from 'lucide-vue-next';
 import { api } from '../api';
 import type { FallbackFilterView, OverlayMode, RuntimeCapabilityView, RuntimePolicyView } from '../api';
 import ClientIcon from './ClientIcon.vue';
-import { activeProfileName, notify } from '../workspace';
+import { activeProfileName, notify, runtimeDirty } from '../workspace';
 
 /**
  * DNS 与 TUN 是这份配置的产物内容：客户端拿到订阅后按它解析域名、按它决定要不要接管整机流量。
@@ -18,6 +18,7 @@ const runtimeCaps = ref<Record<string, RuntimeCapabilityView>>({});
 const runtimeLoading = ref(false);
 const runtimeSaving = ref(false);
 const loadedFor = ref<string | null>(null);
+const baselineSnapshot = ref('');
 
 type Tri = 'unset' | 'on' | 'off';
 const dnsForm = reactive({
@@ -71,6 +72,29 @@ const splitLines = (text: string): string[] =>
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+
+const currentSnapshot = (): string =>
+  JSON.stringify({ dns: { ...dnsForm }, tun: { ...tunForm } });
+
+const dirty = computed(
+  () => loadedFor.value !== null && currentSnapshot() !== baselineSnapshot.value,
+);
+
+watch(
+  dirty,
+  (value) => {
+    runtimeDirty.value = value;
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(() => {
+  runtimeDirty.value = false;
+});
+
+const invalidPolicyLines = computed(() =>
+  splitLines(dnsForm.nameserverPolicy).filter((line) => !/^\S+\s+\S+/.test(line)),
+);
 
 /** 能力分组：把「谁会写 DNS 段、谁不会」直接说出来，比让用户逐个试要省事。 */
 const capabilitySplit = computed(() => {
@@ -144,6 +168,7 @@ async function loadRuntime(): Promise<void> {
     tunForm.mtu = tun?.mtu ?? null;
     tunForm.strictRoute = tun?.strictRoute === undefined ? 'unset' : tun.strictRoute ? 'on' : 'off';
     loadedFor.value = profile;
+    baselineSnapshot.value = currentSnapshot();
   } catch (error) {
     notify('error', error instanceof Error ? error.message : '读取 DNS / TUN 设置失败');
   } finally {
@@ -151,7 +176,25 @@ async function loadRuntime(): Promise<void> {
   }
 }
 
+function discardRuntime(): void {
+  if (baselineSnapshot.value === '') return;
+  try {
+    const parsed = JSON.parse(baselineSnapshot.value) as {
+      dns: typeof dnsForm;
+      tun: typeof tunForm;
+    };
+    Object.assign(dnsForm, parsed.dns);
+    Object.assign(tunForm, parsed.tun);
+  } catch {
+    void loadRuntime();
+  }
+}
+
 async function saveRuntime(): Promise<void> {
+  if (invalidPolicyLines.value.length > 0) {
+    notify('error', `按域名指定解析器有 ${invalidPolicyLines.value.length} 行格式不正确，需为「域名 空格 地址」`);
+    return;
+  }
   runtimeSaving.value = true;
   try {
     const nameserver = splitLines(dnsForm.nameserver);
@@ -256,7 +299,7 @@ async function saveRuntime(): Promise<void> {
 async function clearRuntime(): Promise<void> {
   runtimeSaving.value = true;
   try {
-    await api.saveRuntime(null);
+    await api.saveRuntime(null, activeProfileName.value, 'inherit');
     notify('ok', '已清空：这份配置的产物不再写 DNS / TUN 段');
     await loadRuntime();
   } catch (error) {
@@ -281,17 +324,13 @@ watch(activeProfileName, (name) => {
 </script>
 
 <template>
-  <div class="scope-note">
-    <Info :size="13" />
-    只作用于「{{ activeProfileName }}」这一份配置：手机要 fake-ip + TUN、路由器要 redir-host，各配各的。
-  </div>
-
   <section class="card">
     <div class="card-head">
       <h2>DNS 与 TUN</h2>
       <n-tag size="small" :bordered="false" class="mono">
         {{ runtimeLoading ? '读取中' : hasRuntime ? '已配置' : '未配置' }}
       </n-tag>
+      <n-tag v-if="dirty" size="small" type="warning" :bordered="false">未保存</n-tag>
     </div>
     <div class="card-body">
       <p class="text-3" style="font-size: 12px; margin: 0 0 12px; max-width: 620px">
@@ -307,162 +346,179 @@ watch(activeProfileName, (name) => {
           <n-radio-button value="merge">组合</n-radio-button>
         </n-radio-group>
         <span class="text-3" style="font-size: 11.5px; margin-top: 6px">
-          继承时不写这份 DNS。替换用下面的整份。组合时没填的字段留空；按域名指定的解析器按「域名 空格 地址」每行一条，同名键以这里为准。
-        </span>
-      </div>
-      <div class="field">
-        <label>DNS 模式</label>
-        <n-radio-group v-model:value="dnsForm.mode" size="small">
-          <n-radio-button value="unset">不写</n-radio-button>
-          <n-radio-button value="system">system</n-radio-button>
-          <n-radio-button value="redir-host">redir-host</n-radio-button>
-          <n-radio-button value="fake-ip">fake-ip</n-radio-button>
-        </n-radio-group>
-        <span class="text-3" style="font-size: 11.5px; margin-top: 6px">
-          缺 DNS 段不影响节点可用，写错反而可能让整机解析不到域名；不支持的客户端会自动跳过这一段并留诊断。
+          继承沿用订阅 DNS；替换用下面的整份覆盖；组合时填了的字段覆盖订阅、没填的留给订阅（按域名解析器也会合并，同名域名以这里为准；建议同时明确选好 DNS 模式，避免未选时回落成 system）。
         </span>
       </div>
 
-      <div class="form-grid cols-2" style="margin-top: 12px">
+      <div :class="{ 'scope-disabled': dnsForm.overlay === 'inherit' }">
+        <p v-if="dnsForm.overlay === 'inherit'" class="text-3" style="font-size: 11.5px; margin: 8px 0 6px; color: var(--warn)">
+          当前为「继承」模式，生成产物时将沿用订阅自带的 DNS，下方 DNS 字段仅保留草稿不会写入产物；切换到「替换」或「组合」后生效。
+        </p>
         <div class="field">
-          <label>nameserver（每行一条）</label>
-          <n-input
-            v-model:value="dnsForm.nameserver"
-            type="textarea"
-            size="small"
-            :autosize="{ minRows: 2, maxRows: 4 }"
-            placeholder="https://dns.alidns.com/dns-query"
-          />
+          <label>DNS 模式</label>
+          <n-radio-group v-model:value="dnsForm.mode" size="small">
+            <n-radio-button value="unset">不写</n-radio-button>
+            <n-radio-button value="system">system</n-radio-button>
+            <n-radio-button value="redir-host">redir-host</n-radio-button>
+            <n-radio-button value="fake-ip">fake-ip</n-radio-button>
+          </n-radio-group>
+          <span class="text-3" style="font-size: 11.5px; margin-top: 6px">
+            缺 DNS 段不影响节点可用，写错反而可能让整机解析不到域名；不支持的客户端会自动跳过这一段并留诊断。
+          </span>
         </div>
-        <div class="field">
-          <label>按域名指定解析器</label>
-          <n-input
-            v-model:value="dnsForm.nameserverPolicy"
-            type="textarea"
-            size="small"
-            :autosize="{ minRows: 2, maxRows: 6 }"
-            placeholder="*.example.com https://dns.example/dns-query"
-          />
-        </div>
-        <div class="field">
-          <label>fallback</label>
-          <n-input
-            v-model:value="dnsForm.fallback"
-            type="textarea"
-            size="small"
-            :autosize="{ minRows: 2, maxRows: 4 }"
-            placeholder="tls://8.8.4.4"
-          />
-        </div>
-        <div class="field">
-          <label>节点域名解析器（proxy-server）</label>
-          <n-input
-            v-model:value="dnsForm.proxyNameserver"
-            type="textarea"
-            size="small"
-            :autosize="{ minRows: 2, maxRows: 3 }"
-            placeholder="解析节点域名用；留空走默认"
-          />
-          <label style="margin-top: 6px; display: flex; align-items: center; gap: 6px">
-            <n-switch v-model:value="dnsForm.proxyNameserverEmpty" size="small" />
-            <span class="text-3">显式留空（写 []，让节点域名走上面的按域名策略）</span>
-          </label>
-        </div>
-        <div class="field">
-          <label>直连域名解析器（direct-nameserver）</label>
-          <n-input
-            v-model:value="dnsForm.directNameserver"
-            type="textarea"
-            size="small"
-            :autosize="{ minRows: 2, maxRows: 3 }"
-            placeholder="https://doh.pub/dns-query"
-          />
-        </div>
-      </div>
 
-      <div class="form-grid cols-3" style="margin-top: 10px">
-        <div class="field">
-          <label>fake-ip 网段</label>
-          <n-input v-model:value="dnsForm.fakeIpRange" size="small" placeholder="198.18.0.1/16" />
+        <div class="form-grid cols-2" style="margin-top: 12px">
+          <div class="field">
+            <label>nameserver（每行一条）</label>
+            <n-input
+              v-model:value="dnsForm.nameserver"
+              type="textarea"
+              size="small"
+              :autosize="{ minRows: 2, maxRows: 4 }"
+              placeholder="https://dns.alidns.com/dns-query"
+            />
+          </div>
+          <div class="field">
+            <label>按域名指定解析器</label>
+            <n-input
+              v-model:value="dnsForm.nameserverPolicy"
+              type="textarea"
+              size="small"
+              :status="invalidPolicyLines.length > 0 ? 'error' : undefined"
+              :autosize="{ minRows: 2, maxRows: 6 }"
+              placeholder="*.example.com https://dns.example/dns-query"
+            />
+            <span v-if="invalidPolicyLines.length > 0" class="text-3" style="font-size: 11.5px; color: var(--danger); margin-top: 4px">
+              以下格式无效（需「域名 空格 解析器地址」）：{{ invalidPolicyLines[0] }}<template v-if="invalidPolicyLines.length > 1">（共 {{ invalidPolicyLines.length }} 行）</template>
+            </span>
+          </div>
+          <div class="field">
+            <label>fallback</label>
+            <n-input
+              v-model:value="dnsForm.fallback"
+              type="textarea"
+              size="small"
+              :autosize="{ minRows: 2, maxRows: 4 }"
+              placeholder="tls://8.8.4.4"
+            />
+          </div>
+          <div class="field">
+            <label>节点域名解析器（proxy-server）</label>
+            <n-input
+              v-model:value="dnsForm.proxyNameserver"
+              type="textarea"
+              size="small"
+              :disabled="dnsForm.proxyNameserverEmpty"
+              :autosize="{ minRows: 2, maxRows: 3 }"
+              :placeholder="dnsForm.proxyNameserverEmpty ? '已设为显式留空 []' : '解析节点域名用；留空走默认'"
+            />
+            <label style="margin-top: 6px; display: flex; align-items: center; gap: 6px">
+              <n-switch v-model:value="dnsForm.proxyNameserverEmpty" size="small" />
+              <span class="text-3">显式留空（写 []，让节点域名走上面的按域名策略）</span>
+            </label>
+          </div>
+          <div class="field">
+            <label>直连域名解析器（direct-nameserver）</label>
+            <n-input
+              v-model:value="dnsForm.directNameserver"
+              type="textarea"
+              size="small"
+              :autosize="{ minRows: 2, maxRows: 3 }"
+              placeholder="https://doh.pub/dns-query"
+            />
+          </div>
         </div>
-        <div class="field">
-          <label>ECS</label>
-          <n-input v-model:value="dnsForm.ecs" size="small" placeholder="1.2.3.0/24" />
-        </div>
-        <div class="field">
-          <label>IPv6</label>
-          <n-select v-model:value="dnsForm.ipv6" size="small" :options="ipv6Options" />
-        </div>
-      </div>
 
-      <n-collapse style="margin-top: 10px">
-        <n-collapse-item title="mihomo 高级 DNS 字段" name="advanced">
-          <p class="text-3" style="font-size: 11.5px; margin: 0 0 12px; max-width: 640px">
-            这一组只有 mihomo / clash-yaml 系客户端能表达；导出到 Surge、sing-box 等目标时会自动剥掉并留一条诊断。
-            拿不准就全部留空。
-          </p>
-          <div class="form-grid cols-2">
-            <div class="field">
-              <label>default-nameserver（每行一条，引导 DNS）</label>
-              <n-input
-                v-model:value="dnsForm.defaultNameserver"
-                type="textarea" size="small" :autosize="{ minRows: 2, maxRows: 3 }"
-                placeholder="223.5.5.5&#10;119.29.29.29"
-              />
-            </div>
-            <div class="field">
-              <label>fake-ip-filter（每行一条）</label>
-              <n-input
-                v-model:value="dnsForm.fakeIpFilter"
-                type="textarea" size="small" :autosize="{ minRows: 4, maxRows: 7 }"
-                placeholder="*.lan&#10;+.msftconnecttest.com"
-              />
-            </div>
+        <div class="form-grid cols-3" style="margin-top: 10px">
+          <div class="field">
+            <label>fake-ip 网段</label>
+            <n-input v-model:value="dnsForm.fakeIpRange" size="small" placeholder="198.18.0.1/16" />
+            <span v-if="dnsForm.fakeIpRange.trim() !== '' && dnsForm.mode !== 'fake-ip'" class="text-3" style="font-size: 11px; margin-top: 3px">
+              仅在 fake-ip 模式下生效
+            </span>
           </div>
-          <div class="form-grid cols-2" style="margin-top: 10px">
-            <div class="field">
-              <label>fallback-filter · ipcidr（每行一条）</label>
-              <n-input
-                v-model:value="dnsForm.fallbackFilterIpCidr"
-                type="textarea" size="small" :autosize="{ minRows: 3, maxRows: 5 }"
-                placeholder="0.0.0.0/8&#10;10.0.0.0/8"
-              />
-            </div>
-            <div class="field">
-              <label>fallback-filter · domain（每行一条）</label>
-              <n-input
-                v-model:value="dnsForm.fallbackFilterDomain"
-                type="textarea" size="small" :autosize="{ minRows: 3, maxRows: 5 }"
-                placeholder="+.google.com&#10;+.youtube.com"
-              />
-            </div>
+          <div class="field">
+            <label>ECS</label>
+            <n-input v-model:value="dnsForm.ecs" size="small" placeholder="1.2.3.0/24" />
           </div>
-          <div class="form-grid cols-2" style="margin-top: 10px">
-            <div class="field">
-              <label>fallback-filter · geoip</label>
-              <n-select v-model:value="dnsForm.fallbackFilterGeoip" size="small" :options="boolOptions" />
-            </div>
-            <div class="field">
-              <label>fallback-filter · geoip-code</label>
-              <n-input v-model:value="dnsForm.fallbackFilterGeoipCode" size="small" placeholder="CN" />
-            </div>
+          <div class="field">
+            <label>IPv6</label>
+            <n-select v-model:value="dnsForm.ipv6" size="small" :options="ipv6Options" />
           </div>
-          <div class="form-grid cols-3" style="margin-top: 10px">
-            <div class="field">
-              <label>use-hosts</label>
-              <n-select v-model:value="dnsForm.useHosts" size="small" :options="boolOptions" />
+        </div>
+
+        <n-collapse style="margin-top: 10px">
+          <n-collapse-item title="mihomo 高级 DNS 字段" name="advanced">
+            <p class="text-3" style="font-size: 11.5px; margin: 0 0 12px; max-width: 640px">
+              这一组只有 mihomo / clash-yaml 系客户端能表达；导出到 Surge、sing-box 等目标时会自动剥掉并留一条诊断。
+              拿不准就全部留空。
+            </p>
+            <div class="form-grid cols-2">
+              <div class="field">
+                <label>default-nameserver（每行一条，引导 DNS）</label>
+                <n-input
+                  v-model:value="dnsForm.defaultNameserver"
+                  type="textarea" size="small" :autosize="{ minRows: 2, maxRows: 3 }"
+                  placeholder="223.5.5.5&#10;119.29.29.29"
+                />
+              </div>
+              <div class="field">
+                <label>fake-ip-filter（每行一条）</label>
+                <n-input
+                  v-model:value="dnsForm.fakeIpFilter"
+                  type="textarea" size="small" :autosize="{ minRows: 4, maxRows: 7 }"
+                  placeholder="*.lan&#10;+.msftconnecttest.com"
+                />
+                <span v-if="dnsForm.fakeIpFilter.trim() !== '' && dnsForm.mode !== 'fake-ip'" class="text-3" style="font-size: 11px; margin-top: 3px">
+                  仅在 fake-ip 模式下生效
+                </span>
+              </div>
             </div>
-            <div class="field">
-              <label>use-system-hosts</label>
-              <n-select v-model:value="dnsForm.useSystemHosts" size="small" :options="boolOptions" />
+            <div class="form-grid cols-2" style="margin-top: 10px">
+              <div class="field">
+                <label>fallback-filter · ipcidr（每行一条）</label>
+                <n-input
+                  v-model:value="dnsForm.fallbackFilterIpCidr"
+                  type="textarea" size="small" :autosize="{ minRows: 3, maxRows: 5 }"
+                  placeholder="0.0.0.0/8&#10;10.0.0.0/8"
+                />
+              </div>
+              <div class="field">
+                <label>fallback-filter · domain（每行一条）</label>
+                <n-input
+                  v-model:value="dnsForm.fallbackFilterDomain"
+                  type="textarea" size="small" :autosize="{ minRows: 3, maxRows: 5 }"
+                  placeholder="+.google.com&#10;+.youtube.com"
+                />
+              </div>
             </div>
-            <div class="field">
-              <label>respect-rules</label>
-              <n-select v-model:value="dnsForm.respectRules" size="small" :options="boolOptions" />
+            <div class="form-grid cols-2" style="margin-top: 10px">
+              <div class="field">
+                <label>fallback-filter · geoip</label>
+                <n-select v-model:value="dnsForm.fallbackFilterGeoip" size="small" :options="boolOptions" />
+              </div>
+              <div class="field">
+                <label>fallback-filter · geoip-code</label>
+                <n-input v-model:value="dnsForm.fallbackFilterGeoipCode" size="small" placeholder="CN" />
+              </div>
             </div>
-          </div>
-        </n-collapse-item>
-      </n-collapse>
+            <div class="form-grid cols-3" style="margin-top: 10px">
+              <div class="field">
+                <label>use-hosts</label>
+                <n-select v-model:value="dnsForm.useHosts" size="small" :options="boolOptions" />
+              </div>
+              <div class="field">
+                <label>use-system-hosts</label>
+                <n-select v-model:value="dnsForm.useSystemHosts" size="small" :options="boolOptions" />
+              </div>
+              <div class="field">
+                <label>respect-rules</label>
+                <n-select v-model:value="dnsForm.respectRules" size="small" :options="boolOptions" />
+              </div>
+            </div>
+          </n-collapse-item>
+        </n-collapse>
+      </div>
 
       <div class="setting-row" style="margin-top: 6px">
         <Globe :size="16" class="text-3" />
@@ -515,17 +571,20 @@ watch(activeProfileName, (name) => {
         </div>
       </n-alert>
 
-      <div class="row" style="margin-top: 12px; gap: 8px">
-        <n-button size="small" type="primary" :loading="runtimeSaving" @click="saveRuntime">
-          保存 DNS 与 TUN
-        </n-button>
-        <n-popconfirm @positive-click="clearRuntime">
-          <template #trigger>
-            <n-button size="small" secondary :disabled="!hasRuntime">清空</n-button>
-          </template>
-          清空后这份配置的产物不再写 DNS / TUN 段，确认？
-        </n-popconfirm>
-      </div>
+    </div>
+    <div class="card-foot">
+      <n-button size="small" type="primary" :loading="runtimeSaving" :disabled="!dirty || runtimeLoading" @click="saveRuntime">
+        {{ dirty ? '保存 DNS 与 TUN' : '已保存' }}
+      </n-button>
+      <n-button v-if="dirty" size="small" quaternary :disabled="runtimeSaving || runtimeLoading" @click="discardRuntime">
+        放弃修改
+      </n-button>
+      <n-popconfirm @positive-click="clearRuntime">
+        <template #trigger>
+          <n-button size="small" secondary :disabled="!hasRuntime || runtimeSaving || runtimeLoading">清空</n-button>
+        </template>
+        清空后这份配置的产物不再写 DNS / TUN 段，确认？
+      </n-popconfirm>
     </div>
   </section>
 </template>

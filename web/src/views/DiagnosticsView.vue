@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onActivated, onMounted, ref, watch } from 'vue';
 import {
   NButton,
   NDrawer,
@@ -13,7 +13,7 @@ import {
   NTooltip,
 } from 'naive-ui';
 import { Check, ChevronRight, Info, Search } from 'lucide-vue-next';
-import { REASON_LABELS, STAGE_LABELS, formatTime, reasonLabel, severityOf } from '../format';
+import { STAGE_LABELS, formatTime, reasonLabel, severityOf } from '../format';
 import ClientIcon from '../components/ClientIcon.vue';
 import {
   allDiagnostics,
@@ -24,6 +24,7 @@ import {
   history,
   loadBuildReport,
   loadTraceIfNeeded,
+  pendingBuildId,
   preview,
   traceSteps,
 } from '../workspace';
@@ -82,8 +83,23 @@ const reportStages = computed(() => {
   }));
 });
 
+function consumePendingBuild(): void {
+  const id = pendingBuildId.value;
+  if (id === null) return;
+  pendingBuildId.value = null;
+  void openReport(id);
+}
+
+watch(pendingBuildId, consumePendingBuild, { immediate: true });
+
 onMounted(() => {
   void loadTraceIfNeeded();
+  consumePendingBuild();
+});
+
+onActivated(() => {
+  void loadTraceIfNeeded();
+  consumePendingBuild();
 });
 </script>
 
@@ -125,9 +141,9 @@ onMounted(() => {
             <span class="dot" :class="severityOf(item.reason)" style="margin-top: 6px"></span>
             <div class="list-main">
               <div class="list-title" style="font-weight: 500" :title="item.reason">{{ reasonLabel(item.reason) }}</div>
-              <div class="list-meta" :title="item.subject">{{ item.subject }}</div>
+              <div class="list-meta wrap" :title="item.subject">{{ item.subject }}</div>
             </div>
-            <div class="row tight" style="flex: none">
+            <div class="row tight" style="flex: none; flex-wrap: wrap; justify-content: flex-end">
               <n-tag size="small" :bordered="false">{{ STAGE_LABELS[item.stage] ?? item.stage }}</n-tag>
               <span v-if="item.target" class="client-pill">
                 <ClientIcon :id="item.target" size="xs" />
@@ -150,7 +166,6 @@ onMounted(() => {
               v-for="entry in history"
               :key="entry.buildId"
               class="list-item tap"
-              style="padding: 10px 18px; text-align: left; width: 100%"
               :class="{ active: selectedId === entry.buildId && detailOpen }"
               @click="openReport(entry.buildId)"
             >
@@ -206,7 +221,7 @@ onMounted(() => {
     </div>
 
     <!-- 构建回执：历史里点某一次，看它当时的完整诊断，而不是只看最新一次。 -->
-    <n-drawer :show="detailOpen" :width="540" placement="right" @update:show="onDrawerChange">
+    <n-drawer :show="detailOpen" :width="540" style="max-width: 100vw" placement="right" @update:show="onDrawerChange">
       <n-drawer-content :title="`构建回执 · ${buildReport ? clientNameOf(buildReport.target) : ''}`" closable>
         <n-spin :show="buildReportLoading">
           <div v-if="buildReport !== null" class="stack" style="gap: 12px">
@@ -231,7 +246,7 @@ onMounted(() => {
                 <span class="dot" :class="severityOf(item.reason)" style="margin-top: 6px"></span>
                 <div class="list-main">
                   <div class="list-title" style="font-weight: 500" :title="item.reason">{{ reasonLabel(item.reason) }}</div>
-                  <div class="list-meta" :title="item.subject">{{ item.subject }}</div>
+                  <div class="list-meta wrap" :title="item.subject">{{ item.subject }}</div>
                 </div>
                 <n-tag size="small" :bordered="false">{{ STAGE_LABELS[item.stage] ?? item.stage }}</n-tag>
               </div>

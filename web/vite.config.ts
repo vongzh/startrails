@@ -5,6 +5,11 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [vue()],
+  resolve: {
+    alias: {
+      '@core': fileURLToPath(new URL('../src/core', import.meta.url)),
+    },
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

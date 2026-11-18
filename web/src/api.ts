@@ -7,12 +7,12 @@ export interface AnnotationView {
   region?: string;
 }
 
-/** 按节点名批量清洗：正则/glob/字面量匹配，按顺序剔除或改名。 */
+/** 按节点名批量清洗：正则/glob/字面量匹配，按顺序移除、保留或改名。 */
 export interface NodeTransformView {
   id: string;
   order: number;
   pattern: string;
-  action: 'exclude' | 'rename';
+  action: 'exclude' | 'keep' | 'rename';
   /** rename 用；`{name}` 占位符代表原节点名。 */
   replacement?: string;
 }

@@ -111,6 +111,17 @@ export function applyNodeTransforms(transforms: readonly NodeTransform[]): Proce
         nodes = kept;
         continue;
       }
+      if (transform.action === 'keep') {
+        const kept = nodes.filter((node) => matcher.test(node.name));
+        const removed = nodes.length - kept.length;
+        if (removed > 0) {
+          diagnostics.push(
+            makeDiagnostic('process', null, transform.id, `kept-by-transform:${removed}`),
+          );
+        }
+        nodes = kept;
+        continue;
+      }
       const template = transform.replacement ?? '{name}';
       nodes = nodes.map((node) => {
         if (!matcher.test(node.name)) return node;

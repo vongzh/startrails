@@ -249,7 +249,7 @@ const nodeTransformSchema = z
     id: z.string().min(1),
     order: z.number().int().nonnegative(),
     pattern: z.string().min(1),
-    action: z.enum(['exclude', 'rename']),
+    action: z.enum(['exclude', 'keep', 'rename']),
     replacement: z.string().min(1).optional(),
   })
   .strict();

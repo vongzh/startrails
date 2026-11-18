@@ -378,6 +378,7 @@ a:hover { text-decoration: underline; }
 .topbar-title h1 { margin: 0; font-size: 15px; font-weight: 640; letter-spacing: -0.015em; }
 .topbar-title .sub { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.topbar-profile { width: 108px; max-width: 118px; flex: none; margin-right: 4px; }
 /* 提示条顶部居中（App.vue placement="top"）。naive 默认 top:12px 会压住本页 50px 的顶栏，
    下移到顶栏下方；weight 靠 body 前缀压过运行时注入的同名规则。 */
 body .n-message-container.n-message-container--top { top: 62px; }
@@ -409,11 +410,11 @@ body .n-message-container.n-message-container--top { top: 62px; }
 .spacer { flex: 1; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
-.card-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--divider); }
+.card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; padding: 13px 16px; border-bottom: 1px solid var(--divider); }
 .card-head h2 { margin: 0; font-size: 13px; font-weight: 620; letter-spacing: -0.01em; white-space: nowrap; }
 .card-head .count { font: 500 11px/1 var(--mono); color: var(--text-3); font-variant-numeric: tabular-nums; }
-/* 卡头的按钮簇：整簇换行、整簇右对齐，避免窄屏下被逐个挤散或裁掉。 */
-.head-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+/* 卡头的按钮簇：整簇换行、整簇右对齐，避免窄屏或双栏卡片里被逐个挤散或裁掉。 */
+.head-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-left: auto; max-width: 100%; }
 .card-body { padding: 14px 16px; }
 .card-foot { padding: 10px 16px; border-top: 1px solid var(--divider); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .region-map-card { padding: 12px 16px; border-bottom: 1px solid var(--divider); }
@@ -490,8 +491,11 @@ body .n-message-container.n-message-container--top { top: 62px; }
 .severity-icon.accent { background: var(--accent-soft); color: var(--accent); }
 .severity-icon.muted { background: var(--surface-3); color: var(--text-3); }
 
-/* 概览流水线：整格可点，不要按钮默认外观 */
-.pipeline-step { border-right: 1px solid var(--divider); font: inherit; color: inherit; }
+/* 概览流水线：整格可点，不要按钮默认外观；左右下边线由 .stat 与响应式断点控制。 */
+.pipeline-step {
+  text-align: left; border-top: 0; border-left: 0; border-bottom: 0;
+  background: transparent; cursor: pointer; font: inherit; color: inherit;
+}
 .pipeline-step:hover { background: var(--surface-2); }
 .pipeline-step:last-child { border-right: 0; }
 .pipeline-step:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -587,7 +591,10 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 .list-item { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--divider); }
 .list-item:last-child { border-bottom: 0; }
 .list-item:hover { background: var(--surface-2); }
-.list-item.tap { width: 100%; border: 0; border-bottom: 1px solid var(--divider); background: transparent; text-align: left; font-size: 13px; cursor: pointer; }
+.list-item.tap,
+.list-item.list-btn { width: 100%; border: 0; border-bottom: 1px solid var(--divider); background: transparent; text-align: left; font-size: 13px; cursor: pointer; font-family: inherit; color: inherit; }
+.list-item.list-btn { padding: 9px 16px; }
+.list-item.list-btn:hover { background: var(--surface-2); }
 .list-item:hover .row-actions { opacity: 1; }
 .row-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.14s; }
 .row-actions:focus-within { opacity: 1; }
@@ -599,6 +606,7 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 .list-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
 .list-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 540; }
 .list-meta { font: 400 11px/1.45 var(--mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-meta.wrap { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 
 .tag-input { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
@@ -626,7 +634,23 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
   display: flex; flex-direction: column; gap: 7px;
   padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
 }
-.member-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.member-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.member-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.member-field-label { font-size: 11px; color: var(--text-3); font-weight: 500; }
+
+.mode-strip {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+  padding: 9px 16px; border-bottom: 1px solid var(--divider); background: var(--surface-2);
+}
+.mode-strip .mode-note { margin: 0; padding: 0; font-size: 11.5px; color: var(--text-3); line-height: 1.5; }
+.scope-disabled { opacity: 0.62; transition: opacity 0.15s ease; }
+
+.bar-link {
+  border: 0; padding: 0; background: transparent; font: inherit; color: inherit;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.bar-link.warn { color: var(--warn); }
+.bar-link:hover { opacity: 0.82; }
 
 /* ---------- 代码 ---------- */
 
@@ -686,6 +710,13 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 }
 .client-pill.pill-link:hover { color: var(--accent); }
 .client-pill.pill-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.client-pill.pill-btn {
+  padding: 3px 8px; border: 1px solid var(--border); background: var(--surface-2);
+  font: inherit; color: var(--text); cursor: pointer; border-radius: 6px;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.client-pill.pill-btn:hover { border-color: var(--accent-ring); color: var(--accent); background: var(--accent-soft); }
+.client-pill.pill-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .select-target { display: inline-flex; align-items: center; gap: 7px; }
 /* 能力覆盖清单：19 个目标用紧凑徽章换行铺开，比 id 文本串更容易扫读。 */
 .cap-split { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; line-height: 1.9; }
@@ -733,7 +764,12 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 /* 首屏引导：只在空库 / 零节点出现，用分隔线排三步，不用图标堆砌。 */
 .start-lede { margin: 0 0 14px; font-size: 12.5px; color: var(--text-2); line-height: 1.65; max-width: 62ch; }
 .start-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.start-step { display: flex; gap: 10px; padding: 12px 13px; border-right: 1px solid var(--divider); min-width: 0; }
+.start-step {
+  display: flex; gap: 10px; padding: 12px 13px; border: 0; border-right: 1px solid var(--divider);
+  background: transparent; text-align: left; font: inherit; color: inherit; min-width: 0; cursor: pointer;
+  transition: background 0.12s;
+}
+.start-step:hover { background: var(--surface-2); }
 .start-step:last-child { border-right: 0; }
 .start-step b { display: block; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .start-step p { margin: 3px 0 0; font-size: 11.5px; color: var(--text-3); line-height: 1.6; }
@@ -986,6 +1022,7 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 
 .tabbar { display: none; }
 .status-mobile { display: none; align-items: center; gap: 10px; margin-top: 3px; }
+.status-error-mobile { display: none; font-size: 11px; line-height: 1.45; margin-top: 3px; overflow-wrap: anywhere; }
 .qr-mobile-hint { display: none; }
 
 /* ---------- 响应式 ---------- */
@@ -1003,8 +1040,8 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
 }
 
 @media (max-width: 860px) {
-  /* 底栏实测 59px（含 1px 上边框），预留值取 60 才不会被最后一行内容压住。 */
-  .app { grid-template-columns: minmax(0, 1fr); padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+  /* 底栏实测 59px（含 1px 上边框），预留值取 64px 避免与页面末尾贴边冲突。 */
+  .app { grid-template-columns: minmax(0, 1fr); padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
   .sidebar { display: none; }
   .topbar { padding: 10px 12px; }
   .topbar-title h1 { font-size: 15px; }
@@ -1042,14 +1079,27 @@ tr.detail > td { background: var(--surface-2); padding: 4px 16px 12px; }
     --n-height: 40px !important;
     --n-width: 40px !important;
   }
+  .compact-actions .n-button:not(:has(.n-button__content)),
+  .n-modal .n-button:not(:has(.n-button__content)),
+  .fetch-header-row .n-button:not(:has(.n-button__content)),
+  .group-head .n-button:not(:has(.n-button__content)) {
+    --n-height: 32px !important;
+    --n-width: 32px !important;
+  }
+  .n-button.inline-icon-btn:not(:has(.n-button__content)) {
+    --n-height: 26px !important;
+    --n-width: 26px !important;
+  }
   .topbar-actions .n-button:not(:has(.n-button__content)) {
-    --n-height: 28px !important;
-    --n-width: 28px !important;
+    --n-height: 34px !important;
+    --n-width: 34px !important;
   }
   .col-optional, .col-wide-only { display: none; }
   .addr-mobile { display: block; font-size: 10px; color: var(--text-3); margin-top: 1px; }
   .addr-desktop { display: none; }
   .status-mobile { display: flex; }
+  .status-error-mobile { display: block; }
+  .code-bar { flex-wrap: wrap; row-gap: 6px; }
   .tbl-wrap td .row { flex-wrap: nowrap; }
   .nowrap-time { white-space: nowrap; }
   .member-grid { grid-template-columns: minmax(0, 1fr); }
@@ -1221,6 +1271,11 @@ section[id] { scroll-margin-top: 78px; }
   flex-wrap: wrap; row-gap: 8px; padding-top: 10px; padding-bottom: 10px;
   background: var(--surface-2);
 }
+.card-head.filters-wrap {
+  flex-direction: column; align-items: stretch; gap: 8px;
+  padding-top: 11px; padding-bottom: 11px;
+  background: var(--surface-2);
+}
 .card-head.filters h2 { margin-right: 2px; }
 .card-head.filters .n-input, .card-head.filters .n-select { min-width: 0; }
 
@@ -1372,8 +1427,18 @@ table.tbl td.actions .n-button:focus-visible { opacity: 1; }
   table.tbl thead th { position: static; }
 }
 
+@media (max-width: 620px) {
+  .n-radio-group {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .n-radio-group::-webkit-scrollbar { display: none; }
+}
+
 @media (max-width: 480px) {
   .topbar-crumb span:first-child, .topbar-crumb svg:first-of-type { display: none; }
+  .topbar-profile { width: 92px; max-width: 96px; }
   .page-intro h1 { font-size: 20px; }
 }
 
@@ -1386,8 +1451,8 @@ table.tbl td.actions .n-button:focus-visible { opacity: 1; }
 
 /* 高频触点逐个声明 touch-action：body 已有同值兜底，但 iOS 对祖先链合成
    的支持有历史坑，交互元素还是自己写一遍靠得住。只关双击缩放，捏合保留。 */
-button, a, [role='button'], .tabbar-item, .nav-item, .list-item.tap,
-.target-item, .client-pill.pill-link, .settings-nav .sn-item { touch-action: manipulation; }
+button, a, [role='button'], .tabbar-item, .nav-item, .list-item.tap, .list-item.list-btn,
+.target-item, .client-pill.pill-link, .client-pill.pill-btn, .settings-nav .sn-item { touch-action: manipulation; }
 
 /* 容器内滚动沿用系统惯性；代码块与客户端选择器还额外关掉滚动接力，
    否则滑到边界会顺手把页面也带跑。 */
@@ -1403,20 +1468,23 @@ button, a, [role='button'], .tabbar-item, .nav-item, .list-item.tap,
   .tabbar-item.active:active { background: color-mix(in srgb, var(--accent) 17%, transparent); }
   .nav-item:active,
   .list-item.tap:active,
+  .list-item.list-btn:active,
+  .start-step:active,
   .target-item:active,
   .settings-nav .sn-item:active { background: var(--surface-3); }
-  .client-pill.pill-link:active { color: var(--accent); }
+  .client-pill.pill-link:active,
+  .client-pill.pill-btn:active { color: var(--accent); }
 
   /* 长按在手机上默认等于「选中文字」：落在整行可点的列表上，会弹选择菜单把滑动打断。
      正文、表格、代码仍然可选。 */
   .tabbar, .topbar, .side-foot, .settings-nav,
-  .list-item.tap, .target-item, .client-pill { -webkit-user-select: none; user-select: none; }
+  .list-item.tap, .list-item.list-btn, .target-item, .client-pill { -webkit-user-select: none; user-select: none; }
 
   /* 浏览器在触屏上仍会执行 :hover，并把状态钉在「最后一次点过的地方」：
      点完一行，灰底一直停在那行直到点别处，读起来像页面卡住。
      悬停底色是给鼠标准备的，触屏一律撤掉——按压反馈交给上面的 :active。 */
   table.tbl tbody tr:hover { background: transparent; }
-  .list-item:hover, .pipeline-step:hover,
+  .list-item:hover, .list-item.list-btn:hover, .start-step:hover, .pipeline-step:hover,
   .target-item:hover, .settings-nav .sn-item:hover,
   .nav-item:hover, .side-profile:hover { background: transparent; }
   /* 平板 / 触屏本（>860）侧栏可见，这两条不能漏，否则点过导航就钉一排灰底。 */
@@ -1427,6 +1495,7 @@ button, a, [role='button'], .tabbar-item, .nav-item, .list-item.tap,
   .target-item:hover { color: var(--text-2); }
   .target-item:hover .client-icon { transform: none; }
   .client-pill.pill-link:hover { color: inherit; }
+  .client-pill.pill-btn:hover { color: var(--text); border-color: var(--border); background: var(--surface-2); }
   .drop-zone:hover { border-color: var(--border-strong); color: var(--text-2); background: var(--surface-2); }
   .palette-item:hover { border-color: var(--border); }
 }

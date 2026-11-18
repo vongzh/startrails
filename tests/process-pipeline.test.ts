@@ -235,6 +235,27 @@ test('set-property / flag 声明式算子：改属性进 options，标记 toggle
   assert.equal(unflagged.nodes[0]?.name, 'HK-01', 'flag 应可 toggle 移除');
 });
 
+test('节点批量清洗：keep 只保留命中的，其余移除', () => {
+  const nodes = nodesOf(
+    twin('香港 01'),
+    twin('剩余流量：12GB'),
+    other('香港 02', 9003),
+    other('日本 01', 9004),
+  );
+  const profile = { ...ingest('').profile, nodes };
+  const ctx = { configVersion: 't' };
+
+  // 只保留香港节点：命中的 2 个留下，其余 2 个移除。
+  const kept = applyNodeTransforms([
+    { id: 'hk-only', order: 0, pattern: '/香港/', action: 'keep' },
+  ])(profile, ctx);
+  assert.deepEqual(names(kept.profile.nodes), ['香港 01', '香港 02']);
+  assert.ok(
+    kept.diagnostics.some((item) => item.reason === 'kept-by-transform:2'),
+    `应报出保留后移除 2 个，实际：${JSON.stringify(kept.diagnostics.map((d) => d.reason))}`,
+  );
+});
+
 test('节点批量清洗：exclude 剔除、rename 用 {name} 加前缀、按顺序执行', () => {
   const nodes = nodesOf(
     twin('香港 01'),

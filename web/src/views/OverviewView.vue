@@ -12,6 +12,7 @@ import {
   evidence,
   history,
   nodes,
+  openBuildDiagnostic,
   preview,
   profileEntries,
   groups,
@@ -22,6 +23,7 @@ import {
   sources,
   state,
   tab,
+  target,
 } from '../workspace';
 import type { Tab } from '../workspace';
 
@@ -138,6 +140,15 @@ function openStep(step: { goto: Tab; section?: 'composition' | 'nodes' | 'rules'
   tab.value = step.goto;
 }
 
+function openOutputTarget(targetId: string): void {
+  if (targetId === 'auto') {
+    tab.value = 'publish';
+    return;
+  }
+  target.value = targetId;
+  tab.value = 'output';
+}
+
 const pipeline = computed(() => [
   {
     key: 'sources' as const,
@@ -205,34 +216,43 @@ const pipeline = computed(() => [
           {{
             sources.length === 0
               ? '先接入一个订阅（远端链接或上传文件），或者直接填几条自己的节点。'
-              : '订阅已经接入，但发布页的配置构成里没有解析出节点 —— 把它加入构成并保存即可。'
+              : '订阅已经接入，但配置构成里没有解析出节点 —— 把它加入构成并保存即可。'
           }}
         </p>
         <div class="start-steps">
-          <div class="start-step" :class="{ done: sources.length > 0 }">
+          <button type="button" class="start-step" :class="{ done: sources.length > 0 }" @click="tab = 'sources'">
             <span class="start-num">1</span>
             <div>
               <b>接入订阅或节点</b>
               <p>订阅链接、上传文件会自动识别 Clash、sing-box、Surge、base64；自己常用的几条也可以直接填。</p>
             </div>
-          </div>
-          <div class="start-step" :class="{ done: profileEntries.length > 0 }">
+          </button>
+          <button
+            type="button"
+            class="start-step"
+            :class="{ done: profileEntries.length > 0 }"
+            @click="openStep({ goto: 'config', section: 'composition' })"
+          >
             <span class="start-num">2</span>
             <div>
               <b>加入构成</b>
-              <p>在发布页划清这份配置包含哪些订阅与节点，顺序即合并顺序；可先按源过滤、加前缀、去重。</p>
+              <p>在「配置 › 构成」划清这份配置包含哪些订阅与节点，顺序即合并顺序；可先按源过滤、加前缀、去重。</p>
             </div>
-          </div>
-          <div class="start-step" :class="{ done: activeTokens.length > 0 }">
+          </button>
+          <button type="button" class="start-step" :class="{ done: activeTokens.length > 0 }" @click="tab = 'publish'">
             <span class="start-num">3</span>
             <div>
               <b>签发地址</b>
               <p>按客户端生成订阅地址，导入即用；之后改配置，客户端下次拉取就生效。</p>
             </div>
-          </div>
+          </button>
         </div>
         <div class="row" style="margin-top: 14px">
-          <n-button size="small" type="primary" @click="tab = sources.length === 0 ? 'sources' : 'publish'">
+          <n-button
+            size="small"
+            type="primary"
+            @click="sources.length === 0 ? (tab = 'sources') : openStep({ goto: 'config', section: 'composition' })"
+          >
             {{ sources.length === 0 ? '添加订阅' : '去配置构成' }}
             <template #icon><ArrowRight :size="14" /></template>
           </n-button>
@@ -247,8 +267,8 @@ const pipeline = computed(() => [
       <button
         v-for="step in pipeline"
         :key="step.key"
+        type="button"
         class="stat pipeline-step"
-        style="text-align: left; border: 0; border-right: 1px solid var(--divider); background: transparent; cursor: pointer"
         @click="openStep(step)"
       >
         <div class="stat-label">
@@ -284,7 +304,7 @@ const pipeline = computed(() => [
             <span class="severity-icon" :class="severityOf(item.reason)"><AlertTriangle :size="13" /></span>
             <div class="list-main">
               <div class="list-title">{{ item.subject }}</div>
-              <div class="list-meta" :title="item.reason">{{ reasonLabel(item.reason) }}</div>
+              <div class="list-meta wrap" :title="item.reason">{{ reasonLabel(item.reason) }}</div>
             </div>
             <n-tag size="small" :bordered="false">{{ STAGE_LABELS[item.stage] ?? item.stage }}</n-tag>
           </div>
@@ -303,7 +323,13 @@ const pipeline = computed(() => [
           </div>
           <n-empty v-if="history.length === 0" description="还没有客户端拉取过配置" style="padding: 24px 0" />
           <div v-else class="list">
-            <div v-for="entry in history.slice(0, 4)" :key="entry.buildId" class="list-item" style="padding: 9px 16px">
+            <button
+              v-for="entry in history.slice(0, 4)"
+              :key="entry.buildId"
+              type="button"
+              class="list-item list-btn"
+              @click="openBuildDiagnostic(entry.buildId)"
+            >
               <span class="client-pill">
                 <ClientIcon :id="entry.target" size="xs" />
                 <span>{{ clientNameOf(entry.target) }}</span>
@@ -316,7 +342,7 @@ const pipeline = computed(() => [
               <span class="text-3 nowrap-time" style="font-size: 10.5px; min-width: 52px; text-align: right">
                 {{ timeAgo(entry.createdAt) }}
               </span>
-            </div>
+            </button>
           </div>
         </section>
 
@@ -337,11 +363,18 @@ const pipeline = computed(() => [
               </template>
             </n-empty>
             <div v-else class="row" style="gap: 8px; flex-wrap: wrap; padding: 14px 0">
-              <span v-for="group in tokenGroups.slice(0, 6)" :key="group.target" class="client-pill">
+              <button
+                v-for="group in tokenGroups.slice(0, 6)"
+                :key="group.target"
+                type="button"
+                class="client-pill pill-btn"
+                :title="group.target === 'auto' ? '去发布页查看自适配地址' : `去产物页预览 ${clientNameOf(group.target)}`"
+                @click="openOutputTarget(group.target)"
+              >
                 <ClientIcon :id="group.target" size="xs" />
                 <span>{{ clientNameOf(group.target) }}</span>
                 <span v-if="group.count > 1" class="text-3 mono" style="font-size: 11px">×{{ group.count }}</span>
-              </span>
+              </button>
               <span v-if="tokenGroups.length > 6" class="text-3" style="font-size: 11.5px">
                 +{{ tokenGroups.length - 6 }}
               </span>

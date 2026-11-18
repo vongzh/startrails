@@ -50,6 +50,11 @@ async function submitLogin(): Promise<void> {
     tokenInput.value?.focus();
     return;
   }
+  if (setupRequired.value && value.length < 8) {
+    loginError.value = '管理令牌至少 8 位';
+    tokenInput.value?.focus();
+    return;
+  }
   if (!setupRequired.value && secretRequired.value && value.length === 0) {
     loginError.value = '请输入管理令牌';
     tokenInput.value?.focus();
@@ -178,7 +183,6 @@ onMounted(() => tokenInput.value?.focus());
             <label for="admin-token">{{ setupRequired ? '设置管理令牌' : '管理令牌' }}</label>
           </div>
           <n-input
-            id="admin-token"
             ref="tokenInput"
             v-model:value="tokenDraft"
             class="lp-input mono"
@@ -186,7 +190,7 @@ onMounted(() => tokenInput.value?.focus());
             show-password-on="click"
             :placeholder="setupRequired ? '输入要设置的令牌（至少 8 位）' : '粘贴令牌'"
             size="large"
-            :input-props="{ autocomplete: 'off', spellcheck: false, 'aria-label': '管理令牌' }"
+            :input-props="{ id: 'admin-token', autocomplete: 'off', spellcheck: false, 'aria-label': '管理令牌' }"
           >
             <template #prefix><KeyRound :size="15" :stroke-width="1.8" /></template>
           </n-input>
@@ -196,7 +200,6 @@ onMounted(() => tokenInput.value?.focus());
               <label for="encryption-secret">数据加密密钥</label>
             </div>
             <n-input
-              id="encryption-secret"
               ref="secretInput"
               v-model:value="secretDraft"
               class="lp-input mono"
@@ -204,7 +207,7 @@ onMounted(() => tokenInput.value?.focus());
               show-password-on="click"
               placeholder="至少 16 位；丢失后旧数据无法解密"
               size="large"
-              :input-props="{ autocomplete: 'off', spellcheck: false, 'aria-label': '数据加密密钥' }"
+              :input-props="{ id: 'encryption-secret', autocomplete: 'off', spellcheck: false, 'aria-label': '数据加密密钥' }"
             >
               <template #prefix><KeyRound :size="15" :stroke-width="1.8" /></template>
             </n-input>

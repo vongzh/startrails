@@ -1,21 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue';
+import type { InputInst } from 'naive-ui';
 import { NButton, NEmpty, NInput, NRadioButton, NRadioGroup, NSelect, NSwitch, NTag, NTooltip } from 'naive-ui';
 import { Activity, ArrowDown, ArrowUp, ChevronDown, Copy, LayoutGrid, Pencil, Search, Server } from 'lucide-vue-next';
+import { regionOf as inferRegion } from '@core/collections/index.ts';
 import type { NodeView } from '../api';
 import RegionMap from '../components/RegionMap.vue';
 import {
   annotationMap,
-  busy,
+  configSection,
   copyText,
   excludedCount,
   latencies,
   moveNode,
+  nodeBusy,
   nodes,
   probeLatency,
   probing,
   saveAlias,
   saveRegion,
+  sources,
   tab,
   toggleExcluded,
 } from '../workspace';
@@ -26,8 +30,13 @@ const scope = ref<'all' | 'active' | 'excluded'>('all');
 const expanded = ref<string[]>([]);
 const editing = ref('');
 const aliasDraft = ref('');
+const aliasInputRef = ref<InputInst | null>(null);
 const showRegionMap = ref(false);
 const regionFilter = ref('');
+
+function setAliasInputRef(el: unknown): void {
+  aliasInputRef.value = (el as InputInst | null) ?? null;
+}
 
 /** 与后端 REGION_CODES 对齐的地区码及显示名；手动覆盖时供下拉选择。 */
 const REGION_OPTIONS = [
@@ -87,24 +96,10 @@ function regionOf(node: NodeView): string {
 
 const regionLabel = (code: string): string => REGION_OPTIONS.find((item) => item.value === code)?.label ?? code;
 
-/** 名字关键词推断地区（与后端 regionOf 同口径）；覆盖值优先。 */
-const NAME_REGION: readonly { code: string; re: RegExp }[] = [
-  { code: 'HK', re: /香港|港|HK|HKG|HongKong/i },
-  { code: 'TW', re: /中国台湾|台湾|台灣|TW|TWN|Taiwan/i },
-  { code: 'JP', re: /日本|东京|大阪|JP|JPN|Japan/i },
-  { code: 'SG', re: /新加坡|狮城|SG|SGP|Singapore/i },
-  { code: 'US', re: /\bUS\b|\bUSA\b|UnitedStates|美国|洛杉矶|圣何塞|西雅图|America/i },
-  { code: 'UK', re: /英国|伦敦|\bUK\b|\bGB\b|GBR|London/i },
-  { code: 'DE', re: /德国|法兰克福|\bDE\b|DEU|Germany/i },
-  { code: 'KR', re: /韩国|首尔|\bKR\b|KOR|Korea/i },
-  { code: 'CN', re: /中国|回国|上海|北京|广州|深圳|\bCN\b|CHN|China/i },
-];
-
 function effectiveRegion(node: NodeView): string {
   const override = regionOf(node);
   if (override !== '') return override;
-  for (const item of NAME_REGION) if (item.re.test(node.name)) return item.code;
-  return 'OTHER';
+  return inferRegion(node.name) ?? 'OTHER';
 }
 
 function latencyMs(node: NodeView): number | null {
@@ -156,9 +151,8 @@ async function startEdit(node: NodeView): Promise<void> {
   editing.value = node.nodeKey;
   aliasDraft.value = aliasOf(node);
   await nextTick();
-  const input = document.querySelector<HTMLInputElement>('[data-alias-input] input');
-  input?.focus();
-  input?.select();
+  aliasInputRef.value?.focus();
+  aliasInputRef.value?.select();
 }
 
 async function commitAlias(node: NodeView): Promise<void> {
@@ -173,38 +167,43 @@ async function commitAlias(node: NodeView): Promise<void> {
 <template>
   <div class="page">
     <section class="card">
-      <div class="card-head filters">
-        <h2>节点清单</h2>
-        <span class="count">{{ filtered.length }}</span>
-        <n-input v-model:value="search" size="small" placeholder="搜索名称、别名或地址" clearable style="flex: 1; min-width: 150px; max-width: 320px">
-          <template #prefix><Search :size="14" /></template>
-        </n-input>
-        <n-select v-model:value="kind" :options="kindOptions" size="small" style="width: 160px" />
-        <span v-if="hiddenCount > 0" class="badge outline">已过滤 {{ hiddenCount }}</span>
-        <div class="spacer"></div>
-        <n-tooltip trigger="hover">
-          <template #trigger>
-            <n-button size="small" quaternary :type="showRegionMap ? 'primary' : 'default'" @click="showRegionMap = !showRegionMap">
-              <template #icon><LayoutGrid :size="14" /></template>
-              地区分布
-            </n-button>
-          </template>
-          按地区聚合节点，分段宽度即节点占比
-        </n-tooltip>
-        <n-tooltip trigger="hover">
-          <template #trigger>
-            <n-button size="small" quaternary :loading="probing" @click="probeLatency()">
-              <template #icon><Activity :size="14" /></template>
-              测延迟
-            </n-button>
-          </template>
-          TCP 握手往返（主控机 → 节点服务器），不是代理链路测速
-        </n-tooltip>
-        <n-radio-group v-model:value="scope" size="small">
-          <n-radio-button value="all">全部 {{ nodes.length }}</n-radio-button>
-          <n-radio-button value="active">参与构建</n-radio-button>
-          <n-radio-button value="excluded">已排除 {{ excludedCount }}</n-radio-button>
-        </n-radio-group>
+      <div class="card-head filters-wrap">
+        <div class="row filters-top" style="width: 100%">
+          <h2>节点清单</h2>
+          <span class="count">{{ filtered.length }}</span>
+          <span v-if="hiddenCount > 0" class="badge outline">已过滤 {{ hiddenCount }}</span>
+          <div class="spacer"></div>
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button size="small" quaternary :type="showRegionMap ? 'primary' : 'default'" @click="showRegionMap = !showRegionMap">
+                <template #icon><LayoutGrid :size="14" /></template>
+                地区分布
+              </n-button>
+            </template>
+            按地区聚合节点，分段宽度即节点占比
+          </n-tooltip>
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button size="small" quaternary :loading="probing" @click="probeLatency()">
+                <template #icon><Activity :size="14" /></template>
+                测延迟
+              </n-button>
+            </template>
+            TCP 握手往返（主控机 → 节点服务器），不是代理链路测速
+          </n-tooltip>
+        </div>
+        <div class="row filters-sub" style="width: 100%">
+          <n-input v-model:value="search" size="small" placeholder="搜索名称、别名或地址" clearable style="flex: 1; min-width: 150px; max-width: 300px">
+            <template #prefix><Search :size="14" /></template>
+          </n-input>
+          <n-select v-model:value="kind" :options="kindOptions" size="small" style="width: 148px" />
+          <div class="spacer hide-narrow"></div>
+          <n-radio-group v-model:value="scope" size="small">
+            <n-radio-button value="all">全部 {{ nodes.length }}</n-radio-button>
+            <n-radio-button value="active">参与构建</n-radio-button>
+            <n-radio-button value="excluded">已排除 {{ excludedCount }}</n-radio-button>
+          </n-radio-group>
+        </div>
       </div>
 
       <div v-if="showRegionMap && nodes.length > 0" class="region-map-card">
@@ -218,10 +217,20 @@ async function commitAlias(node: NodeView): Promise<void> {
         />
       </div>
 
-      <n-empty v-if="nodes.length === 0" description="还没有节点：先添加订阅或自己的节点，并把它加入配置构成" style="padding: 40px 0">
+      <n-empty
+        v-if="nodes.length === 0"
+        :description="sources.length === 0 ? '还没有节点：先添加订阅或自己的节点' : '订阅已接入，但当前配置构成里还没有节点'"
+        style="padding: 40px 0"
+      >
         <template #icon><Server :size="30" /></template>
         <template #extra>
-          <n-button size="small" type="primary" @click="tab = 'sources'">去订阅页配置</n-button>
+          <n-button
+            size="small"
+            type="primary"
+            @click="sources.length === 0 ? (tab = 'sources') : (configSection = 'composition')"
+          >
+            {{ sources.length === 0 ? '去订阅页添加' : '去构成里加入订阅' }}
+          </n-button>
         </template>
       </n-empty>
 
@@ -236,15 +245,15 @@ async function commitAlias(node: NodeView): Promise<void> {
         <table class="tbl">
           <thead>
             <tr>
-              <th style="width: 42px">#</th>
+              <th style="width: 34px">#</th>
               <th>名称</th>
-              <th style="width: 98px">协议</th>
+              <th class="col-optional" style="width: 98px">协议</th>
               <th class="col-wide-only">地址</th>
               <th class="col-optional" style="width: 76px">延迟</th>
               <th class="col-optional">传输特性</th>
-              <th style="width: 70px">排除</th>
+              <th style="width: 58px">排除</th>
               <th class="col-optional" style="width: 76px">排序</th>
-              <th style="width: 40px"></th>
+              <th style="width: 34px"></th>
             </tr>
           </thead>
           <tbody>
@@ -254,11 +263,11 @@ async function commitAlias(node: NodeView): Promise<void> {
                 <td>
                   <div v-if="editing === node.nodeKey" class="row tight">
                     <n-input
+                      :ref="setAliasInputRef"
                       v-model:value="aliasDraft"
                       size="small"
                       placeholder="留空恢复原名"
                       style="width: 160px"
-                      data-alias-input
                       @keyup.enter="commitAlias(node)"
                       @keyup.esc="editing = ''"
                       @blur="commitAlias(node)"
@@ -268,7 +277,7 @@ async function commitAlias(node: NodeView): Promise<void> {
                     <span :class="annotationMap.get(node.nodeKey)?.excluded ? 'text-3' : 'strong'">{{ aliasOf(node) || node.name }}</span>
                     <n-tooltip trigger="hover">
                       <template #trigger>
-                        <n-button aria-label="编辑节点" quaternary circle size="tiny" @click="startEdit(node)">
+                        <n-button aria-label="编辑节点" class="inline-icon-btn" quaternary circle size="tiny" @click="startEdit(node)">
                           <template #icon><Pencil :size="12" /></template>
                         </n-button>
                       </template>
@@ -276,9 +285,12 @@ async function commitAlias(node: NodeView): Promise<void> {
                     </n-tooltip>
                   </div>
                   <div v-if="aliasOf(node)" class="text-3" style="font-size: 11.5px">{{ node.name }}</div>
-                  <div class="addr-mobile mono">{{ node.address }}</div>
+                  <div class="status-mobile" style="gap: 6px; flex-wrap: wrap">
+                    <n-tag size="small" :bordered="false" class="mono">{{ node.kind }}</n-tag>
+                    <span class="mono text-3" style="font-size: 10.5px; overflow-wrap: anywhere; word-break: break-all">{{ node.address }}</span>
+                  </div>
                 </td>
-                <td><n-tag size="small" :bordered="false" class="mono">{{ node.kind }}</n-tag></td>
+                <td class="col-optional"><n-tag size="small" :bordered="false" class="mono">{{ node.kind }}</n-tag></td>
                 <td class="mono text-2 col-wide-only">{{ node.address }}</td>
                 <td class="col-optional mono" style="width: 76px; white-space: nowrap">
                   <span :class="latencyClass(node.nodeKey)" style="font-size: 12px">{{ latencyText(node.nodeKey) }}</span>
@@ -302,22 +314,22 @@ async function commitAlias(node: NodeView): Promise<void> {
                   <n-switch
                     size="small"
                     :value="annotationMap.get(node.nodeKey)?.excluded === true"
-                    :disabled="busy > 0"
+                    :disabled="nodeBusy"
                     @update:value="toggleExcluded(node)"
                   />
                 </td>
                 <td class="col-optional">
                   <div class="row tight">
-                    <n-button aria-label="上移" quaternary circle size="tiny" :disabled="!sortable || busy > 0 || index === 0" @click="moveNode(nodes.indexOf(node), -1)">
+                    <n-button aria-label="上移" quaternary circle size="tiny" :disabled="!sortable || nodeBusy || index === 0" @click="moveNode(nodes.indexOf(node), -1)">
                       <template #icon><ArrowUp :size="13" /></template>
                     </n-button>
-                    <n-button aria-label="下移" quaternary circle size="tiny" :disabled="!sortable || busy > 0 || index === filtered.length - 1" @click="moveNode(nodes.indexOf(node), 1)">
+                    <n-button aria-label="下移" quaternary circle size="tiny" :disabled="!sortable || nodeBusy || index === filtered.length - 1" @click="moveNode(nodes.indexOf(node), 1)">
                       <template #icon><ArrowDown :size="13" /></template>
                     </n-button>
                   </div>
                 </td>
                 <td>
-                  <n-button aria-label="展开或收起节点详情" quaternary circle size="tiny" @click="toggleDetail(node.nodeKey)">
+                  <n-button aria-label="展开或收起节点详情" class="inline-icon-btn" quaternary circle size="tiny" @click="toggleDetail(node.nodeKey)">
                     <template #icon>
                       <ChevronDown :size="14" :style="{ transform: isOpen(node.nodeKey) ? 'rotate(180deg)' : 'none', transition: 'transform .12s' }" />
                     </template>
@@ -346,16 +358,28 @@ async function commitAlias(node: NodeView): Promise<void> {
                         :value="regionOf(node)"
                         size="small"
                         :options="[{ label: '跟随名字识别', value: '' }, ...REGION_OPTIONS]"
-                        :disabled="busy > 0"
+                        :disabled="nodeBusy"
                         style="width: 180px"
                         @update:value="(value: string) => saveRegion(node, value)"
                       />
                       <span v-if="regionOf(node)" class="text-3" style="font-size: 11px">已覆盖为 {{ regionLabel(regionOf(node)) }}</span>
                     </div>
-                    <n-button size="tiny" secondary @click="copyText(node.address)">
-                      <template #icon><Copy :size="13" /></template>
-                      复制地址
-                    </n-button>
+                    <div class="row tight" style="gap: 8px; align-items: center">
+                      <div v-if="sortable" class="row tight show-narrow" style="gap: 6px">
+                        <n-button size="tiny" secondary :disabled="nodeBusy || index === 0" @click="moveNode(nodes.indexOf(node), -1)">
+                          <template #icon><ArrowUp :size="13" /></template>
+                          上移
+                        </n-button>
+                        <n-button size="tiny" secondary :disabled="nodeBusy || index === filtered.length - 1" @click="moveNode(nodes.indexOf(node), 1)">
+                          <template #icon><ArrowDown :size="13" /></template>
+                          下移
+                        </n-button>
+                      </div>
+                      <n-button size="tiny" secondary @click="copyText(node.address)">
+                        <template #icon><Copy :size="13" /></template>
+                        复制地址
+                      </n-button>
+                    </div>
                   </div>
                 </td>
               </tr>

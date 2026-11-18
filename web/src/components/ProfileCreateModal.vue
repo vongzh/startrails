@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { nextTick, ref, watch } from 'vue';
+import type { InputInst } from 'naive-ui';
 import { NButton, NInput, NModal } from 'naive-ui';
 import { busy, createProfile } from '../workspace';
 
@@ -11,6 +12,14 @@ const props = defineProps<{ show: boolean }>();
 const emit = defineEmits<{ 'update:show': [value: boolean] }>();
 
 const name = ref('');
+const nameInput = ref<InputInst | null>(null);
+
+watch(
+  () => props.show,
+  (open) => {
+    if (open) void nextTick(() => nameInput.value?.focus());
+  },
+);
 
 async function submit(): Promise<void> {
   const value = name.value.trim();
@@ -38,6 +47,7 @@ function close(): void {
     <div class="field">
       <label>名称</label>
       <n-input
+        ref="nameInput"
         v-model:value="name"
         size="small"
         placeholder="例如 work"
@@ -50,7 +60,7 @@ function close(): void {
     <template #footer>
       <div class="row end" style="width: 100%">
         <n-button size="small" quaternary @click="close">取消</n-button>
-        <n-button size="small" type="primary" :loading="busy > 0" @click="submit">创建</n-button>
+        <n-button size="small" type="primary" :loading="busy > 0" :disabled="name.trim() === ''" @click="submit">创建</n-button>
       </div>
     </template>
   </n-modal>

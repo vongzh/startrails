@@ -22,6 +22,7 @@ export interface Highlighted {
   /** 逐行 <div class="cv-line">，可直接 v-html。 */
   readonly html: string;
   readonly lines: number;
+  readonly matches: number;
   /** true = 未着色（未知方言，或超出着色行数上限）。 */
   readonly plain: boolean;
 }
@@ -276,19 +277,21 @@ const toRows = (text: string): string[] => {
   return rows;
 };
 
-export function highlight(text: string, dialect: string): Highlighted {
+export function highlight(text: string, dialect: string, filter = ''): Highlighted {
   const rows = toRows(text);
   const plain = !isKnownDialect(dialect) || rows.length > MAX_HIGHLIGHT_LINES;
   const state: IniState = { section: '' };
+  const needle = filter.trim().toLowerCase();
   const lines: string[] = [];
 
   for (let index = 0; index < rows.length; index += 1) {
     const line = rows[index] ?? '';
     const segments = plain ? [{ text: line }] : tokenize(line, dialect, state);
+    if (needle !== '' && !line.toLowerCase().includes(needle)) continue;
     lines.push(
       `<div class="cv-line"><span class="cv-n">${index + 1}</span><span class="cv-t">${renderSegments(segments)}</span></div>`,
     );
   }
 
-  return { html: lines.join(''), lines: rows.length, plain };
+  return { html: lines.join(''), lines: rows.length, matches: lines.length, plain };
 }

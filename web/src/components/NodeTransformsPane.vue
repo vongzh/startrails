@@ -5,6 +5,7 @@ import { ArrowDown, ArrowUp, Plus, SlidersHorizontal, Trash2 } from 'lucide-vue-
 import { api } from '../api';
 import type { NodeTransformView } from '../api';
 import { activeProfileName, nodes, notify } from '../workspace';
+import { compileMatcher } from '@core/collections/index.ts';
 
 /**
  * 按节点名批量处理：机场常把「剩余流量 / 到期 / 过滤掉 N 条」伪装成节点塞进订阅，
@@ -18,7 +19,7 @@ import { activeProfileName, nodes, notify } from '../workspace';
 interface Row {
   id: string;
   pattern: string;
-  action: 'exclude' | 'rename';
+  action: 'exclude' | 'keep' | 'rename';
   replacement: string;
 }
 const rows = reactive<Row[]>([]);
@@ -29,14 +30,15 @@ const editorOpen = ref(false);
 let nextId = 1;
 
 const actionOptions = [
-  { label: '剔除节点', value: 'exclude' },
+  { label: '移除节点', value: 'exclude' },
+  { label: '保留节点', value: 'keep' },
   { label: '重命名', value: 'rename' },
 ];
 
 /** 常用匹配式：点一下往列表末尾追加一条预填规则，省得从头敲正则。 */
 const presets: ReadonlyArray<{ label: string; pattern: string; action: Row['action']; replacement?: string }> = [
-  { label: '剔除信息节点', pattern: '/剩余流量|套餐|到期|过期|过滤掉/i', action: 'exclude' },
-  { label: '剔除「过滤掉N条」', pattern: '/过滤掉\\s*\\d+\\s*条/i', action: 'exclude' },
+  { label: '移除信息节点', pattern: '/剩余流量|套餐|到期|过期|过滤掉/i', action: 'exclude' },
+  { label: '移除「过滤掉N条」', pattern: '/过滤掉\\s*\\d+\\s*条/i', action: 'exclude' },
 ];
 
 const newId = (): string => `t${Date.now().toString(36)}${(nextId++).toString(36)}`;
@@ -65,62 +67,61 @@ function removeRow(index: number): void {
   rows.splice(index, 1);
 }
 
-/** 与后端 compileMatcher 同口径：/regex/flags、glob(*?)、字面量（不区分大小写、子串匹配）。 */
-function matcherOf(pattern: string): RegExp | null {
-  const text = pattern.trim();
-  if (text.length === 0) return null;
-  const literal = /^\/(.*)\/([a-z]*)$/i.exec(text);
-  if (literal !== null) {
-    try {
-      return new RegExp(literal[1] ?? '', (literal[2] ?? '').replace(/[gy]/g, ''));
-    } catch {
-      return null;
-    }
-  }
-  const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (/[*?]/.test(text)) {
-    const body = [...text].map((ch) => (ch === '*' ? '.*' : ch === '?' ? '.' : escape(ch))).join('');
-    try {
-      return new RegExp(`^${body}$`, 'i');
-    } catch {
-      return null;
-    }
-  }
-  return new RegExp(escape(text), 'i');
-}
-
 const actionable = computed(() => rows.filter((row) => row.pattern.trim().length > 0));
-const invalidPatterns = computed(() => rows.filter((row) => row.pattern.trim() && matcherOf(row.pattern) === null).length);
+const invalidPatterns = computed(() => rows.filter((row) => row.pattern.trim() && compileMatcher(row.pattern) === null).length);
 
-/** 命中数与样例：只统计当前节点清单，给用户一个「这条规则会不会误伤」的即时反馈。 */
-function preview(row: Row): { count: number; samples: string[] } {
-  const matcher = matcherOf(row.pattern);
-  if (matcher === null) return { count: 0, samples: [] };
-  const hit = nodes.value.filter((node) => matcher.test(node.name));
-  return { count: hit.length, samples: hit.slice(0, 3).map((node) => node.name) };
+interface StepPreview {
+  valid: boolean;
+  count: number;
+  remaining: number;
+  samples: string[];
 }
 
-const hasChanges = computed(() => {
-  const current = JSON.stringify(rows.map((row) => ({
-    id: row.id,
-    order: rows.indexOf(row),
-    pattern: row.pattern,
-    action: row.action,
-    ...(row.replacement === '' ? {} : { replacement: row.replacement }),
-  })));
-  return current !== baseline.value;
+/** 命中数与样例：按规则顺序模拟流水线推演（移除 / 保留 / 重命名都会改变后续步骤看到的结果）。 */
+const stepPreviews = computed<StepPreview[]>(() => {
+  let pool = nodes.value.map((node) => ({ nodeKey: node.nodeKey, name: node.name }));
+  return rows.map((row) => {
+    const trimmed = row.pattern.trim();
+    const matcher = trimmed.length > 0 ? compileMatcher(trimmed) : null;
+    if (matcher === null) {
+      return { valid: false, count: 0, remaining: pool.length, samples: [] };
+    }
+    const matched = pool.filter((item) => matcher.test(item.name));
+    const samples = matched.slice(0, 3).map((item) => item.name);
+    if (row.action === 'exclude') {
+      pool = pool.filter((item) => !matcher.test(item.name));
+    } else if (row.action === 'keep') {
+      pool = matched;
+    } else if (row.action === 'rename') {
+      const replacement = row.replacement;
+      pool = pool.map((item) =>
+        matcher.test(item.name)
+          ? { ...item, name: replacement === '' ? item.name : replacement.replace(/\{name\}/g, item.name) }
+          : item,
+      );
+    }
+    return { valid: true, count: matched.length, remaining: pool.length, samples };
+  });
 });
-const baseline = ref('');
 
-function snapshot(): string {
-  return JSON.stringify(rows.map((row, index) => ({
-    id: row.id,
-    order: index,
-    pattern: row.pattern,
-    action: row.action,
-    ...(row.replacement === '' ? {} : { replacement: row.replacement }),
-  })));
+function snapshotActionable(): string {
+  return JSON.stringify(
+    rows
+      .filter((row) => row.pattern.trim().length > 0)
+      .map((row, index) => ({
+        id: row.id,
+        order: index,
+        pattern: row.pattern.trim(),
+        action: row.action,
+        ...(row.action === 'rename' && row.replacement !== '' ? { replacement: row.replacement } : {}),
+      })),
+  );
 }
+
+const baselineActionable = ref('');
+const hasChanges = computed(() => snapshotActionable() !== baselineActionable.value);
+const hasPendingRows = computed(() => JSON.stringify(rows) !== baselineRows.value);
+const baselineRows = ref('');
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -133,7 +134,8 @@ async function load(): Promise<void> {
       action: t.action,
       replacement: t.replacement ?? '',
     })));
-    baseline.value = snapshot();
+    baselineActionable.value = snapshotActionable();
+    baselineRows.value = JSON.stringify(rows);
     loadedFor.value = activeProfileName.value;
   } catch (error) {
     notify('error', error instanceof Error ? error.message : '读取处理规则失败');
@@ -175,7 +177,7 @@ async function save(): Promise<void> {
 /** 关弹窗视作放弃未保存草稿：重新读回已落库的规则，摘要才不会显示「看起来生效了」的内容。 */
 function closeEditor(): void {
   editorOpen.value = false;
-  if (hasChanges.value) void load();
+  if (hasChanges.value || hasPendingRows.value) void load();
 }
 
 function onEditorChange(show: boolean): void {
@@ -210,20 +212,24 @@ watch(activeProfileName, (name) => {
     </div>
     <div class="card-body">
       <p class="text-3" style="font-size: 12px; margin: 0 0 12px; max-width: 680px">
-        按节点名匹配、从上往下执行：剔除机场塞进来的信息节点，或给一类节点加前缀。
+        按节点名匹配、从上往下执行：移除机场塞进来的信息节点，或只保留一类节点，或给一类节点加前缀。
         单个节点的别名、地区、排序在下方节点清单里改。
       </p>
 
       <div v-if="actionable.length === 0" class="transform-empty">
         <span class="text-3" style="font-size: 12px">
-          还没有处理规则。点右上角「编辑规则」，可用预置的正则一键剔除「剩余流量 / 到期 / 过滤掉 N 条」这类信息节点。
+          还没有处理规则。点右上角「编辑规则」，可用预置的正则一键移除「剩余流量 / 到期 / 过滤掉 N 条」这类信息节点。
         </span>
       </div>
       <div v-else class="summary-list">
         <div v-for="(row, index) in actionable" :key="row.id" class="summary-row">
           <span class="mono text-3" style="font-size: 11.5px">#{{ index + 1 }}</span>
-          <n-tag size="small" :bordered="false" :type="row.action === 'exclude' ? 'error' : 'info'">
-            {{ row.action === 'exclude' ? '剔除' : '重命名' }}
+          <n-tag
+            size="small"
+            :bordered="false"
+            :type="row.action === 'exclude' ? 'error' : row.action === 'keep' ? 'success' : 'info'"
+          >
+            {{ row.action === 'exclude' ? '移除' : row.action === 'keep' ? '保留' : '重命名' }}
           </n-tag>
           <code>{{ row.pattern }}</code>
           <span v-if="row.action === 'rename' && row.replacement" class="text-3" style="font-size: 12px">
@@ -247,7 +253,8 @@ watch(activeProfileName, (name) => {
           规则从上往下依次执行；重命名不改节点稳定标识，已有标注不会失效。
           匹配式支持 <code>/正则/flags</code>（如 <code>/流量|到期/i</code>）、
           <code>*通配符</code>（如 <code>*香港*</code>）和普通文字（子串、不区分大小写）；
-          重命名的 <code>{name}</code> 会替换成原节点名，例如 <code>🇺🇸 {name}</code> 给命中节点加美国前缀。
+          移除丢掉命中的、保留只留下命中的、重命名的 <code>{name}</code> 会替换成原节点名，
+          例如 <code>🇺🇸 {name}</code> 给命中节点加美国前缀。
         </div>
       </n-alert>
 
@@ -301,13 +308,16 @@ watch(activeProfileName, (name) => {
           </div>
         </div>
         <div v-if="row.pattern.trim()" class="transform-preview text-3" style="font-size: 11.5px">
-          <template v-if="matcherOf(row.pattern) === null">
+          <template v-if="!stepPreviews[index]?.valid">
             <span class="badge danger">匹配式无效</span>
           </template>
           <template v-else>
-            命中 <strong>{{ preview(row).count }}</strong> 个节点
-            <span v-if="preview(row).samples.length > 0" class="mono">
-              · {{ preview(row).samples.join(' / ') }}
+            命中 <strong>{{ stepPreviews[index]?.count ?? 0 }}</strong> 个 · 剩余 {{ stepPreviews[index]?.remaining ?? 0 }} 个
+            <span v-if="row.action === 'rename' && row.replacement === ''" style="color: var(--warn)">
+              · 新名称模板为空，暂不修改名称
+            </span>
+            <span v-if="(stepPreviews[index]?.samples.length ?? 0) > 0" class="mono">
+              · {{ stepPreviews[index]?.samples.join(' / ') }}
             </span>
           </template>
         </div>
@@ -365,7 +375,7 @@ watch(activeProfileName, (name) => {
 }
 .editor-body .transform-row {
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 10px;
   margin-bottom: 8px;
 }

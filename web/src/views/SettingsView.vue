@@ -216,6 +216,13 @@ const webdavBaseline = ref('');
 const notifyDirty = computed(() => JSON.stringify(notifyForm) !== notifyBaseline.value);
 const webdavDirty = computed(() => JSON.stringify(webdavForm) !== webdavBaseline.value);
 
+function sectionDirty(id: SectionId): boolean {
+  if (id === 'backup') return webdavDirty.value;
+  if (id === 'notify') return notifyDirty.value;
+  if (id === 'fetch') return fetchDirty.value;
+  return false;
+}
+
 function loadNotifyForm(): void {
   const value = notifySettings.value?.value;
   notifyForm.enabled = value?.enabled !== false;
@@ -571,6 +578,7 @@ onUnmounted(() => {
           >
             <component :is="item.icon" :size="14" />
             <span>{{ item.label }}</span>
+            <span v-if="sectionDirty(item.id)" class="dot warn" style="margin-left: auto" title="有未保存修改"></span>
           </button>
         </div>
       </nav>
@@ -622,6 +630,7 @@ onUnmounted(() => {
         <section v-if="activeSection === 'backup'" class="card">
           <div class="card-head">
             <h2>备份与缓存</h2>
+            <n-tag v-if="webdavDirty" size="small" type="warning" :bordered="false">WebDAV 未保存</n-tag>
             <div class="spacer"></div>
             <n-tag size="small" :bordered="false" class="mono">SQLite WAL</n-tag>
           </div>
@@ -706,10 +715,15 @@ onUnmounted(() => {
               <div class="form-actions">
                 <span class="text-3" style="font-size: 11px">账号密码需成对填写；留空地址保存 = 清除界面配置</span>
                 <span class="spacer"></span>
+                <n-button v-if="webdavDirty" size="small" quaternary :disabled="webdavSaving" @click="loadWebdavForm">
+                  放弃修改
+                </n-button>
                 <n-button size="small" secondary :loading="webdavTesting" :disabled="busy > 0" @click="testWebdav">
                   测试连接
                 </n-button>
-                <n-button size="small" type="primary" :loading="webdavSaving" @click="saveWebdav">保存 WebDAV</n-button>
+                <n-button size="small" type="primary" :loading="webdavSaving" :disabled="!webdavDirty" @click="saveWebdav">
+                  {{ webdavDirty ? '保存 WebDAV' : '已保存' }}
+                </n-button>
               </div>
               <div v-if="webdavProbe !== null" class="probe-results">
                 <div class="probe-row">
@@ -746,6 +760,7 @@ onUnmounted(() => {
         <section v-if="activeSection === 'notify'" class="card">
           <div class="card-head">
             <h2>通知</h2>
+            <n-tag v-if="notifyDirty" size="small" type="warning" :bordered="false">未保存</n-tag>
             <div class="spacer"></div>
             <Bell :size="14" class="text-3" />
           </div>
@@ -775,7 +790,13 @@ onUnmounted(() => {
                 </template>
                 <div class="field">
                   <label>Bot Token</label>
-                  <n-input v-model:value="notifyForm.botToken" size="small" placeholder="123456:ABC-DEF…" />
+                  <n-input
+                    v-model:value="notifyForm.botToken"
+                    type="password"
+                    show-password-on="click"
+                    size="small"
+                    placeholder="123456:ABC-DEF…"
+                  />
                 </div>
                 <div class="field">
                   <label>Chat ID</label>
@@ -783,7 +804,7 @@ onUnmounted(() => {
                 </div>
                 <div class="form-actions">
                   <span class="text-3" style="font-size: 11px">
-                    两项需成对填写；测试只发一条消息，不会保存
+                    两项需成对填写；测试不受总开关暂停限制，也不会保存
                   </span>
                   <span class="spacer"></span>
                   <n-button
@@ -807,10 +828,16 @@ onUnmounted(() => {
                 </template>
                 <div class="field">
                   <label>推送地址</label>
-                  <n-input v-model:value="notifyForm.barkUrl" size="small" placeholder="https://api.day.app/你的Key" />
+                  <n-input
+                    v-model:value="notifyForm.barkUrl"
+                    type="password"
+                    show-password-on="click"
+                    size="small"
+                    placeholder="https://api.day.app/你的Key"
+                  />
                 </div>
                 <div class="form-actions">
-                  <span class="text-3" style="font-size: 11px">地址里已经含 Key，别贴到公开地方</span>
+                  <span class="text-3" style="font-size: 11px">地址里含 Key，别贴到公开地方；测试不受总开关暂停限制</span>
                   <span class="spacer"></span>
                   <n-button
                     size="small"
@@ -836,7 +863,12 @@ onUnmounted(() => {
             <div class="form-actions notify-save">
               <span class="text-3" style="font-size: 11px">全部留空并保存 = 清除界面配置，回退环境变量</span>
               <span class="spacer"></span>
-              <n-button size="small" type="primary" :loading="notifySaving" @click="saveNotify">保存通知</n-button>
+              <n-button v-if="notifyDirty" size="small" quaternary :disabled="notifySaving" @click="loadNotifyForm">
+                放弃修改
+              </n-button>
+              <n-button size="small" type="primary" :loading="notifySaving" :disabled="!notifyDirty" @click="saveNotify">
+                {{ notifyDirty ? '保存通知' : '已保存' }}
+              </n-button>
             </div>
           </div>
         </section>
@@ -844,6 +876,7 @@ onUnmounted(() => {
         <section v-if="activeSection === 'fetch'" class="card">
           <div class="card-head">
             <h2>采集默认</h2>
+            <n-tag v-if="fetchDirty" size="small" type="warning" :bordered="false">未保存</n-tag>
             <div class="spacer"></div>
             <DownloadCloud :size="14" class="text-3" />
           </div>
@@ -896,12 +929,15 @@ onUnmounted(() => {
                 <n-input
                   v-model:value="row.value"
                   size="small"
-                  :placeholder="isMasked(row.value) ? '已配置，留空或保持原值不改' : '头值'"
+                  :placeholder="isMasked(row.value) ? '保持原值不改；或直接替换新值' : '头值'"
                 />
                 <n-button size="small" quaternary type="error" title="删除" @click="removeHeader(row)">
                   <template #icon><Trash2 :size="14" /></template>
                 </n-button>
               </div>
+              <span v-if="fetchForm.headers.some((h: HeaderRow) => isMasked(h.value))" class="text-3" style="font-size: 11px; margin-top: 4px">
+                显示为 <span class="mono">{{ HEADER_MASK }}</span> 的条目保持不变即沿用已保存的原值
+              </span>
               <n-button size="small" secondary style="margin-top: 6px" @click="addHeader">
                 <template #icon><Plus :size="14" /></template>
                 添加请求头
@@ -911,8 +947,11 @@ onUnmounted(() => {
             <div class="form-actions" style="margin-top: 16px">
               <span class="text-3" style="font-size: 11px">全部留空并保存 = 清除采集默认，订阅按自身配置拉取</span>
               <span class="spacer"></span>
+              <n-button v-if="fetchDirty" size="small" quaternary :disabled="fetchSaving" @click="loadFetchForm">
+                放弃修改
+              </n-button>
               <n-button size="small" type="primary" :loading="fetchSaving" :disabled="!fetchDirty" @click="saveFetch">
-                保存采集默认
+                {{ fetchDirty ? '保存采集默认' : '已保存' }}
               </n-button>
             </div>
           </div>
@@ -953,7 +992,7 @@ onUnmounted(() => {
                 </div>
               </div>
               <div class="form-actions">
-                <span class="text-3" style="font-size: 11px">
+                <span class="text-3" style="font-size: 11px" :style="tokenError !== '' ? { color: 'var(--danger)' } : undefined">
                   {{ tokenError === '' ? '服务端只存哈希；令牌来自环境变量时无法在此更换' : tokenError }}
                 </span>
                 <span class="spacer"></span>

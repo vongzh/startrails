@@ -20,10 +20,12 @@ import {
   activeProfileName,
   busy,
   clientNameOf,
+  configSection,
   copyText,
   createToken,
   createdUrls,
   groups,
+  latestTokenId,
   profileDirty,
   profileEntries,
   publishTarget,
@@ -38,7 +40,14 @@ import {
 
 const sources = computed(() => state.value?.sources ?? []);
 const tokens = computed(() => state.value?.tokens ?? []);
-const latestUrl = computed(() => createdUrls.value.find((item) => item.target === publishTarget.value));
+const latestUrl = computed(() =>
+  createdUrls.value.find((item) => item.profile === activeProfileName.value && item.target === publishTarget.value),
+);
+
+function tokenTail(url: string): string {
+  const clean = url.split('?')[0] ?? url;
+  return clean.slice(-6);
+}
 
 /**
  * 台账只看「这份配置」的地址：`/api/state` 回的是全实例令牌，别的配置签过多少与本页无关，
@@ -186,8 +195,14 @@ async function generate(): Promise<void> {
                 </n-button>
               </div>
               <span v-if="profileEmpty" class="text-3" style="font-size: 11.5px; margin-top: 6px">
-                当前配置还没有任何订阅，签发出去的会是空配置。
-                <n-button text type="primary" size="tiny" @click="tab = 'sources'">去添加订阅</n-button>
+                <template v-if="sources.length === 0">
+                  当前配置还没有任何订阅，签发出去的会是空配置。
+                  <n-button text type="primary" size="tiny" @click="tab = 'sources'">去添加订阅</n-button>
+                </template>
+                <template v-else>
+                  当前配置构成、规则与策略组均为空，签发出去的会是空配置。
+                  <n-button text type="primary" size="tiny" @click="configSection = 'composition'; tab = 'config'">去配置构成</n-button>
+                </template>
               </span>
             </div>
           </div>
@@ -283,8 +298,11 @@ async function generate(): Promise<void> {
                   <span>{{ clientNameOf(token.target) }}</span>
                 </button>
                 <span v-if="token.revoked" class="badge" style="margin-left: 6px">已撤销</span>
+                <span v-else-if="token.id === latestTokenId" class="badge ok" style="margin-left: 6px">新签发</span>
                 <span v-else-if="isDuplicate(token.target)" class="badge warn" style="margin-left: 6px">多条</span>
-                <div class="addr-mobile">{{ formatTime(token.createdAt) }}</div>
+                <div class="addr-mobile">
+                  {{ formatTime(token.createdAt) }}<template v-if="token.url !== null"> · <span class="mono">...{{ tokenTail(token.url) }}</span></template>
+                </div>
               </td>
               <td class="col-wide-only">
                 <span v-if="token.url !== null" class="addr-desktop mono" :title="token.url">{{ token.url }}</span>

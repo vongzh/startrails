@@ -8,12 +8,16 @@ import CodeView from './CodeView.vue';
 import { toneOfDialect } from '../client-icons';
 import {
   clientTargets,
+  configSection,
   copyText,
   downloadPreview,
+  openSettingsSection,
   preview,
   previewLoading,
   previewMeta,
+  profileEntries,
   refreshPreview,
+  tab,
   target,
   targetGroups,
   targetName,
@@ -30,6 +34,8 @@ import {
  */
 const wrap = ref(window.matchMedia('(max-width: 560px)').matches);
 const targetQuery = ref('');
+const codeQuery = ref('');
+const codeMatchCount = ref(0);
 
 const currentTarget = computed(() => clientTargets.value.find((item) => item.id === target.value));
 const nodesOnly = computed(() => currentTarget.value?.contentMode === 'nodes-only');
@@ -140,7 +146,7 @@ onMounted(() => {
             <template #icon><Copy :size="13" /></template>
             复制
           </n-button>
-          <n-button size="small" type="primary" @click="downloadPreview">
+          <n-button size="small" type="primary" :disabled="!preview?.content" @click="downloadPreview">
             <template #icon><Download :size="13" /></template>
             下载
           </n-button>
@@ -151,12 +157,34 @@ onMounted(() => {
         <Check :size="12" style="color: var(--ok)" />
         <span>{{ preview?.report.passed ?? 0 }} 通过</span>
         <span class="text-3">·</span>
-        <span>{{ preview?.report.skipped ?? 0 }} 跳过</span>
+        <button
+          v-if="(preview?.report.skipped ?? 0) > 0"
+          type="button"
+          class="bar-link warn"
+          title="查看跳过原因"
+          @click="openSettingsSection('diagnostics')"
+        >
+          {{ preview?.report.skipped ?? 0 }} 跳过
+        </button>
+        <span v-else>{{ preview?.report.skipped ?? 0 }} 跳过</span>
         <span class="text-3">·</span>
         <span>{{ previewMeta.lines }} 行</span>
         <span class="text-3">·</span>
         <span>{{ formatBytes(previewMeta.bytes) }}</span>
         <div class="spacer"></div>
+        <span v-if="(preview?.content ?? '') !== '' && codeQuery.trim() !== ''" class="text-2 mono">
+          命中 {{ codeMatchCount }} 行
+        </span>
+        <n-input
+          v-if="(preview?.content ?? '') !== ''"
+          v-model:value="codeQuery"
+          size="tiny"
+          placeholder="检索行…"
+          clearable
+          style="width: 140px"
+        >
+          <template #prefix><Search :size="11" /></template>
+        </n-input>
         <span class="client-pill" :class="`tone-${toneOfDialect(currentTarget?.dialect ?? '')}`">
           <span class="dialect-dot"></span>{{ currentTarget?.dialect }}
         </span>
@@ -165,7 +193,28 @@ onMounted(() => {
       <div v-if="previewLoading" class="code-view">
         <div class="cv-empty">构建中…</div>
       </div>
-      <CodeView v-else :content="preview?.content ?? ''" :dialect="currentTarget?.dialect ?? ''" :wrap="wrap" />
+      <div v-else-if="preview === null" class="code-view">
+        <div class="cv-empty">
+          <p style="margin: 0 0 10px">
+            {{ profileEntries.length === 0 ? '当前配置还没有加入任何订阅，暂无可预览的产物' : '未能生成产物预览，请检查配置或诊断' }}
+          </p>
+          <n-button
+            size="small"
+            type="primary"
+            @click="profileEntries.length === 0 ? ((configSection = 'composition'), (tab = 'config')) : openSettingsSection('diagnostics')"
+          >
+            {{ profileEntries.length === 0 ? '去配置构成' : '查看诊断' }}
+          </n-button>
+        </div>
+      </div>
+      <CodeView
+        v-else
+        :content="preview?.content ?? ''"
+        :dialect="currentTarget?.dialect ?? ''"
+        :wrap="wrap"
+        :filter="codeQuery"
+        @match-count="(n) => { codeMatchCount = n; }"
+      />
 
       <div v-if="nodesOnly" class="card-foot text-3" style="font-size: 12px">
         该客户端没有公开的完整配置格式，仅输出节点分享链接，策略组与规则在客户端内自行配置。

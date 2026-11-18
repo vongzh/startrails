@@ -264,7 +264,7 @@ export interface Annotation {
 }
 
 /**
- * 按节点名批量清洗：正则/glob/字面量匹配，按顺序剔除或改名。
+ * 按节点名批量清洗：正则/glob/字面量匹配，按顺序移除、保留或改名。
  * 与 annotation 的分工：这里做「一类节点」的粗加工（机场塞进来的信息节点、地区前缀），
  * annotation 做「单个节点」的精修（别名、地区、排序）。两者按 nodeKey 关联，改名不会让标注失效。
  */
@@ -273,7 +273,8 @@ export interface NodeTransform {
   readonly order: number;
   /** 匹配节点名：/regex/flags、glob(*?)、字面量三种写法，与组成员匹配同口径。 */
   readonly pattern: string;
-  readonly action: 'exclude' | 'rename';
+  /** exclude = 移除命中的；keep = 只保留命中的（反向移除）；rename = 改名。 */
+  readonly action: 'exclude' | 'keep' | 'rename';
   /** 仅 rename 使用。`{name}` 占位符代表原节点名；缺省表示保留原名，空串无意义（校验层拒绝）。 */
   readonly replacement?: string;
 }
