@@ -14,6 +14,39 @@ import { tunFields } from './runtime.ts';
 type Fields = Record<string, unknown>;
 
 /** 各协议文档写明的 network 取值不同，不能跨协议硬塞。 */
+/**
+ * 原生 mihomo / Meta 内核客户端：DoH3 写成 `https://...#h3=true`。
+ * Stash（clash）、Clash Premium（clash-apple）、Karing 不支持 `h3://` 或 `#h3=true`，退回标准 `https://`。
+ */
+const NATIVE_MIHOMO_TARGETS = new Set<EmissionPlan['target']>([
+  'mihomo',
+  'clash-verge',
+  'clashmac',
+  'flclash',
+  'mihomo-party',
+  'clash-mi',
+]);
+
+function translateMihomoDnsServer(
+  raw: string,
+  nativeMihomo: boolean,
+  onDowngrade: () => void,
+): string {
+  return raw.replace(/(^|[\s,;])h3:\/\/([^\s,;]+)/gi, (_, prefix: string, rest: string) => {
+    const base = `https://${rest}`;
+    if (!nativeMihomo) {
+      onDowngrade();
+      return `${prefix}${base}`;
+    }
+    const hashAt = base.indexOf('#');
+    if (hashAt < 0) return `${prefix}${base}#h3=true`;
+    const fragment = base.slice(hashAt + 1);
+    if (/(?:^|&)h3=true(?:&|$)/i.test(fragment)) return `${prefix}${base}`;
+    const sep = fragment.length === 0 ? '' : '&';
+    return `${prefix}${base}${sep}h3=true`;
+  });
+}
+
 const NETWORK_SUPPORT: Readonly<Record<'vmess' | 'vless' | 'trojan', readonly string[]>> = {
   vmess: ['ws', 'http', 'h2', 'grpc', 'mkcp', 'mekya', 'tcp'],
   vless: ['ws', 'http', 'h2', 'grpc', 'xhttp', 'tcp'],
@@ -277,6 +310,14 @@ export const mihomoEmitter = (
   const dnsBlock: Fields = {};
   const dns = emissionPlan.runtime.dns;
   if (dns !== null) {
+    const nativeMihomo = NATIVE_MIHOMO_TARGETS.has(target);
+    let h3Downgraded = false;
+    const txDns = (value: string): string =>
+      translateMihomoDnsServer(value, nativeMihomo, () => {
+        h3Downgraded = true;
+      });
+    const txList = (list: readonly string[]): string[] => list.map(txDns);
+
     if (dns.mode === 'fake-ip') {
       if (emissionPlan.runtime.explicitFakeIpMode) dnsBlock['enhanced-mode'] = 'fake-ip';
       if (dns.fakeIpRange !== undefined) dnsBlock['fake-ip-range'] = dns.fakeIpRange;
@@ -284,15 +325,20 @@ export const mihomoEmitter = (
       dnsBlock['enhanced-mode'] = 'redir-host';
     }
     if (dns.ipv6 !== undefined) dnsBlock['ipv6'] = dns.ipv6;
-    if (dns.nameserver !== undefined) dnsBlock['nameserver'] = [...dns.nameserver];
-    if (dns.proxyNameserver !== undefined) dnsBlock['proxy-server-nameserver'] = [...dns.proxyNameserver];
-    if (dns.directNameserver !== undefined) dnsBlock['direct-nameserver'] = [...dns.directNameserver];
-    if (dns.fallback !== undefined) dnsBlock['fallback'] = [...dns.fallback];
+    if (dns.nameserver !== undefined) dnsBlock['nameserver'] = txList(dns.nameserver);
+    if (dns.proxyNameserver !== undefined) dnsBlock['proxy-server-nameserver'] = txList(dns.proxyNameserver);
+    if (dns.directNameserver !== undefined) dnsBlock['direct-nameserver'] = txList(dns.directNameserver);
+    if (dns.fallback !== undefined) dnsBlock['fallback'] = txList(dns.fallback);
     if (dns.nameserverPolicy !== undefined && Object.keys(dns.nameserverPolicy).length > 0) {
-      dnsBlock['nameserver-policy'] = { ...dns.nameserverPolicy };
+      dnsBlock['nameserver-policy'] = Object.fromEntries(
+        Object.entries(dns.nameserverPolicy).map(([domain, server]) => [domain, txDns(server)]),
+      );
     }
     // 以下高级字段只在 clash-yaml 方言写出（plan 已在其余方言剥掉并记诊断）。
-    if (dns.defaultNameserver !== undefined) dnsBlock['default-nameserver'] = [...dns.defaultNameserver];
+    if (dns.defaultNameserver !== undefined) dnsBlock['default-nameserver'] = txList(dns.defaultNameserver);
+    if (h3Downgraded) {
+      diagnostics.push(makeDiagnostic('emit', target, 'runtime:dns', 'runtime-dns-h3-downgraded-to-https'));
+    }
     if (dns.fakeIpFilter !== undefined) dnsBlock['fake-ip-filter'] = [...dns.fakeIpFilter];
     if (dns.useHosts !== undefined) dnsBlock['use-hosts'] = dns.useHosts;
     if (dns.useSystemHosts !== undefined) dnsBlock['use-system-hosts'] = dns.useSystemHosts;

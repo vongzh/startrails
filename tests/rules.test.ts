@@ -212,3 +212,88 @@ test('形态未知或缺策略时不写 rule-providers，但留下能看懂的�
   assert.ok(reasons.includes('external-ruleset-shape-unknown'));
   assert.ok(reasons.includes('external-ruleset-policy-missing'));
 });
+
+test('Surge 与 QuanX 策略组保留子策略组与内置策略成员，不再只留节点名', () => {
+  const nested = parseProfile({
+    nodes: [
+      {
+        kind: 'shadowsocks',
+        name: 'HK-1',
+        server: 'hk.example.invalid',
+        port: 8388,
+        method: 'aes-128-gcm',
+        password: 'pw',
+      },
+    ],
+    ruleSources: [],
+    policyGroups: [
+      { name: 'Daily', members: ['DIRECT', 'HK-Group', 'HK-1', 'REJECT'] },
+      { name: 'HK-Group', members: ['HK-1'] },
+    ],
+  });
+  const surgeOut = emit(nested, plan(nested, 'surge')).content;
+  assert.match(surgeOut, /Daily = select, DIRECT, HK-Group, HK-1, REJECT/);
+  assert.match(surgeOut, /HK-Group = select, HK-1/);
+
+  const quanxOut = emit(nested, plan(nested, 'quanx')).content;
+  assert.match(quanxOut, /static = Daily, direct, HK-Group, HK-1, reject/);
+  assert.match(quanxOut, /static = HK-Group, HK-1/);
+
+  // 自定义策略组恰好叫 PROXY 时，引用它应保留原名 PROXY 而不误折成内置小写 proxy。
+  const customProxyGroup = parseProfile({
+    nodes: [
+      {
+        kind: 'shadowsocks',
+        name: 'HK-1',
+        server: 'hk.example.invalid',
+        port: 8388,
+        method: 'aes-128-gcm',
+        password: 'pw',
+      },
+    ],
+    ruleSources: [],
+    policyGroups: [
+      { name: 'Daily', members: ['PROXY', 'DIRECT'] },
+      { name: 'PROXY', members: ['HK-1'] },
+    ],
+  });
+  const quanxCustomOut = emit(customProxyGroup, plan(customProxyGroup, 'quanx')).content;
+  assert.match(quanxCustomOut, /static = Daily, PROXY, direct/);
+
+  // Surge 策略组只保留 Surge 合法内置策略，过滤掉 Clash 专属 COMPATIBLE / 规则级 PASS；含逗号节点名在默认 PROXY 组也需加引号。
+  const surgeEdgeProfile = parseProfile({
+    nodes: [
+      {
+        kind: 'shadowsocks',
+        name: 'HK,Fast',
+        server: 'hk.example.invalid',
+        port: 8388,
+        method: 'aes-128-gcm',
+        password: 'pw',
+      },
+    ],
+    ruleSources: [],
+    policyGroups: [
+      { name: 'Custom', members: ['HK,Fast', 'COMPATIBLE', 'PASS', 'REJECT-TINYGIF', 'REJECT-NO-DROP'] },
+    ],
+  });
+  const surgeEdgeOut = emit(surgeEdgeProfile, plan(surgeEdgeProfile, 'surge')).content;
+  assert.match(surgeEdgeOut, /Custom = select, "HK,Fast", REJECT-TINYGIF, REJECT-NO-DROP$/m);
+
+  const surgeDefaultGroupProfile = parseProfile({
+    nodes: [
+      {
+        kind: 'shadowsocks',
+        name: 'HK,Fast',
+        server: 'hk.example.invalid',
+        port: 8388,
+        method: 'aes-128-gcm',
+        password: 'pw',
+      },
+    ],
+    ruleSources: [],
+    policyGroups: [],
+  });
+  const surgeDefaultOut = emit(surgeDefaultGroupProfile, plan(surgeDefaultGroupProfile, 'surge')).content;
+  assert.match(surgeDefaultOut, /PROXY = select, "HK,Fast"$/m);
+});

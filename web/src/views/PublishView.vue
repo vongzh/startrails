@@ -11,7 +11,9 @@ import {
   NTag,
   NTooltip,
 } from 'naive-ui';
-import { AlertTriangle, Copy, Download, KeyRound, Link2, Plus, QrCode, RefreshCw, Trash2 } from 'lucide-vue-next';
+import { AlertTriangle, Copy, Download, ExternalLink, KeyRound, Link2, Plus, QrCode, RefreshCw, Trash2 } from 'lucide-vue-next';
+import { clientImportHint, clientImportUrl } from '@core/import-url.ts';
+import type { ClientTarget } from '@core/targets.ts';
 import { formatTime } from '../format';
 import type { TokenView } from '../api';
 import ClientIcon from '../components/ClientIcon.vue';
@@ -42,6 +44,37 @@ const sources = computed(() => state.value?.sources ?? []);
 const tokens = computed(() => state.value?.tokens ?? []);
 const latestUrl = computed(() =>
   createdUrls.value.find((item) => item.profile === activeProfileName.value && item.target === publishTarget.value),
+);
+
+function importUrlOf(
+  targetId: string,
+  url: string | null,
+  profileName = activeProfileName.value,
+  revision?: string,
+): string | null {
+  if (url === null) return null;
+  const label = profileName === 'default' ? 'Startrails' : `Startrails-${profileName}`;
+  return clientImportUrl(targetId as ClientTarget | 'auto', url, {
+    name: label,
+    ...(revision === undefined ? {} : { revision }),
+  });
+}
+
+const latestImportUrl = computed(() =>
+  latestUrl.value === undefined
+    ? null
+    : importUrlOf(
+        latestUrl.value.target,
+        latestUrl.value.url,
+        latestUrl.value.profile,
+        latestUrl.value.id,
+      ),
+);
+const publishImportHint = computed(() => clientImportHint(publishTarget.value as ClientTarget | 'auto'));
+const qrImportUrl = computed(() =>
+  qrToken.value === null
+    ? null
+    : importUrlOf(qrToken.value.target, qrToken.value.url, qrToken.value.profile, qrToken.value.id),
 );
 
 function tokenTail(url: string): string {
@@ -214,7 +247,17 @@ async function generate(): Promise<void> {
             <div style="flex: 1; min-width: 0">
               <div style="font-weight: 600">{{ publishTargetName }} 订阅地址 · 刚刚签发</div>
               <div class="mono" style="word-break: break-all; margin-top: 2px; font-size: 11.5px">{{ latestUrl.url }}</div>
-              <div class="row" style="gap: 6px; margin-top: 8px">
+              <div class="row" style="gap: 6px; margin-top: 8px; flex-wrap: wrap">
+                <n-button
+                  v-if="latestImportUrl !== null"
+                  size="tiny"
+                  type="primary"
+                  tag="a"
+                  :href="latestImportUrl"
+                >
+                  <template #icon><ExternalLink :size="13" /></template>
+                  一键导入 {{ publishTargetName }}
+                </n-button>
                 <n-button size="tiny" @click="copyText(latestUrl.url)">
                   <template #icon><Copy :size="13" /></template>
                   复制
@@ -223,7 +266,9 @@ async function generate(): Promise<void> {
                   <template #icon><Download :size="13" /></template>
                   导出文件
                 </n-button>
-                <span class="text-3" style="font-size: 11.5px">导出即同一份产物换了个下发方式，不是另一条构建路径</span>
+                <span class="text-3" style="font-size: 11.5px">
+                  {{ latestImportUrl === null && publishImportHint !== null ? publishImportHint : '导出即同一份产物换了个下发方式，不是另一条构建路径' }}
+                </span>
               </div>
             </div>
             <figure class="qr-figure">
@@ -318,6 +363,22 @@ async function generate(): Promise<void> {
               <td class="text-3 col-wide-only" style="font-size: 12.5px; white-space: nowrap">{{ formatTime(token.createdAt) }}</td>
               <td class="actions">
                 <template v-if="token.url !== null && !token.revoked">
+                  <n-tooltip v-if="importUrlOf(token.target, token.url, token.profile, token.id) !== null" trigger="hover">
+                    <template #trigger>
+                      <n-button
+                        :aria-label="`一键导入到 ${clientNameOf(token.target)}`"
+                        quaternary
+                        circle
+                        size="tiny"
+                        type="primary"
+                        tag="a"
+                        :href="importUrlOf(token.target, token.url, token.profile, token.id) ?? undefined"
+                      >
+                        <template #icon><ExternalLink :size="13" /></template>
+                      </n-button>
+                    </template>
+                    一键导入到 {{ clientNameOf(token.target) }}
+                  </n-tooltip>
                   <n-tooltip trigger="hover">
                     <template #trigger>
                       <n-button aria-label="复制订阅链接" quaternary circle size="tiny" @click="copyTokenUrl(token)">
@@ -381,7 +442,11 @@ async function generate(): Promise<void> {
       <div v-if="qrToken?.url" class="qr-panel">
         <img :src="`${qrToken.url}/qr.svg`" alt="订阅二维码" width="200" height="200" />
         <div class="mono text-3" style="font-size: 11px; word-break: break-all; text-align: center">{{ qrToken.url }}</div>
-        <div class="row" style="gap: 8px">
+        <div class="row" style="gap: 8px; flex-wrap: wrap; justify-content: center">
+          <n-button v-if="qrImportUrl !== null" size="small" type="primary" tag="a" :href="qrImportUrl">
+            <template #icon><ExternalLink :size="13" /></template>
+            一键导入
+          </n-button>
           <n-button size="small" @click="copyText(qrToken.url)">
             <template #icon><Copy :size="13" /></template>
             复制链接

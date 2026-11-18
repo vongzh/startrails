@@ -89,6 +89,19 @@ function setDraft(patch: Partial<{ kind: GroupMemberDraft['kind']; value: string
   pending.value = { ...pending.value, ...patch };
 }
 
+function setStrategy(strategy: 'select' | 'url-test' | 'fallback'): void {
+  if (strategy === 'select') {
+    patchGroup(props.group.name, { strategy });
+    return;
+  }
+  patchGroup(props.group.name, {
+    strategy,
+    ...(props.group.testUrl.trim() === '' ? { testUrl: 'https://www.gstatic.com/generate_204' } : {}),
+    ...(props.group.interval === null ? { interval: 300 } : {}),
+    ...(strategy === 'url-test' && props.group.tolerance === null ? { tolerance: 50 } : {}),
+  });
+}
+
 function addMember(): void {
   addGroupMember(props.group, pending.value);
   pending.value = { ...pending.value, value: '' };
@@ -110,7 +123,7 @@ function selectRefMember(value: string | number): void {
         :options="strategyOptions"
         size="tiny"
         style="width: 146px"
-        @update:value="(value) => patchGroup(group.name, { strategy: value })"
+        @update:value="setStrategy"
       />
       <n-tag size="small" :bordered="false">{{ group.members.length }} 成员</n-tag>
       <div class="spacer"></div>
@@ -160,7 +173,9 @@ function selectRefMember(value: string | number): void {
           懒测速
         </label>
       </div>
-      <p v-if="group.testUrl.trim() === ''" class="hint-line">测速地址留空则按客户端默认测速地址生成</p>
+      <p v-if="group.testUrl.trim() === ''" class="hint-line" style="color: var(--warn)">
+        测速组需要填写测速地址；留空在 Clash / mihomo 中会退回手选
+      </p>
     </div>
     <div class="tag-input">
       <n-tag
@@ -195,45 +210,57 @@ function selectRefMember(value: string | number): void {
           </span>
         </span>
       </n-tag>
-      <n-select
-        :value="pending.kind"
-        :options="memberKinds"
-        size="small"
-        style="width: 88px"
-        @update:value="(value: GroupMemberDraft['kind']) => setDraft({ kind: value, value: '' })"
-      />
-      <n-select
-        v-if="pending.kind === 'region'"
-        :value="pending.value || null"
-        :options="regionOptions"
-        size="small"
-        placeholder="地区"
-        style="width: 120px"
-        @update:value="(value: string) => setDraft({ value })"
-      />
-      <n-input
-        v-else-if="pending.kind === 'match'"
-        :value="pending.value"
-        size="small"
-        placeholder="/USA|美国/i"
-        style="width: 180px"
-        @update:value="(value: string) => setDraft({ value })"
-        @keyup.enter="addMember"
-      />
-      <n-auto-complete
-        v-else-if="pending.kind === 'ref'"
-        :value="pending.value"
-        :options="refOptions"
-        :get-show="() => true"
-        clear-after-select
-        size="small"
-        placeholder="节点名、组名或 DIRECT"
-        style="width: 190px"
-        @update:value="(value: string) => setDraft({ value })"
-        @select="selectRefMember"
-        @keyup.enter="addMember"
-      />
-      <n-button size="small" :disabled="pending.kind !== 'rest' && pending.value.trim() === ''" @click="addMember">添加</n-button>
+      <div class="member-adder-row">
+        <n-select
+          :value="pending.kind"
+          :options="memberKinds"
+          size="small"
+          style="width: 84px"
+          @update:value="(value: GroupMemberDraft['kind']) => setDraft({ kind: value, value: '' })"
+        />
+        <n-select
+          v-if="pending.kind === 'region'"
+          :value="pending.value || null"
+          :options="regionOptions"
+          size="small"
+          placeholder="地区"
+          style="width: 120px"
+          @update:value="(value: string) => setDraft({ value })"
+        />
+        <n-input
+          v-else-if="pending.kind === 'match'"
+          :value="pending.value"
+          size="small"
+          placeholder="/USA|美国/i"
+          style="flex: 1; min-width: 110px; max-width: 210px"
+          @update:value="(value: string) => setDraft({ value })"
+          @keyup.enter="addMember"
+        />
+        <n-auto-complete
+          v-else-if="pending.kind === 'ref'"
+          :value="pending.value"
+          :options="refOptions"
+          :get-show="() => true"
+          clear-after-select
+          size="small"
+          placeholder="节点名、组名或 DIRECT"
+          style="flex: 1; min-width: 110px; max-width: 220px"
+          @update:value="(value: string) => setDraft({ value })"
+          @select="selectRefMember"
+          @keyup.enter="addMember"
+        />
+        <n-button
+          size="small"
+          :disabled="
+            pending.kind === 'rest'
+              ? group.members.some((item) => item.kind === 'rest')
+              : pending.value.trim() === ''
+          "
+          @click="addMember"
+        >
+          添加
+        </n-button>
+      </div>
     </div>
     <p v-if="group.members.length === 0" class="hint-line" style="color: var(--warn)">
       策略组至少需要 1 个成员，空组会在生成时跳过或导致客户端报错
@@ -246,6 +273,13 @@ function selectRefMember(value: string | number): void {
   margin: 0;
   font-size: 11.5px;
   color: var(--text-3);
+}
+.member-adder-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  max-width: 100%;
 }
 .member-chip {
   display: inline-flex;

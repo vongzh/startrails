@@ -211,6 +211,11 @@ export interface PolicyGroupBaseView {
   name: string;
   members: string[];
   strategy?: 'select' | 'url-test' | 'fallback';
+  testUrl?: string;
+  interval?: number;
+  tolerance?: number;
+  lazy?: boolean;
+  hidden?: boolean;
 }
 export interface TraceStepView {
   index: number;
@@ -548,6 +553,8 @@ export const api = {
         error: string | null;
         /** 目标解析到非公网地址（内网 / TUN 假 IP），此时延迟不代表节点质量。 */
         intercepted: boolean;
+        /** false 表示纯 UDP 协议（Hysteria2 / TUIC / WireGuard），跳过 TCP 探测。 */
+        applicable?: boolean;
       }[];
     }>('/api/probe', {
       method: 'POST',

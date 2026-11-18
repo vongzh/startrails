@@ -104,7 +104,7 @@ function effectiveRegion(node: NodeView): string {
 
 function latencyMs(node: NodeView): number | null {
   const value = latencies.value[node.nodeKey];
-  if (value === undefined || value.ms === null || value.intercepted) return null;
+  if (value === undefined || !value.applicable || value.ms === null || value.intercepted) return null;
   return value.ms;
 }
 
@@ -114,10 +114,10 @@ function featuresOf(node: NodeView): string[] {
     .map(([key, value]) => (value === true ? key : `${key}=${String(value)}`));
 }
 
-/** 延迟色调：<100ms 正常、<250ms 一般、其余偏慢；未测为 undefined。 */
+/** 延迟色调：<100ms 正常、<250ms 一般、其余偏慢；未测或纯 UDP 为 text-3。 */
 function latencyClass(nodeKey: string): string {
   const value = latencies.value[nodeKey];
-  if (value === undefined || value.ms === null) return 'text-3';
+  if (value === undefined || !value.applicable || value.ms === null) return 'text-3';
   // 解析到内网 / 本机假 IP 的数字不可比，一律灰掉，不用颜色暗示「快」。
   if (value.intercepted) return 'text-3';
   if (value.ms < 100) return 'lat-fast';
@@ -128,8 +128,14 @@ function latencyClass(nodeKey: string): string {
 function latencyText(nodeKey: string): string {
   const value = latencies.value[nodeKey];
   if (value === undefined) return '—';
+  if (!value.applicable) return 'UDP';
   if (value.ms === null) return '不可达';
   return `${value.ms} ms`;
+}
+
+function latencyUdpOnly(nodeKey: string): boolean {
+  const value = latencies.value[nodeKey];
+  return value !== undefined && !value.applicable;
 }
 
 /** 被本机 TUN / DNS 劫持或本身是内网地址：数字旁边标一下，避免被当成节点质量。 */
@@ -293,13 +299,21 @@ async function commitAlias(node: NodeView): Promise<void> {
                 <td class="col-optional"><n-tag size="small" :bordered="false" class="mono">{{ node.kind }}</n-tag></td>
                 <td class="mono text-2 col-wide-only">{{ node.address }}</td>
                 <td class="col-optional mono" style="width: 76px; white-space: nowrap">
-                  <span :class="latencyClass(node.nodeKey)" style="font-size: 12px">{{ latencyText(node.nodeKey) }}</span>
-                  <n-tooltip v-if="latencyIntercepted(node.nodeKey)" trigger="hover">
+                  <n-tooltip v-if="latencyUdpOnly(node.nodeKey)" trigger="hover">
                     <template #trigger>
-                      <span class="text-3" style="font-size: 10px; margin-left: 3px">本机</span>
+                      <span class="text-3" style="font-size: 12px; border-bottom: 1px dashed var(--border)">UDP</span>
                     </template>
-                    该节点解析到内网 / 本机假 IP（TUN 代理或 DNS 劫持），这个数字是到那个地址的往返，不代表节点质量
+                    Hysteria2 / TUIC / WireGuard 为纯 UDP 协议，不适用服务端 TCP 握手延迟探测
                   </n-tooltip>
+                  <template v-else>
+                    <span :class="latencyClass(node.nodeKey)" style="font-size: 12px">{{ latencyText(node.nodeKey) }}</span>
+                    <n-tooltip v-if="latencyIntercepted(node.nodeKey)" trigger="hover">
+                      <template #trigger>
+                        <span class="text-3" style="font-size: 10px; margin-left: 3px">本机</span>
+                      </template>
+                      该节点解析到内网 / 本机假 IP（TUN 代理或 DNS 劫持），这个数字是到那个地址的往返，不代表节点质量
+                    </n-tooltip>
+                  </template>
                 </td>
                 <td class="col-optional">
                   <div class="row" style="gap: 4px">

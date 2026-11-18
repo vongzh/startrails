@@ -6,6 +6,7 @@ import {
   NButton,
   NEmpty,
   NInput,
+  NInputNumber,
   NModal,
   NRadioButton,
   NRadioGroup,
@@ -16,7 +17,7 @@ import {
   NTag,
   NTooltip,
 } from 'naive-ui';
-import { ArrowDown, ArrowUp, Copy, FileCode2, Filter, Layers, Pencil, Plus, Trash2, X } from 'lucide-vue-next';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Copy, FileCode2, Filter, Layers, Pencil, Plus, Trash2, X } from 'lucide-vue-next';
 import type { OverlayMode } from '../api';
 import PolicyGroupCard from '../components/PolicyGroupCard.vue';
 import { parseRuleText } from '../rule-text';
@@ -24,6 +25,7 @@ import {
   addGroup,
   addRule,
   adoptBaseGroups,
+  annotationMap,
   baseGroups,
   busy,
   copyText,
@@ -36,6 +38,7 @@ import {
   importRules,
   importRuleText,
   moveRule,
+  nodes,
   notify,
   removeRule,
   ruleLabel,
@@ -47,6 +50,7 @@ import {
   saveRules,
   updateRule,
 } from '../workspace';
+import type { GroupDraft, GroupMemberDraft } from '../workspace';
 
 const draftKind = ref<'inline' | 'external' | 'final'>('inline');
 const draft = ref({
@@ -62,7 +66,18 @@ const batchOpen = ref(false);
 const batchTab = ref<'text' | 'json'>('text');
 const textDraft = ref('');
 const jsonDraft = ref('[]');
-const groupDraft = ref('');
+const emptyGroupDraft = (): GroupDraft => ({
+  name: '',
+  strategy: 'select',
+  testUrl: '',
+  interval: null,
+  tolerance: null,
+  lazy: false,
+  hidden: false,
+  members: [],
+});
+const groupDraft = ref<GroupDraft>(emptyGroupDraft());
+const pendingMember = ref<{ kind: GroupMemberDraft['kind']; value: string }>({ kind: 'ref', value: '' });
 const ruleModalOpen = ref(false);
 const editingRuleIndex = ref<number | null>(null);
 const groupModalOpen = ref(false);
@@ -70,6 +85,28 @@ const ruleValueInput = ref<InputInst | null>(null);
 const ruleUrlInput = ref<InputInst | null>(null);
 const groupNameInput = ref<InputInst | null>(null);
 const batchTextInput = ref<InputInst | null>(null);
+
+const strategyOptions = [
+  { label: 'select 手选', value: 'select' },
+  { label: 'url-test 测速', value: 'url-test' },
+  { label: 'fallback 故障转移', value: 'fallback' },
+];
+const memberKinds = [
+  { label: '引用', value: 'ref' },
+  { label: '匹配', value: 'match' },
+  { label: '地区', value: 'region' },
+  { label: '其余', value: 'rest' },
+];
+const regionOptions = [
+  { label: '香港 HK', value: 'HK' },
+  { label: '台湾 TW', value: 'TW' },
+  { label: '日本 JP', value: 'JP' },
+  { label: '新加坡 SG', value: 'SG' },
+  { label: '美国 US', value: 'US' },
+  { label: '英国 UK', value: 'UK' },
+  { label: '德国 DE', value: 'DE' },
+  { label: '韩国 KR', value: 'KR' },
+];
 
 const ruleTextPlaceholder = [
   '# 直接粘贴 Clash / Surge 规则或 JS 覆写数组行（支持引号与末尾逗号）',
@@ -161,7 +198,7 @@ function openEditRule(index: number): void {
   const target = rules.value[index];
   if (target === undefined) return;
   if (target.kind === 'inline' && (target.condition.children !== undefined || target.condition.child !== undefined)) {
-    notify('error', '复合条件（AND / OR / NOT）请点击右上角「批量 → JSON」编辑');
+    notify('error', '复合条件（AND / OR / NOT）请点击右上角「批量导入 → 规则文本或 JSON」编辑');
     return;
   }
   editingRuleIndex.value = index;
@@ -270,18 +307,201 @@ function applyJson(): void {
   if (importRules(jsonDraft.value)) batchOpen.value = false;
 }
 
+const groupNameDuplicate = computed(() => {
+  const name = groupDraft.value.name.trim();
+  return name.length > 0 && groups.value.some((item) => item.name === name);
+});
+
+const groupCanSubmit = computed(
+  () => groupDraft.value.name.trim().length > 0 && !groupNameDuplicate.value,
+);
+
+const groupRefOptions = computed(() => {
+  if (pendingMember.value.kind !== 'ref') return [];
+  const existing = new Set(
+    groupDraft.value.members.filter((item) => item.kind === 'ref').map((item) => item.value),
+  );
+  const candidates = new Set<string>(['DIRECT', 'REJECT']);
+  for (const g of groups.value) candidates.add(g.name);
+  if (groupMode.value !== 'replace') {
+    for (const g of baseGroups.value) candidates.add(g.name);
+  }
+  for (const node of nodes.value) {
+    const ann = annotationMap.value.get(node.nodeKey);
+    if (ann?.excluded === true) continue;
+    const label = ann?.alias ?? node.name;
+    if (label !== '') candidates.add(label);
+  }
+  const query = pendingMember.value.value.trim().toLowerCase();
+  return [...candidates]
+    .filter((name) => !existing.has(name) && (query === '' || name.toLowerCase().includes(query)))
+    .slice(0, 40)
+    .map((name) => ({ label: name, value: name }));
+});
+
+const quickGroupRefs = computed(() => {
+  const existing = new Set(
+    groupDraft.value.members.filter((item) => item.kind === 'ref').map((item) => item.value),
+  );
+  const candidates = [
+    ...groups.value.map((g) => g.name),
+    ...(groupMode.value !== 'replace' ? baseGroups.value.map((g) => g.name) : []),
+    'DIRECT',
+    'REJECT',
+  ];
+  const items: string[] = [];
+  for (const name of candidates) {
+    if (!existing.has(name) && !items.includes(name)) items.push(name);
+  }
+  return items.slice(0, 6);
+});
+
+function groupMemberKey(member: GroupMemberDraft): string {
+  return `${member.kind}:${member.value}`;
+}
+
+function groupMemberLabel(member: GroupMemberDraft): string {
+  if (member.kind === 'match') return `匹配 ${member.value}`;
+  if (member.kind === 'region') return `地区 ${member.value}`;
+  if (member.kind === 'rest') return '其余节点';
+  return member.value;
+}
+
+function addDraftMember(member: GroupMemberDraft): void {
+  if (member.kind === 'rest') {
+    if (groupDraft.value.members.some((item) => item.kind === 'rest')) return;
+    groupDraft.value.members = [...groupDraft.value.members, { kind: 'rest', value: '' }];
+    return;
+  }
+  const value = member.value.trim();
+  if (value === '') return;
+  if (groupDraft.value.members.some((item) => item.kind === member.kind && item.value === value)) return;
+  groupDraft.value.members = [...groupDraft.value.members, { kind: member.kind, value }];
+}
+
+function commitPendingMember(): void {
+  addDraftMember(pendingMember.value);
+  pendingMember.value = { ...pendingMember.value, value: '' };
+}
+
+function selectDraftRefMember(value: string | number): void {
+  const text = String(value).trim();
+  if (text !== '') addDraftMember({ kind: 'ref', value: text });
+  pendingMember.value = { ...pendingMember.value, value: '' };
+}
+
+function selectDraftRegionMember(value: string): void {
+  if (value !== '') addDraftMember({ kind: 'region', value });
+  pendingMember.value = { ...pendingMember.value, value: '' };
+}
+
+function removeDraftMember(member: GroupMemberDraft): void {
+  groupDraft.value.members = groupDraft.value.members.filter(
+    (item) => !(item.kind === member.kind && item.value === member.value),
+  );
+}
+
+function moveDraftMember(index: number, direction: number): void {
+  const next = index + direction;
+  if (next < 0 || next >= groupDraft.value.members.length) return;
+  const list = [...groupDraft.value.members];
+  const current = list[index];
+  const other = list[next];
+  if (current === undefined || other === undefined) return;
+  list[index] = other;
+  list[next] = current;
+  groupDraft.value.members = list;
+}
+
+function setDraftStrategy(strategy: 'select' | 'url-test' | 'fallback'): void {
+  groupDraft.value.strategy = strategy;
+  if (strategy !== 'select') {
+    if (groupDraft.value.testUrl.trim() === '') {
+      groupDraft.value.testUrl = 'https://www.gstatic.com/generate_204';
+    }
+    if (groupDraft.value.interval === null) groupDraft.value.interval = 300;
+    if (strategy === 'url-test' && groupDraft.value.tolerance === null) groupDraft.value.tolerance = 50;
+  }
+}
+
+function applyGroupPreset(kind: 'main' | 'auto' | 'ai' | 'fallback'): void {
+  const knownNames = groups.value.map((g) => g.name);
+  if (kind === 'main') {
+    groupDraft.value = {
+      name: '🚀 节点选择',
+      strategy: 'select',
+      testUrl: '',
+      interval: null,
+      tolerance: null,
+      lazy: false,
+      hidden: false,
+      members: [
+        ...knownNames.map((name): GroupMemberDraft => ({ kind: 'ref', value: name })),
+        { kind: 'rest', value: '' },
+        { kind: 'ref', value: 'DIRECT' },
+      ],
+    };
+  } else if (kind === 'auto') {
+    groupDraft.value = {
+      name: '♻️ 自动选择',
+      strategy: 'url-test',
+      testUrl: 'https://www.gstatic.com/generate_204',
+      interval: 300,
+      tolerance: 50,
+      lazy: true,
+      hidden: false,
+      members: [{ kind: 'rest', value: '' }],
+    };
+  } else if (kind === 'ai') {
+    groupDraft.value = {
+      name: '🤖 AI',
+      strategy: 'select',
+      testUrl: '',
+      interval: null,
+      tolerance: null,
+      lazy: false,
+      hidden: false,
+      members: [
+        { kind: 'region', value: 'US' },
+        { kind: 'region', value: 'JP' },
+        { kind: 'region', value: 'SG' },
+      ],
+    };
+  } else {
+    groupDraft.value = {
+      name: '🌍 故障转移',
+      strategy: 'fallback',
+      testUrl: 'https://www.gstatic.com/generate_204',
+      interval: 300,
+      tolerance: null,
+      lazy: true,
+      hidden: false,
+      members: [{ kind: 'rest', value: '' }],
+    };
+  }
+}
+
 function openAddGroup(): void {
-  groupDraft.value = '';
+  groupDraft.value = emptyGroupDraft();
+  pendingMember.value = { kind: 'ref', value: '' };
   groupModalOpen.value = true;
   void nextTick(() => groupNameInput.value?.focus());
 }
 
 function submitGroup(): void {
+  if (!groupCanSubmit.value) {
+    notify('error', groupNameDuplicate.value ? '已存在同名策略组，请换一个名称' : '策略组名称不能为空');
+    return;
+  }
+  // 如果用户在输入框里已经填了/选了待加入成员但忘了点「加入」，替他一并带上。
+  if (pendingMember.value.kind !== 'rest' && pendingMember.value.value.trim() !== '') {
+    commitPendingMember();
+  }
   if (!addGroup(groupDraft.value)) {
     notify('error', '策略组名称不能为空，也不能与已有组重名');
     return;
   }
-  groupDraft.value = '';
+  groupDraft.value = emptyGroupDraft();
   groupModalOpen.value = false;
 }
 
@@ -308,7 +528,7 @@ const ruleCanSubmit = computed(() => {
           <n-tab-pane name="text" tab="规则文本">
             <div class="stack" style="gap: 10px">
               <p class="text-3" style="font-size: 12px; margin: 0">
-                支持 <span class="mono">DOMAIN / DOMAIN-SUFFIX / DOMAIN-KEYWORD / IP-CIDR / IP-CIDR6 / GEOSITE / GEOIP / MATCH / HTTP 规则集</span>；会自动去除开头的 <span class="mono">-</span>、首尾引号、行尾逗号及注释。
+                支持 <span class="mono">DOMAIN / DOMAIN-SUFFIX / DOMAIN-KEYWORD / HOST* / IP-CIDR / IP-CIDR6 / GEOSITE / GEOIP / AND / OR / NOT / MATCH / FINAL / HTTP 规则集</span>（含 subconverter 前缀）；会自动去除开头的 <span class="mono">-</span>、首尾引号、行尾逗号及注释。
               </p>
               <n-input
                 ref="batchTextInput"
@@ -645,23 +865,194 @@ const ruleCanSubmit = computed(() => {
       v-model:show="groupModalOpen"
       preset="card"
       title="新建策略组"
-      style="max-width: 400px; width: 90vw"
+      style="max-width: 580px; width: 92vw"
       :mask-closable="true"
     >
-      <div class="stack" style="gap: 12px">
-        <div class="field">
-          <label>策略组名称</label>
-          <n-input
-            ref="groupNameInput"
-            v-model:value="groupDraft"
-            size="small"
-            placeholder="例如 流媒体、Proxy、AI"
-            @keyup.enter="submitGroup"
-          />
+      <div class="stack" style="gap: 14px">
+        <div class="row" style="gap: 6px; flex-wrap: wrap">
+          <span class="text-3" style="font-size: 12px">快捷模板：</span>
+          <n-button size="tiny" secondary @click="applyGroupPreset('main')">🚀 节点选择</n-button>
+          <n-button size="tiny" secondary @click="applyGroupPreset('auto')">♻️ 自动测速</n-button>
+          <n-button size="tiny" secondary @click="applyGroupPreset('ai')">🤖 AI 专用</n-button>
+          <n-button size="tiny" secondary @click="applyGroupPreset('fallback')">🌍 故障转移</n-button>
         </div>
+
+        <div class="row" style="gap: 12px; align-items: flex-end; flex-wrap: wrap">
+          <div class="field grow" style="min-width: 180px">
+            <label>策略组名称</label>
+            <n-input
+              ref="groupNameInput"
+              v-model:value="groupDraft.name"
+              size="small"
+              placeholder="例如 🌈 Daily、流媒体、AI"
+              @keyup.enter="submitGroup"
+            />
+          </div>
+          <div class="field" style="width: 158px">
+            <label>策略类型</label>
+            <n-select
+              :value="groupDraft.strategy"
+              :options="strategyOptions"
+              size="small"
+              @update:value="setDraftStrategy"
+            />
+          </div>
+          <label class="row" style="gap: 6px; font-size: 12.5px; height: 28px">
+            <n-switch v-model:value="groupDraft.hidden" size="small" />
+            隐藏
+          </label>
+        </div>
+        <p v-if="groupNameDuplicate" class="text-3" style="margin: -8px 0 0; font-size: 12px; color: var(--err)">
+          已有同名策略组，请换一个名称
+        </p>
+
+        <div v-if="groupDraft.strategy !== 'select'" class="stack" style="gap: 6px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius)">
+          <div class="row" style="gap: 8px; flex-wrap: wrap">
+            <div class="field grow" style="min-width: 180px">
+              <label>测速地址</label>
+              <n-input
+                v-model:value="groupDraft.testUrl"
+                size="small"
+                placeholder="https://www.gstatic.com/generate_204"
+              />
+            </div>
+            <div class="field" style="width: 96px">
+              <label>间隔（秒）</label>
+              <n-input-number v-model:value="groupDraft.interval" size="small" :min="1" placeholder="300" />
+            </div>
+            <div v-if="groupDraft.strategy === 'url-test'" class="field" style="width: 86px">
+              <label>容差（ms）</label>
+              <n-input-number v-model:value="groupDraft.tolerance" size="small" :min="0" placeholder="50" />
+            </div>
+          </div>
+          <label class="row" style="gap: 6px; font-size: 12px">
+            <n-switch v-model:value="groupDraft.lazy" size="small" />
+            <span>懒测速（仅在被选中时才测速）</span>
+          </label>
+          <span v-if="groupDraft.testUrl.trim() === ''" class="text-3" style="font-size: 11.5px; color: var(--warn)">
+            测速组需要填写测速地址；留空在 Clash / mihomo 中会退回手选
+          </span>
+        </div>
+
+        <div class="field">
+          <div class="row" style="justify-content: space-between">
+            <label>成员配置</label>
+            <span class="text-3" style="font-size: 11.5px">已选 {{ groupDraft.members.length }} 项</span>
+          </div>
+          <div class="tag-input" style="margin-top: 4px">
+            <n-tag
+              v-for="(member, memberIndex) in groupDraft.members"
+              :key="groupMemberKey(member)"
+              size="small"
+              closable
+              :bordered="false"
+              @close="removeDraftMember(member)"
+            >
+              <span class="member-chip">
+                <span>{{ groupMemberLabel(member) }}</span>
+                <span v-if="groupDraft.members.length > 1" class="member-arrows">
+                  <button
+                    type="button"
+                    class="tag-step"
+                    aria-label="前移成员"
+                    :disabled="memberIndex === 0"
+                    @click.stop="moveDraftMember(memberIndex, -1)"
+                  >
+                    <ChevronLeft :size="11" />
+                  </button>
+                  <button
+                    type="button"
+                    class="tag-step"
+                    aria-label="后移成员"
+                    :disabled="memberIndex === groupDraft.members.length - 1"
+                    @click.stop="moveDraftMember(memberIndex, 1)"
+                  >
+                    <ChevronRight :size="11" />
+                  </button>
+                </span>
+              </span>
+            </n-tag>
+
+            <div class="member-adder-row">
+              <n-select
+                :value="pendingMember.kind"
+                :options="memberKinds"
+                size="small"
+                style="width: 84px"
+                @update:value="(value: GroupMemberDraft['kind']) => (pendingMember = { kind: value, value: '' })"
+              />
+              <n-select
+                v-if="pendingMember.kind === 'region'"
+                :value="pendingMember.value || null"
+                :options="regionOptions"
+                size="small"
+                placeholder="选择地区即加入"
+                style="width: 140px"
+                @update:value="selectDraftRegionMember"
+              />
+              <n-input
+                v-else-if="pendingMember.kind === 'match'"
+                v-model:value="pendingMember.value"
+                size="small"
+                placeholder="/USA|美国/i"
+                style="flex: 1; min-width: 110px"
+                @keyup.enter="commitPendingMember"
+              />
+              <n-auto-complete
+                v-else-if="pendingMember.kind === 'ref'"
+                v-model:value="pendingMember.value"
+                :options="groupRefOptions"
+                :get-show="() => true"
+                clear-after-select
+                size="small"
+                placeholder="节点名、组名或 DIRECT"
+                style="flex: 1; min-width: 110px"
+                @select="selectDraftRefMember"
+                @keyup.enter="commitPendingMember"
+              />
+              <n-button
+                v-if="pendingMember.kind !== 'region'"
+                size="small"
+                :disabled="
+                  pendingMember.kind === 'rest'
+                    ? groupDraft.members.some((item) => item.kind === 'rest')
+                    : pendingMember.value.trim() === ''
+                "
+                @click="commitPendingMember"
+              >
+                加入
+              </n-button>
+            </div>
+          </div>
+
+          <div class="row" style="gap: 5px; flex-wrap: wrap; margin-top: 6px">
+            <span class="text-3" style="font-size: 11.5px">快捷加入：</span>
+            <n-button
+              v-for="refName in quickGroupRefs"
+              :key="`qref:${refName}`"
+              size="tiny"
+              quaternary
+              @click="addDraftMember({ kind: 'ref', value: refName })"
+            >
+              + {{ refName }}
+            </n-button>
+            <n-button
+              v-if="!groupDraft.members.some((item) => item.kind === 'rest')"
+              size="tiny"
+              quaternary
+              @click="addDraftMember({ kind: 'rest', value: '' })"
+            >
+              + 其余节点
+            </n-button>
+          </div>
+          <span v-if="groupDraft.members.length === 0" class="text-3" style="font-size: 11.5px; color: var(--warn); margin-top: 4px">
+            未添加成员时，生成配置会暂时回退到 DIRECT；建议在上方选好成员再创建
+          </span>
+        </div>
+
         <div class="row end">
           <n-button size="small" quaternary @click="groupModalOpen = false">取消</n-button>
-          <n-button size="small" type="primary" :disabled="groupDraft.trim() === ''" @click="submitGroup">新建</n-button>
+          <n-button size="small" type="primary" :disabled="!groupCanSubmit" @click="submitGroup">创建策略组</n-button>
         </div>
       </div>
     </n-modal>
@@ -700,5 +1091,49 @@ const ruleCanSubmit = computed(() => {
 
 .skip-item .text-3 {
   overflow-wrap: anywhere;
+}
+
+.member-adder-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.member-arrows {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.tag-step {
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.tag-step:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.tag-step:disabled {
+  opacity: 0.25;
+  cursor: default;
 }
 </style>

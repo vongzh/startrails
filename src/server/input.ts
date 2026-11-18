@@ -27,19 +27,24 @@ import { hasRedactionMarkers } from './redact.ts';
 /** 实例级拉取默认的设置键；值存 JSON，header 值回显掩码。 */
 export const SETTING_FETCH_DEFAULTS = 'fetch.defaults';
 
-/** 一个链接喂所有客户端：按 UA 猜不出时明确拒绝，不静默给错格式。 */
+/** 一个链接喂所有客户端：按 UA 猜不出时明确拒绝，不静默给错格式。具体客户端优先于通用内核名。 */
 export const UA_TARGETS: readonly { readonly pattern: RegExp; readonly target: ClientTarget }[] = [
+  { pattern: /surfboard/i, target: 'surge' },
   { pattern: /surge/i, target: 'surge' },
-  { pattern: /quantumult/i, target: 'quanx' },
+  { pattern: /quantumult|quanx/i, target: 'quanx' },
   { pattern: /loon/i, target: 'loon' },
   { pattern: /shadowrocket/i, target: 'shadowrocket' },
   { pattern: /stash/i, target: 'clash' },
   { pattern: /egern/i, target: 'egern' },
-  { pattern: /sing-box|sfa|sfi|sfm/i, target: 'sing-box' },
+  { pattern: /sing-?box|sfa|sfi|sfm/i, target: 'sing-box' },
   { pattern: /hiddify/i, target: 'hiddify' },
   { pattern: /karing/i, target: 'karing' },
   { pattern: /flclash/i, target: 'flclash' },
-  { pattern: /clash|mihomo|verge/i, target: 'mihomo' },
+  { pattern: /clash-?verge/i, target: 'clash-verge' },
+  { pattern: /clash-?mi/i, target: 'clash-mi' },
+  { pattern: /(?:mihomo|clash)-?party/i, target: 'mihomo-party' },
+  { pattern: /openclash|nikki|clash|mihomo|verge/i, target: 'mihomo' },
+  { pattern: /v2box|v2rayn/i, target: 'v2box' },
 ];
 
 export const guessTargetByUa = (ua: string): ClientTarget | undefined =>

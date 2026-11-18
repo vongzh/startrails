@@ -946,10 +946,16 @@ export function createAdminHandler(deps: AdminDeps) {
       const seen = new Set<string>();
       const targets: ProbeTarget[] = [];
       for (const node of built.profile.nodes) {
-        const id = `${node.server}:${node.port}`;
+        const id = `${node.kind}:${node.server}:${node.port}`;
         if (seen.has(id)) continue;
         seen.add(id);
-        targets.push({ nodeKey: nodeKey(node), name: node.name, server: node.server, port: node.port });
+        targets.push({
+          nodeKey: nodeKey(node),
+          name: node.name,
+          server: node.server,
+          port: node.port,
+          kind: node.kind,
+        });
         if (targets.length >= 200) break;
       }
       const samples = await probeAll(targets, { timeoutMs: 1_000, attempts: 2, concurrency: 16 });

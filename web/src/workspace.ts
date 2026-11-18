@@ -140,7 +140,7 @@ export const traceSteps = ref<TraceStepView[]>([]);
 export const target = ref('surge');
 /** 签发默认走「自动识别」：多数人只想要一条能喂给所有客户端的地址，先让他点生成就能拿到。 */
 export const publishTarget = ref('auto');
-export const createdUrls = ref<{ profile: string; target: string; url: string }[]>([]);
+export const createdUrls = ref<{ id: string; profile: string; target: string; url: string }[]>([]);
 export const activeProfileName = ref(getActiveProfile());
 
 export const sourceStats = ref<Record<string, SourceStatView>>({});
@@ -166,7 +166,7 @@ export const fetchDefaultsSettings = ref<{
   value: FetchDefaultsView | null;
 } | null>(null);
 /** TCP 握手延迟：按 nodeKey 索引，不落库（延迟是瞬时属性）。 */
-export const latencies = ref<Record<string, { ms: number | null; intercepted: boolean }>>({});
+export const latencies = ref<Record<string, { ms: number | null; intercepted: boolean; applicable: boolean }>>({});
 export const probing = ref(false);
 export const profileEntries = ref<ProfileEntryView[]>([]);
 export const rules = ref<RuleView[]>([]);
@@ -1141,7 +1141,7 @@ export async function createToken(
     url = result.url;
     latestTokenId.value = result.id;
     createdUrls.value = [
-      { profile: forProfile, target: forTarget, url: result.url },
+      { id: result.id, profile: forProfile, target: forTarget, url: result.url },
       ...createdUrls.value.filter((item) => !(item.profile === forProfile && item.target === forTarget)),
     ];
     applyStateSnapshot(await api.state());
@@ -1165,8 +1165,8 @@ export async function reissueToken(
     const result = await api.createToken(forTarget, forProfile);
     latestTokenId.value = result.id;
     createdUrls.value = [
-      { profile: forProfile, target: forTarget, url: result.url },
-      ...createdUrls.value.filter((item) => !(item.profile === forProfile && item.target === forTarget)),
+      { id: result.id, profile: forProfile, target: forTarget, url: result.url },
+      ...createdUrls.value.filter((item) => item.id !== id && !(item.profile === forProfile && item.target === forTarget)),
     ];
     try {
       await api.revokeToken(id);
@@ -1184,6 +1184,8 @@ export async function reissueToken(
 export async function revokeToken(id: string): Promise<boolean> {
   return run(async () => {
     await api.revokeToken(id);
+    createdUrls.value = createdUrls.value.filter((item) => item.id !== id);
+    if (latestTokenId.value === id) latestTokenId.value = null;
     applyStateSnapshot(await api.state());
     notify('ok', '订阅地址已撤销');
   });
@@ -1319,13 +1321,27 @@ function groupDraftOf(group: GroupView): GroupDraft {
   };
 }
 
-export function addGroup(name: string): boolean {
-  const value = name.trim();
-  if (value.length === 0 || groups.value.some((item) => item.name === value)) return false;
-  groups.value = [
-    ...groups.value,
-    { name: value, strategy: 'select', testUrl: '', interval: null, tolerance: null, lazy: false, hidden: false, members: [] },
-  ];
+export function addGroup(input: string | GroupDraft): boolean {
+  const draft: GroupDraft =
+    typeof input === 'string'
+      ? {
+          name: input.trim(),
+          strategy: 'select',
+          testUrl: '',
+          interval: null,
+          tolerance: null,
+          lazy: false,
+          hidden: false,
+          members: [],
+        }
+      : {
+          ...input,
+          name: input.name.trim(),
+          testUrl: input.testUrl.trim(),
+          members: input.members.map((member) => ({ ...member })),
+        };
+  if (draft.name.length === 0 || groups.value.some((item) => item.name === draft.name)) return false;
+  groups.value = [...groups.value, draft];
   return true;
 }
 
@@ -1375,16 +1391,21 @@ export function patchGroup(name: string, patch: Partial<GroupDraft>): void {
 }
 
 export function adoptBaseGroups(): void {
-  groups.value = baseGroups.value.map((group) => ({
-    name: group.name,
-    strategy: group.strategy ?? 'select',
-    testUrl: '',
-    interval: group.strategy !== undefined && group.strategy !== 'select' ? 300 : null,
-    tolerance: group.strategy === 'url-test' ? 50 : null,
-    lazy: false,
-    hidden: false,
-    members: group.members.map((member) => ({ kind: 'ref' as const, value: member })),
-  }));
+  groups.value = baseGroups.value.map((group) => {
+    const strategy = group.strategy ?? 'select';
+    const isAuto = strategy !== 'select';
+    const rawTestUrl = typeof group.testUrl === 'string' ? group.testUrl.trim() : '';
+    return {
+      name: group.name,
+      strategy,
+      testUrl: isAuto ? (rawTestUrl || 'https://www.gstatic.com/generate_204') : '',
+      interval: isAuto ? (group.interval ?? 300) : null,
+      tolerance: strategy === 'url-test' ? (group.tolerance ?? 50) : null,
+      lazy: group.lazy === true,
+      hidden: group.hidden === true,
+      members: group.members.map((member) => ({ kind: 'ref' as const, value: member })),
+    };
+  });
 }
 
 export function moveGroup(index: number, direction: number): void {
@@ -1535,15 +1556,21 @@ export async function probeLatency(): Promise<void> {
   try {
     const result = await api.probe();
     latencies.value = Object.fromEntries(
-      result.samples.map((item) => [item.nodeKey, { ms: item.latencyMs, intercepted: item.intercepted }]),
+      result.samples.map((item) => [
+        item.nodeKey,
+        { ms: item.latencyMs, intercepted: item.intercepted, applicable: item.applicable !== false },
+      ]),
     );
-    const reachable = result.samples.filter((item) => item.latencyMs !== null);
+    const tcpSamples = result.samples.filter((item) => item.applicable !== false);
+    const udpSkipped = result.samples.length - tcpSamples.length;
+    const reachable = tcpSamples.filter((item) => item.latencyMs !== null);
     const intercepted = reachable.filter((item) => item.intercepted).length;
+    const udpNote = udpSkipped > 0 ? `（另 ${udpSkipped} 个纯 UDP 节点不测 TCP）` : '';
     notify(
-      reachable.length > 0 ? 'ok' : 'error',
+      reachable.length > 0 || udpSkipped === result.samples.length ? 'ok' : 'error',
       intercepted > 0
-        ? `${reachable.length}/${result.samples.length} 个 TCP 可达，其中 ${intercepted} 个解析到内网/本机假 IP，延迟无参考意义`
-        : `${reachable.length}/${result.samples.length} 个节点 TCP 可达`,
+        ? `${reachable.length}/${tcpSamples.length} 个 TCP 可达，其中 ${intercepted} 个解析到内网/本机假 IP，延迟无参考意义${udpNote}`
+        : `${reachable.length}/${tcpSamples.length} 个节点 TCP 可达${udpNote}`,
     );
   } catch (cause) {
     notify('error', `探测失败：${messageOf(cause)}`);

@@ -22,4 +22,5 @@ export * from './process/trace.ts';
 export * from './rules/index.ts';
 export * from './plan/index.ts';
 export * from './emit/index.ts';
+export * from './import-url.ts';
 export * from './qr/index.ts';

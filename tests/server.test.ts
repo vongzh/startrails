@@ -8,6 +8,7 @@ import test from 'node:test';
 import { openStore } from '../src/store/sqlite.ts';
 import { createApp } from '../src/server/app.ts';
 import { assertPublicUrl, fetchSnapshot, isPublicAddress } from '../src/server/url-guard.ts';
+import { guessTargetByUa } from '../src/server/input.ts';
 import { redact } from '../src/server/redact.ts';
 import { CORE_VERSION } from '../src/core/version.ts';
 
@@ -393,6 +394,19 @@ test('文件源 / 组合订阅 / UA 自适应 / 参数化订阅', async (t) => {
 
   const unknown = await fetch(auto.url, { headers: { 'user-agent': 'curl/8.0' } });
   assert.equal(unknown.status, 400, '认不出客户端时明确拒绝，不猜格式');
+
+  // Surfboard / QuanX / V2Box / v2rayNG / 具体 Clash 客户端 UA 识别
+  assert.equal(guessTargetByUa('Surfboard/2.20.0'), 'surge');
+  assert.equal(guessTargetByUa('QuanX/1.0.29'), 'quanx');
+  assert.equal(guessTargetByUa('singbox/1.12.0'), 'sing-box');
+  assert.equal(guessTargetByUa('ClashMi/1.0.5'), 'clash-mi');
+  assert.equal(guessTargetByUa('clash-verge/v2.0.0'), 'clash-verge');
+  assert.equal(guessTargetByUa('mihomo-party/1.5.0'), 'mihomo-party');
+  assert.equal(guessTargetByUa('v2rayNG/1.9.10'), 'v2box');
+  assert.equal(guessTargetByUa('V2Box/5.0'), 'v2box');
+  const surfboardResp = await fetch(auto.url, { headers: { 'user-agent': 'Surfboard/2.20.0' } });
+  assert.equal(surfboardResp.status, 200);
+  assert.match(await surfboardResp.text(), /\[Proxy\]/);
 
   // 参数化订阅：include / prefix 只影响这次响应。
   const filtered = await fetch(`${auto.url}?include=HK&prefix=M-`, {

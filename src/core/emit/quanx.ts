@@ -83,11 +83,14 @@ export const quanxEmitter = (
       const scheme = schemeOf(server);
       return scheme === 'https' || scheme === 'quic';
     });
-    const skipped = encrypted.filter((server) => schemeOf(server) === 'tls' || schemeOf(server) === 'tcp');
+    const skipped = encrypted.filter((server) => {
+      const scheme = schemeOf(server);
+      return scheme === 'tls' || scheme === 'tcp' || scheme === 'h3';
+    });
     if (skipped.length > 0) {
-      // sample.conf 只给出 doh-server / doq-server，DoT 与 DNS-over-TCP 无对应键。
+      // sample.conf 只给出 doh-server / doq-server，DoT / DoH3 / DNS-over-TCP 无对应键。
       diagnostics.push(
-        makeDiagnostic('emit', target, 'runtime:dns', 'runtime-dns-scheme-unsupported:tls/tcp'),
+        makeDiagnostic('emit', target, 'runtime:dns', 'runtime-dns-scheme-unsupported:tls/tcp/h3'),
       );
     }
     if (plain.length > 0 || encryptedOk.length > 0) {
@@ -125,10 +128,24 @@ export const quanxEmitter = (
     }
   }
 
+  const QUANX_TERMINAL_POLICIES: Readonly<Record<string, string>> = {
+    DIRECT: 'direct',
+    REJECT: 'reject',
+  };
+  const groupNames = new Set(profile.policyGroups.map((group) => group.name));
   lines.push('', '[policy]');
   for (const group of profile.policyGroups) {
-    const members = group.members.filter((member) => included.includes(member));
-    lines.push(`static = ${group.name}, ${members.join(', ') || 'direct'}`);
+    const members = group.members.flatMap((member) => {
+      const upper = member.toUpperCase();
+      const terminal = QUANX_TERMINAL_POLICIES[upper];
+      if (terminal !== undefined) return [terminal];
+      if (included.includes(member) || (member !== group.name && groupNames.has(member))) {
+        return [comma(member)];
+      }
+      if (upper === 'PROXY') return ['proxy'];
+      return [];
+    });
+    lines.push(`static = ${comma(group.name)}, ${members.join(', ') || 'direct'}`);
   }
 
   lines.push('', '[filter_local]');

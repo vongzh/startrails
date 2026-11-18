@@ -240,6 +240,14 @@ export const surgeEmitter = (
     }
   }
 
+  const SURGE_BUILTIN_POLICIES = new Set([
+    'DIRECT',
+    'REJECT',
+    'REJECT-DROP',
+    'REJECT-NO-DROP',
+    'REJECT-TINYGIF',
+  ]);
+  const groupNames = new Set(profile.policyGroups.map((group) => group.name));
   lines.push('', '[Proxy Group]');
   for (const group of profile.policyGroups) {
     if (group.strategy === 'url-test' || group.strategy === 'fallback') {
@@ -247,11 +255,19 @@ export const surgeEmitter = (
         makeDiagnostic('emit', target, group.name, `group-strategy-not-expressible:${group.strategy}`),
       );
     }
-    const members = group.members.filter((member) => included.includes(member));
+    const members = group.members.flatMap((member) => {
+      const upper = member.toUpperCase();
+      if (upper === 'DIRECT' || upper === 'REJECT') return [upper];
+      if (included.includes(member) || (member !== group.name && groupNames.has(member))) {
+        return [quote(member)];
+      }
+      if (SURGE_BUILTIN_POLICIES.has(upper)) return [upper];
+      return [];
+    });
     lines.push(`${quote(group.name)} = select, ${members.join(', ') || 'DIRECT'}`);
   }
   if (profile.policyGroups.length === 0 && included.length > 0) {
-    lines.push(`PROXY = select, ${included.join(', ')}`);
+    lines.push(`PROXY = select, ${included.map(quote).join(', ')}`);
   }
 
   lines.push('', '[Rule]');

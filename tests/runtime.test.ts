@@ -325,3 +325,60 @@ test('非 clash-yaml 目标：高级 DNS 字段整组剥掉并记诊断，不静
   assert.doesNotMatch(text, /fake-ip-filter/);
   assert.doesNotMatch(text, /fallback-filter/);
 });
+
+test('DNS h3:// 方言转换：原生 mihomo 改写为 https://...#h3=true，Stash / Karing 降级为 https:// 并留诊断', () => {
+  const h3Policy = {
+    dns: {
+      mode: 'redir-host' as const,
+      nameserver: ['h3://dns.alidns.com/dns-query'],
+      proxyNameserver: ['h3://1.1.1.1/dns-query#ecs=1.2.3.4'],
+      directNameserver: ['h3://doh.pub/dns-query'],
+      fallback: ['h3://dns.google/dns-query'],
+      defaultNameserver: ['h3://223.5.5.5/dns-query'],
+      nameserverPolicy: { '+.cn': 'h3://dns.alidns.com/dns-query' },
+    },
+  };
+
+  for (const nativeTarget of ['mihomo', 'clash-verge', 'clash-mi'] as const) {
+    const profile = parseProfile({
+      nodes: [
+        { kind: 'shadowsocks', name: 'HK-01', server: 'hk.example.invalid', port: 8388, method: 'aes-128-gcm', password: 'pw' },
+      ],
+      ruleSources: [],
+      policyGroups: [{ name: 'PROXY', members: ['HK-01'] }],
+      runtime: h3Policy,
+    });
+    const emitted = emit(profile, plan(profile, nativeTarget));
+    assert.match(emitted.content, /https:\/\/dns\.alidns\.com\/dns-query#h3=true/, nativeTarget);
+    assert.match(emitted.content, /https:\/\/1\.1\.1\.1\/dns-query#ecs=1\.2\.3\.4&h3=true/, nativeTarget);
+    assert.doesNotMatch(emitted.content, /\bh3:\/\//, nativeTarget);
+    assert.ok(!emitted.diagnostics.some((d) => d.reason === 'runtime-dns-h3-downgraded-to-https'), nativeTarget);
+  }
+
+  for (const fallbackTarget of ['clash', 'clash-apple', 'karing'] as const) {
+    const profile = parseProfile({
+      nodes: [
+        { kind: 'shadowsocks', name: 'HK-01', server: 'hk.example.invalid', port: 8388, method: 'aes-128-gcm', password: 'pw' },
+      ],
+      ruleSources: [],
+      policyGroups: [{ name: 'PROXY', members: ['HK-01'] }],
+      runtime: h3Policy,
+    });
+    const emitted = emit(profile, plan(profile, fallbackTarget));
+    assert.match(emitted.content, /https:\/\/dns\.alidns\.com\/dns-query(?!#h3=true)/, fallbackTarget);
+    assert.doesNotMatch(emitted.content, /#h3=true/, fallbackTarget);
+    assert.ok(emitted.diagnostics.some((d) => d.reason === 'runtime-dns-h3-downgraded-to-https'), fallbackTarget);
+  }
+
+  // QuanX 对 h3:// 同样计入不支持诊断而不是静默丢弃
+  const quanxProfile = parseProfile({
+    nodes: [
+      { kind: 'shadowsocks', name: 'HK-01', server: 'hk.example.invalid', port: 8388, method: 'aes-128-gcm', password: 'pw' },
+    ],
+    ruleSources: [],
+    policyGroups: [{ name: 'PROXY', members: ['HK-01'] }],
+    runtime: { dns: { mode: 'redir-host', nameserver: ['h3://dns.google/dns-query'] } },
+  });
+  const quanxEmitted = emit(quanxProfile, plan(quanxProfile, 'quanx'));
+  assert.ok(quanxEmitted.diagnostics.some((d) => d.reason === 'runtime-dns-scheme-unsupported:tls/tcp/h3'));
+});

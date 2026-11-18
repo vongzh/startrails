@@ -17,11 +17,15 @@ import { isPublicAddress } from './url-guard.ts';
  * 数字漂亮但毫无意义。因此先解析一次：解析结果不是公网地址时标 `intercepted`，
  * 界面据此提示，而不是把 2ms 当成好节点。
  */
+/** 纯 UDP 传输协议（QUIC / WireGuard），TCP 握手探测无意义，直接跳过。 */
+export const UDP_ONLY_KINDS: ReadonlySet<string> = new Set(['hysteria2', 'tuic', 'wireguard']);
+
 export interface ProbeTarget {
   readonly nodeKey: string;
   readonly name: string;
   readonly server: string;
   readonly port: number;
+  readonly kind?: string;
 }
 
 export interface ProbeSample {
@@ -29,7 +33,7 @@ export interface ProbeSample {
   readonly name: string;
   readonly server: string;
   readonly port: number;
-  /** 多次握手里最快的一次（毫秒）；全部失败为 null。 */
+  /** 多次握手里最快的一次（毫秒）；全部失败或不适用的纯 UDP 协议为 null。 */
   readonly latencyMs: number | null;
   readonly error: string | null;
   /**
@@ -37,6 +41,8 @@ export interface ProbeSample {
    * 可能是本机 TUN 代理的假 IP，不能当作节点质量。
    */
   readonly intercepted: boolean;
+  /** false 表示纯 UDP 节点（hysteria2 / tuic / wireguard），不适用服务端 TCP 握手。 */
+  readonly applicable: boolean;
 }
 
 const probeOnce = (host: string, port: number, timeoutMs: number): Promise<number> =>
@@ -108,6 +114,19 @@ export async function probeAll(
       cursor += 1;
       const target = targets[index];
       if (target === undefined) return;
+      if (target.kind !== undefined && UDP_ONLY_KINDS.has(target.kind)) {
+        results[index] = {
+          nodeKey: target.nodeKey,
+          name: target.name,
+          server: target.server,
+          port: target.port,
+          latencyMs: null,
+          error: 'udp-only',
+          intercepted: false,
+          applicable: false,
+        };
+        continue;
+      }
       const [outcome, intercepted] = await Promise.all([
         probeTcp(target.server, target.port, {
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
@@ -115,7 +134,7 @@ export async function probeAll(
         }),
         detectInterception(target.server),
       ]);
-      results[index] = { ...target, ...outcome, intercepted };
+      results[index] = { ...target, ...outcome, intercepted, applicable: true };
     }
   };
 

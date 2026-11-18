@@ -65,14 +65,23 @@ test('延迟探测：TCP 握手可测通，端口关闭返回错误而非抛异�
 
   const samples = await probeAll(
     [
-      { nodeKey: 'k1', name: 'A', server: '127.0.0.1', port },
-      { nodeKey: 'k2', name: 'B', server: '127.0.0.1', port },
+      { nodeKey: 'k1', name: 'A', server: '127.0.0.1', port, kind: 'shadowsocks' },
+      { nodeKey: 'k2', name: 'B', server: '127.0.0.1', port, kind: 'vmess' },
+      { nodeKey: 'k3', name: 'Hy2', server: '127.0.0.1', port: 9, kind: 'hysteria2' },
+      { nodeKey: 'k4', name: 'TUIC', server: '127.0.0.1', port: 9, kind: 'tuic' },
+      { nodeKey: 'k5', name: 'WG', server: '127.0.0.1', port: 9, kind: 'wireguard' },
     ],
     { timeoutMs: 500, attempts: 1, concurrency: 2 },
   );
-  assert.equal(samples.length, 2);
-  assert.ok(samples.every((sample) => sample.latencyMs !== null), '并发探测结果顺序与输入一一对应');
-  assert.ok(samples.every((sample) => sample.intercepted), '回环地址必须标成「非公网」，否则 2ms 会被当成好节点');
+  assert.equal(samples.length, 5);
+  const tcpSamples = samples.slice(0, 2);
+  assert.ok(tcpSamples.every((sample) => sample.applicable && sample.latencyMs !== null), '并发探测结果顺序与输入一一对应');
+  assert.ok(tcpSamples.every((sample) => sample.intercepted), '回环地址必须标成「非公网」，否则 2ms 会被当成好节点');
+  const udpSamples = samples.slice(2);
+  assert.ok(
+    udpSamples.every((sample) => !sample.applicable && sample.latencyMs === null && sample.error === 'udp-only'),
+    '纯 UDP 协议节点应跳过 TCP 探测并标为 udp-only',
+  );
 
   await new Promise<void>((done) => server.close(() => done()));
 });
