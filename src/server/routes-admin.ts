@@ -11,6 +11,7 @@ import {
   nodeKey,
   parseNodeTransforms,
   parseRuntime,
+  regionOf,
   verifiedCapabilityTables,
 } from '../core/index.ts';
 import type { ClientTarget, CollectionMember } from '../core/index.ts';
@@ -22,6 +23,7 @@ import { parseWebDavUrl, probeWebDav, uploadToWebDav } from './backup.ts';
 import type { WebDavConfig } from './backup.ts';
 import type { BuildCache } from './build-cache.ts';
 import type { Builder } from './builder.ts';
+import type { GeoHostInfo, GeoService } from './geo.ts';
 import { HttpError, absoluteUrlOf, readJson, sendJson } from './http.ts';
 import {
   EMPTY_FETCH_DEFAULTS,
@@ -78,6 +80,7 @@ export interface AdminDeps {
   readonly webdavConfig: () => WebDavConfig | undefined;
   readonly envWebdav?: WebDavConfig | undefined;
   readonly describeOps: () => { notify: { readonly enabled: boolean; readonly channels: readonly string[] }; schedulerIntervalMs: number };
+  readonly geo?: GeoService | undefined;
 }
 
 export function createAdminHandler(deps: AdminDeps) {
@@ -97,6 +100,7 @@ export function createAdminHandler(deps: AdminDeps) {
     webdavConfig,
     envWebdav,
     describeOps,
+    geo,
   } = deps;
 
   const activeAdminHash = (): string | undefined => {
@@ -281,25 +285,103 @@ export function createAdminHandler(deps: AdminDeps) {
       }
       const composed = builder.composeProfile(definition, state.snapshots);
       const orderByKey = new Map<string, number>();
+      const regionByKey = new Map<string, string>();
       for (const annotation of store.listAnnotations(definition.id)) {
         if (annotation.order !== undefined) orderByKey.set(annotation.nodeKey, annotation.order);
+        if (annotation.region !== undefined && annotation.region.length > 0) {
+          regionByKey.set(annotation.nodeKey, annotation.region);
+        }
       }
       const orderedNodes = composed.profile.nodes
         .map((node, index) => ({ node, sortOrder: orderByKey.get(nodeKey(node)) ?? index }))
         .sort((left, right) => left.sortOrder - right.sortOrder)
         .map((entry) => entry.node);
+
+      const geoByServer = new Map<string, GeoHostInfo>();
+      if (geo !== undefined && geo.status().available) {
+        const uniqueServers = [...new Set(orderedNodes.map((node) => node.server))].slice(0, 200);
+        const resolved = await mapConcurrent(uniqueServers, 8, (server) => geo.lookupHost(server));
+        for (let i = 0; i < uniqueServers.length; i += 1) {
+          const server = uniqueServers[i];
+          const info = resolved[i];
+          if (server !== undefined && info !== undefined) geoByServer.set(server, info);
+        }
+      }
+
       sendJson(res, 200, {
         configVersion: state.configVersion,
-        nodes: orderedNodes.map((node) => ({
-          nodeKey: nodeKey(node),
-          kind: node.kind,
-          name: node.name,
-          address: `${node.server}:${node.port}`,
-          options: node.options ?? {},
-          sources: composed.provenance.get(nodeKey(node)) ?? [],
-        })),
+        nodes: orderedNodes.map((node) => {
+          const key = nodeKey(node);
+          const manualRegion = regionByKey.get(key);
+          const nameRegion = regionOf(node.name);
+          const ipInfo = geoByServer.get(node.server) ?? geo?.peekHost(node.server);
+          const country = manualRegion ?? nameRegion ?? ipInfo?.country;
+          const source: 'manual' | 'name' | 'ip' | undefined =
+            manualRegion !== undefined
+              ? 'manual'
+              : nameRegion !== undefined
+                ? 'name'
+                : ipInfo?.country !== undefined
+                  ? 'ip'
+                  : undefined;
+          const conflict = manualRegion === undefined && nameRegion === undefined && ipInfo?.conflict === true;
+          const hasGeo = country !== undefined || ipInfo?.asn !== undefined || conflict;
+          return {
+            nodeKey: key,
+            kind: node.kind,
+            name: node.name,
+            address: `${node.server}:${node.port}`,
+            options: node.options ?? {},
+            sources: composed.provenance.get(key) ?? [],
+            ...(hasGeo
+              ? {
+                  geo: {
+                    ...(country === undefined ? {} : { country }),
+                    ...(ipInfo?.asn === undefined ? {} : { asn: ipInfo.asn }),
+                    ...(ipInfo?.org === undefined ? {} : { org: ipInfo.org }),
+                    ...(source === undefined ? {} : { source }),
+                    ...(conflict ? { conflict: true } : {}),
+                  },
+                }
+              : {}),
+          };
+        }),
         diagnostics: builder.redacted([...state.diagnostics, ...composed.diagnostics]),
       });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/geo/status') {
+      if (geo === undefined) {
+        sendJson(res, 200, {
+          available: false,
+          geoDir: join(dataDir, 'geo'),
+          updatedAt: null,
+          source: 'sapics/ip-location-db',
+          counts: { countryV4: 0, countryV6: 0, asnV4: 0, asnV6: 0 },
+          bytes: 0,
+          filesPresent: [],
+        });
+        return;
+      }
+      sendJson(res, 200, geo.status());
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/geo/update') {
+      if (geo === undefined) {
+        sendJson(res, 501, { error: 'geo-service-unavailable' });
+        return;
+      }
+      try {
+        const status = await geo.update();
+        sendJson(res, 200, { ok: true, status });
+      } catch (error) {
+        sendJson(res, 502, {
+          error: 'geo-update-failed',
+          reason: error instanceof Error ? redact(error.message).slice(0, 160) : 'unknown',
+        });
+      }
       return;
     }
 
@@ -424,6 +506,7 @@ export function createAdminHandler(deps: AdminDeps) {
         const modes = effectiveModes(definition, overrides.length > 0, store.listRules(definition.id).length > 0);
         sendJson(res, 200, {
           mode: modes.groups,
+          groupIcons: modes.groupIcons ?? 'off',
           groups: overrides,
           base: base.policyGroups,
         });
@@ -439,9 +522,15 @@ export function createAdminHandler(deps: AdminDeps) {
         const parsedGroups = parseStoredGroups(groups);
         store.replaceGroupOverrides(definition.id, parsedGroups);
         const requested = asOverlayMode(body['mode']);
-        if (requested !== undefined) {
+        const requestedIcons =
+          body['groupIcons'] === 'auto' ? 'auto' : body['groupIcons'] === 'off' ? 'off' : undefined;
+        if (requested !== undefined || requestedIcons !== undefined) {
           const current = effectiveModes(definition, parsedGroups.length > 0, store.listRules(definition.id).length > 0);
-          store.putSectionModes(definition.id, { ...current, groups: requested });
+          store.putSectionModes(definition.id, {
+            ...current,
+            ...(requested === undefined ? {} : { groups: requested }),
+            ...(requestedIcons === undefined ? {} : { groupIcons: requestedIcons }),
+          });
         }
         sendJson(res, 200, { count: parsedGroups.length });
         return;

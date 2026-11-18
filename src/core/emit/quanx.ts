@@ -1,3 +1,4 @@
+import { resolveGroupIcon } from '../groups/icons.ts';
 import type { Profile, ProxyNode } from '../ir/index.ts';
 import { assertNever } from '../ir/index.ts';
 import type { NodeFeature } from '../capabilities/index.ts';
@@ -145,7 +146,12 @@ export const quanxEmitter = (
       if (upper === 'PROXY') return ['proxy'];
       return [];
     });
-    lines.push(`static = ${comma(group.name)}, ${members.join(', ') || 'direct'}`);
+    const quanxIcon =
+      group.icon !== undefined && group.icon.length > 0
+        ? resolveGroupIcon(group, profile.ruleSources).quanx
+        : undefined;
+    const iconSuffix = quanxIcon !== undefined && quanxIcon.length > 0 ? `, img-url=${quanxIcon}` : '';
+    lines.push(`static = ${comma(group.name)}, ${members.join(', ') || 'direct'}${iconSuffix}`);
   }
 
   lines.push('', '[filter_local]');

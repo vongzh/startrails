@@ -445,6 +445,7 @@ export function parseStoredGroups(groups: readonly unknown[]): PersistedGroupOve
     const members = record['members'].map(parseStoredMember).filter((member): member is StoredMember => member !== undefined);
     const strategy = record['strategy'];
     const testUrl = record['testUrl'];
+    const icon = record['icon'];
     parsed.push({
       name: name.trim(),
       members,
@@ -455,6 +456,7 @@ export function parseStoredGroups(groups: readonly unknown[]): PersistedGroupOve
       ...(typeof record['tolerance'] === 'number' ? { tolerance: record['tolerance'] } : {}),
       ...(record['lazy'] === true ? { lazy: true } : {}),
       ...(record['hidden'] === true ? { hidden: true } : {}),
+      ...(typeof icon === 'string' && icon.trim().length > 0 ? { icon: icon.trim() } : {}),
     });
   }
   return parsed;

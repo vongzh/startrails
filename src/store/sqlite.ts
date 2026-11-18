@@ -34,6 +34,7 @@ export function parseSectionModes(value: unknown): SectionModes | undefined {
     rules: asOverlayMode(record['rules'], 'inherit'),
     rulePlacement: record['rulePlacement'] === 'before' ? 'before' : 'after',
     dns: asOverlayMode(record['dns'], 'inherit'),
+    ...(record['groupIcons'] === 'auto' ? { groupIcons: 'auto' } : {}),
   };
 }
 
@@ -69,6 +70,7 @@ function parseGroupColumn(raw: string): Omit<PersistedGroupOverride, 'name' | 'o
     ...(typeof record['tolerance'] === 'number' ? { tolerance: record['tolerance'] } : {}),
     ...(record['lazy'] === true ? { lazy: true } : {}),
     ...(record['hidden'] === true ? { hidden: true } : {}),
+    ...(typeof record['icon'] === 'string' && record['icon'].trim().length > 0 ? { icon: record['icon'].trim() } : {}),
   };
 }
 
@@ -80,6 +82,7 @@ function serializeGroupColumn(group: PersistedGroupOverride): string {
     group.tolerance !== undefined ||
     group.lazy === true ||
     group.hidden === true ||
+    group.icon !== undefined ||
     group.members.some((member) => typeof member !== 'string');
   if (!rich) return JSON.stringify(group.members);
   return JSON.stringify({
@@ -89,6 +92,7 @@ function serializeGroupColumn(group: PersistedGroupOverride): string {
     ...(group.tolerance === undefined ? {} : { tolerance: group.tolerance }),
     ...(group.lazy === true ? { lazy: true } : {}),
     ...(group.hidden === true ? { hidden: true } : {}),
+    ...(group.icon === undefined ? {} : { icon: group.icon }),
     members: group.members,
   });
 }

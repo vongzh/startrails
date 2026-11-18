@@ -18,6 +18,7 @@ import {
   NTooltip,
 } from 'naive-ui';
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Copy, FileCode2, Filter, Layers, Pencil, Plus, Trash2, X } from 'lucide-vue-next';
+import { resolveGroupEmoji } from '@core/groups/icons.ts';
 import type { OverlayMode } from '../api';
 import PolicyGroupCard from '../components/PolicyGroupCard.vue';
 import { parseRuleText } from '../rule-text';
@@ -32,6 +33,7 @@ import {
   discardGroups,
   discardRules,
   exportRuleText,
+  groupIcons,
   groupMode,
   groups,
   groupsDirty,
@@ -74,6 +76,7 @@ const emptyGroupDraft = (): GroupDraft => ({
   tolerance: null,
   lazy: false,
   hidden: false,
+  icon: '',
   members: [],
 });
 const groupDraft = ref<GroupDraft>(emptyGroupDraft());
@@ -435,6 +438,7 @@ function applyGroupPreset(kind: 'main' | 'auto' | 'ai' | 'fallback'): void {
       tolerance: null,
       lazy: false,
       hidden: false,
+      icon: '',
       members: [
         ...knownNames.map((name): GroupMemberDraft => ({ kind: 'ref', value: name })),
         { kind: 'rest', value: '' },
@@ -450,6 +454,7 @@ function applyGroupPreset(kind: 'main' | 'auto' | 'ai' | 'fallback'): void {
       tolerance: 50,
       lazy: true,
       hidden: false,
+      icon: '',
       members: [{ kind: 'rest', value: '' }],
     };
   } else if (kind === 'ai') {
@@ -461,6 +466,7 @@ function applyGroupPreset(kind: 'main' | 'auto' | 'ai' | 'fallback'): void {
       tolerance: null,
       lazy: false,
       hidden: false,
+      icon: '',
       members: [
         { kind: 'region', value: 'US' },
         { kind: 'region', value: 'JP' },
@@ -476,6 +482,7 @@ function applyGroupPreset(kind: 'main' | 'auto' | 'ai' | 'fallback'): void {
       tolerance: null,
       lazy: true,
       hidden: false,
+      icon: '',
       members: [{ kind: 'rest', value: '' }],
     };
   }
@@ -729,17 +736,28 @@ const ruleCanSubmit = computed(() => {
         </div>
 
         <div class="mode-strip">
-          <n-radio-group v-model:value="groupMode" size="small">
-            <n-radio-button v-for="option in modeOptions" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </n-radio-button>
-          </n-radio-group>
+          <div class="row" style="gap: 12px; flex-wrap: wrap">
+            <n-radio-group v-model:value="groupMode" size="small">
+              <n-radio-button v-for="option in modeOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </n-radio-button>
+            </n-radio-group>
+            <label class="row" style="gap: 6px; font-size: 12px; white-space: nowrap">
+              <n-switch
+                :value="groupIcons === 'auto'"
+                size="small"
+                @update:value="(val: boolean) => (groupIcons = val ? 'auto' : 'off')"
+              />
+              <span>自动匹配图标</span>
+            </label>
+          </div>
           <p class="mode-note">
             <template v-if="groupMode === 'inherit'">
               沿用订阅里的策略组。下面是订阅现在的组，只读<template v-if="groups.length > 0">（已编排的 {{ groups.length }} 个自定义组会保留，切回替换或组合即可继续用）</template>。
             </template>
             <template v-else-if="groupMode === 'replace'">只用下面这份清单。匹配和地区在每次生成时按当前节点重算，引用的名字不会自动跟着订阅变。</template>
             <template v-else>同名组用这里的策略和成员换掉订阅的；只有订阅里有的组保留；只有这里有的组追加。</template>
+            <template v-if="groupIcons === 'auto'"> 已启用图标自动匹配（Clash / Surge / QuanX 导出时自动补全）。</template>
           </p>
         </div>
 
@@ -748,6 +766,7 @@ const ruleCanSubmit = computed(() => {
             <template #icon><Layers :size="28" /></template>
           </n-empty>
           <div v-for="group in baseGroups" :key="group.name" class="row">
+            <span v-if="groupIcons === 'auto'" class="group-emoji-badge">{{ resolveGroupEmoji(group) }}</span>
             <span class="strong" style="font-size: 13px">{{ group.name }}</span>
             <n-tag size="small" :bordered="false">{{ group.strategy ?? 'select' }}</n-tag>
             <span class="text-3" style="font-size: 12px">{{ group.members.length }} 个成员</span>
@@ -905,6 +924,16 @@ const ruleCanSubmit = computed(() => {
         <p v-if="groupNameDuplicate" class="text-3" style="margin: -8px 0 0; font-size: 12px; color: var(--err)">
           已有同名策略组，请换一个名称
         </p>
+
+        <div v-if="groupIcons === 'auto' || groupDraft.icon.trim() !== ''" class="field">
+          <label>图标 URL（可选）</label>
+          <n-input
+            v-model:value="groupDraft.icon"
+            size="small"
+            clearable
+            :placeholder="`留空则自动匹配（当前识别：${resolveGroupEmoji({ name: groupDraft.name || '节点', strategy: groupDraft.strategy, members: [] })}）`"
+          />
+        </div>
 
         <div v-if="groupDraft.strategy !== 'select'" class="stack" style="gap: 6px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius)">
           <div class="row" style="gap: 8px; flex-wrap: wrap">
@@ -1091,6 +1120,19 @@ const ruleCanSubmit = computed(() => {
 
 .skip-item .text-3 {
   overflow-wrap: anywhere;
+}
+
+.group-emoji-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1;
 }
 
 .member-adder-row {

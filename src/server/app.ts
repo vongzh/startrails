@@ -9,6 +9,8 @@ import type { WebDavConfig } from './backup.ts';
 import { BuildCache } from './build-cache.ts';
 import { createBuilder } from './builder.ts';
 import { SnapshotCache } from './cache.ts';
+import { createGeoService } from './geo.ts';
+import type { GeoService } from './geo.ts';
 import { HttpError, send, sendJson, serveStatic } from './http.ts';
 import { describeAge } from './input.ts';
 import { createNotifier } from './notify.ts';
@@ -54,6 +56,8 @@ export interface AppOptions {
    * 在没配 allowPrivate 的环境里也依然是一个可被滥用的出口。开启需要在部署侧显式表态。
    */
   readonly allowStateless?: boolean;
+  /** 离线 IP 归属查询服务（测试可注入假解析器，缺省读取 `<dataDir>/geo`）。 */
+  readonly geoService?: GeoService;
 }
 
 export interface App {
@@ -104,6 +108,7 @@ export function createApp(options: AppOptions): App {
 
   const allowPrivate = options.allowPrivate ?? false;
   const ruleSets = new RuleSetCache(join(options.dataDir, 'cache', 'rulesets'), undefined, allowPrivate);
+  const geo = options.geoService ?? createGeoService(join(options.dataDir, 'geo'));
 
   const builder = createBuilder({
     store,
@@ -113,6 +118,7 @@ export function createApp(options: AppOptions): App {
     notifier,
     allowPrivate,
     publicBaseUrl: options.publicBaseUrl,
+    geo,
   });
 
   const handleApi = createAdminHandler({
@@ -122,6 +128,7 @@ export function createApp(options: AppOptions): App {
     dataDir: options.dataDir,
     allowPrivate,
     publicBaseUrl: options.publicBaseUrl,
+    geo,
     envTokenHash,
     secretFile: options.secretFile,
     isSecretConfigured: () => secretConfigured,

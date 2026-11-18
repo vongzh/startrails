@@ -1,3 +1,4 @@
+import { countryCodeOfFlag, isFlagIconUrl, leadingEmoji } from '../groups/icons.ts';
 import type { Profile, ProxyNode } from '../ir/index.ts';
 import { assertNever } from '../ir/index.ts';
 import type { NodeFeature } from '../capabilities/index.ts';
@@ -264,7 +265,15 @@ export const surgeEmitter = (
       if (SURGE_BUILTIN_POLICIES.has(upper)) return [upper];
       return [];
     });
-    lines.push(`${quote(group.name)} = select, ${members.join(', ') || 'DIRECT'}`);
+    const leading = leadingEmoji(group.name);
+    const hasLeadingFlag = leading !== undefined && countryCodeOfFlag(leading) !== undefined;
+    const skipRedundantFlag =
+      group.icon !== undefined && hasLeadingFlag && isFlagIconUrl(group.icon);
+    const iconSuffix =
+      group.icon !== undefined && group.icon.length > 0 && !skipRedundantFlag
+        ? `, icon-url=${group.icon}`
+        : '';
+    lines.push(`${quote(group.name)} = select, ${members.join(', ') || 'DIRECT'}${iconSuffix}`);
   }
   if (profile.policyGroups.length === 0 && included.length > 0) {
     lines.push(`PROXY = select, ${included.map(quote).join(', ')}`);

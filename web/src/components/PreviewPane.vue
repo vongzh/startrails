@@ -111,7 +111,7 @@ onMounted(() => {
       </div>
     </aside>
 
-    <section class="card" style="overflow: hidden">
+    <section class="card preview-card">
       <div class="card-head">
         <ClientIcon :id="target" size="md" />
         <h2>{{ currentTarget?.name ?? targetName }}</h2>

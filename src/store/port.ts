@@ -8,6 +8,7 @@ export interface SectionModes {
   readonly rules: OverlayMode;
   readonly rulePlacement: 'before' | 'after';
   readonly dns: OverlayMode;
+  readonly groupIcons?: 'off' | 'auto';
 }
 
 export type StoredMember =
@@ -27,6 +28,7 @@ export interface PersistedGroupOverride {
   readonly tolerance?: number;
   readonly lazy?: boolean;
   readonly hidden?: boolean;
+  readonly icon?: string;
 }
 
 export type StoredRule =

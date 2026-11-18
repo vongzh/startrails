@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   applyAnnotations,
+  applyAutoGroupIcons,
   applyMemberFilter,
   applyNodeTransforms,
   composeCollection,
@@ -9,6 +10,7 @@ import {
   ingest,
   nodeKey,
   parseProfile,
+  regionOf,
   traceProcessors,
 } from '../core/index.ts';
 import type {
@@ -34,6 +36,7 @@ import type {
 import { mapConcurrent } from './async.ts';
 import type { BuildCache } from './build-cache.ts';
 import type { SnapshotCache } from './cache.ts';
+import type { GeoService } from './geo.ts';
 import { describeAge, fetchDefaults, isSourceFormat } from './input.ts';
 import type { Notifier } from './notify.ts';
 import { redactDiagnostic } from './redact.ts';
@@ -99,6 +102,7 @@ export interface BuilderDeps {
   readonly notifier: Notifier;
   readonly allowPrivate: boolean;
   readonly publicBaseUrl?: string | undefined;
+  readonly geo?: GeoService | undefined;
 }
 
 export interface Builder {
@@ -139,7 +143,7 @@ export interface Builder {
 }
 
 export function createBuilder(deps: BuilderDeps): Builder {
-  const { store, cache, buildCache, ruleSets, notifier, allowPrivate, publicBaseUrl } = deps;
+  const { store, cache, buildCache, ruleSets, notifier, allowPrivate, publicBaseUrl, geo } = deps;
 
   /**
    * 配置指纹里必须剔除「运行态」字段（最近拉取时间 / 错误 / 流量信息 / 上游建议间隔）。
@@ -693,12 +697,28 @@ export function createBuilder(deps: BuilderDeps): Builder {
         applyAnnotations(store.listAnnotations(definition.id)),
       ],
     );
+    const geoNodes =
+      geo === undefined
+        ? trace.final.nodes
+        : trace.final.nodes.map((node) => {
+            if ((node.region !== undefined && node.region !== '') || regionOf(node.name) !== undefined) {
+              return node;
+            }
+            const peeked = geo.peekHost(node.server);
+            return peeked?.country === undefined
+              ? node
+              : ({ ...node, region: peeked.country } as ProxyNode);
+          });
     const groupOverrides = [...store.listGroupOverrides(definition.id)].sort((left, right) => left.order - right.order);
     const groupModes = effectiveModes(definition, groupOverrides.length > 0, store.listRules(definition.id).length > 0);
-    const alignedGroups = alignInheritedMembers(trace.final.policyGroups, configured.nodes, trace.final.nodes);
-    const grouped = applyGroupOverlay(alignedGroups, groupOverrides, trace.final.nodes, groupModes.groups);
+    const alignedGroups = alignInheritedMembers(trace.final.policyGroups, configured.nodes, geoNodes);
+    const overlaidGroups = applyGroupOverlay(alignedGroups, groupOverrides, geoNodes, groupModes.groups);
+    const grouped =
+      groupModes.groupIcons === 'auto'
+        ? applyAutoGroupIcons(overlaidGroups, trace.final.ruleSources)
+        : overlaidGroups;
     let final: Profile = parseProfile({
-      nodes: [...trace.final.nodes],
+      nodes: [...geoNodes],
       ruleSources: [...trace.final.ruleSources],
       policyGroups: grouped,
       ...(trace.final.runtime === undefined ? {} : { runtime: trace.final.runtime }),

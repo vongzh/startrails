@@ -137,6 +137,29 @@ export interface StateView {
   clientTargets: ClientTargetView[];
 }
 
+export interface NodeGeoView {
+  country?: string;
+  asn?: number;
+  org?: string;
+  source?: 'manual' | 'name' | 'ip';
+  conflict?: boolean;
+}
+
+export interface GeoStatusView {
+  available: boolean;
+  geoDir: string;
+  updatedAt: string | null;
+  source: string;
+  counts: {
+    countryV4: number;
+    countryV6: number;
+    asnV4: number;
+    asnV6: number;
+  };
+  bytes: number;
+  filesPresent: string[];
+}
+
 export interface NodeView {
   nodeKey: string;
   kind: string;
@@ -144,6 +167,7 @@ export interface NodeView {
   address: string;
   options: Record<string, unknown>;
   sources: string[];
+  geo?: NodeGeoView;
 }
 
 export interface DiagnosticView {
@@ -206,6 +230,7 @@ export interface GroupView {
   tolerance?: number;
   lazy?: boolean;
   hidden?: boolean;
+  icon?: string;
 }
 export interface PolicyGroupBaseView {
   name: string;
@@ -216,6 +241,7 @@ export interface PolicyGroupBaseView {
   tolerance?: number;
   lazy?: boolean;
   hidden?: boolean;
+  icon?: string;
 }
 export interface TraceStepView {
   index: number;
@@ -462,11 +488,13 @@ export const api = {
     profile = activeProfile,
   ) => post<{ count: number }>(withProfile('/api/rules', profile), body),
   policyGroups: (profile = activeProfile) =>
-    request<{ mode: OverlayMode; groups: GroupView[]; base: PolicyGroupBaseView[] }>(
+    request<{ mode: OverlayMode; groupIcons: 'off' | 'auto'; groups: GroupView[]; base: PolicyGroupBaseView[] }>(
       withProfile('/api/policy-groups', profile),
     ),
-  savePolicyGroups: (body: { mode: OverlayMode; groups: GroupView[] }, profile = activeProfile) =>
-    post<{ count: number }>(withProfile('/api/policy-groups', profile), body),
+  savePolicyGroups: (
+    body: { mode: OverlayMode; groupIcons?: 'off' | 'auto'; groups: GroupView[] },
+    profile = activeProfile,
+  ) => post<{ count: number }>(withProfile('/api/policy-groups', profile), body),
   trace: (profile = activeProfile) =>
     request<{ configVersion: string; steps: TraceStepView[] }>(
       `/api/trace?profile=${encodeURIComponent(profile)}`,
@@ -560,6 +588,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ...(profile === undefined ? {} : { profile }) }),
     }),
+  geoStatus: () => request<GeoStatusView>('/api/geo/status'),
+  updateGeo: () => post<{ ok: boolean; status: GeoStatusView }>('/api/geo/update', {}),
   removeSource: (id: string) =>
     request<{ ok: boolean; detached: DetachView }>(`/api/sources/${encodeURIComponent(id)}`, {
       method: 'DELETE',

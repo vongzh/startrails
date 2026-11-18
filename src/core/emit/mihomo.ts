@@ -298,6 +298,7 @@ export const mihomoEmitter = (
       ...(useAuto && strategy === 'url-test' && group.tolerance !== undefined ? { tolerance: group.tolerance } : {}),
       ...(useAuto && group.lazy === true ? { lazy: true } : {}),
       ...(group.hidden === true ? { hidden: true } : {}),
+      ...(group.icon !== undefined && group.icon.length > 0 ? { icon: group.icon } : {}),
     };
   });
 

@@ -197,47 +197,43 @@ watch(activeProfileName, (name) => {
 </script>
 
 <template>
-  <section class="card" style="margin-bottom: 14px">
-    <div class="card-head">
-      <h2>节点批量处理</h2>
-      <n-tag size="small" :bordered="false" class="mono">
-        {{ loading ? '读取中' : `${actionable.length} 条规则` }}
-      </n-tag>
-      <n-tag v-if="!loading && hasChanges" size="small" :bordered="false" type="warning">未保存</n-tag>
-      <div class="spacer"></div>
-      <div class="head-actions">
+  <section class="card transforms-bar">
+    <div class="transforms-strip">
+      <div class="transforms-title">
+        <h2>节点批量处理</h2>
+        <n-tag size="small" :bordered="false" class="mono">
+          {{ loading ? '读取中' : `${actionable.length} 条规则` }}
+        </n-tag>
+        <n-tag v-if="!loading && hasChanges" size="small" :bordered="false" type="warning">未保存</n-tag>
+      </div>
+
+      <div class="transforms-summary">
+        <span v-if="actionable.length === 0" class="text-3" style="font-size: 12px">
+          按节点名批量移除、保留或重命名，规则先于下方单节点标注生效
+        </span>
+        <div v-else class="transforms-pills">
+          <div v-for="(row, index) in actionable" :key="row.id" class="rule-pill">
+            <span class="mono text-3">#{{ index + 1 }}</span>
+            <n-tag
+              size="tiny"
+              :bordered="false"
+              :type="row.action === 'exclude' ? 'error' : row.action === 'keep' ? 'success' : 'info'"
+            >
+              {{ row.action === 'exclude' ? '移除' : row.action === 'keep' ? '保留' : '重命名' }}
+            </n-tag>
+            <code>{{ row.pattern }}</code>
+            <span v-if="row.action === 'rename' && row.replacement" class="text-3">
+              → {{ row.replacement }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="transforms-action">
         <n-button size="small" secondary :disabled="loading" @click="editorOpen = true">
           <template #icon><SlidersHorizontal :size="14" /></template>
           编辑规则
         </n-button>
-      </div>
-    </div>
-    <div class="card-body">
-      <p class="text-3" style="font-size: 12px; margin: 0 0 12px; max-width: 680px">
-        按节点名匹配、从上往下执行：移除机场塞进来的信息节点，或只保留一类节点，或给一类节点加前缀。
-        单个节点的别名、地区、排序在下方节点清单里改。
-      </p>
-
-      <div v-if="actionable.length === 0" class="transform-empty">
-        <span class="text-3" style="font-size: 12px">
-          还没有处理规则。点右上角「编辑规则」，可用预置的正则一键移除「剩余流量 / 到期 / 过滤掉 N 条」这类信息节点。
-        </span>
-      </div>
-      <div v-else class="summary-list">
-        <div v-for="(row, index) in actionable" :key="row.id" class="summary-row">
-          <span class="mono text-3" style="font-size: 11.5px">#{{ index + 1 }}</span>
-          <n-tag
-            size="small"
-            :bordered="false"
-            :type="row.action === 'exclude' ? 'error' : row.action === 'keep' ? 'success' : 'info'"
-          >
-            {{ row.action === 'exclude' ? '移除' : row.action === 'keep' ? '保留' : '重命名' }}
-          </n-tag>
-          <code>{{ row.pattern }}</code>
-          <span v-if="row.action === 'rename' && row.replacement" class="text-3" style="font-size: 12px">
-            → {{ row.replacement }}
-          </span>
-        </div>
       </div>
     </div>
   </section>
@@ -351,20 +347,53 @@ watch(activeProfileName, (name) => {
 </template>
 
 <style scoped>
-.transform-empty {
-  padding: 10px 0 2px;
+.transforms-bar {
+  margin-bottom: 12px;
 }
-.summary-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.summary-row {
+.transforms-strip {
   display: flex;
   align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
   flex-wrap: wrap;
+}
+.transforms-title {
+  display: inline-flex;
+  align-items: center;
   gap: 8px;
-  font-size: 12px;
+  flex: 0 0 auto;
+}
+.transforms-title h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+.transforms-summary {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.transforms-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.rule-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+}
+.transforms-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.transform-empty {
+  padding: 10px 0 2px;
 }
 .preset-block {
   margin-bottom: 12px;

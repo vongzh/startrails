@@ -74,6 +74,7 @@ const nodeBase = {
   server: z.string().min(1),
   port: z.number().int().min(1).max(65535),
   options: optionsSchema.optional(),
+  region: z.string().min(1).optional(),
 };
 
 export const proxyNodeSchema = z.discriminatedUnion('kind', [
@@ -166,6 +167,7 @@ const policyGroupSchema: z.ZodType<PolicyGroup> = z.object({
   tolerance: z.number().int().nonnegative().optional(),
   lazy: z.boolean().optional(),
   hidden: z.boolean().optional(),
+  icon: z.string().min(1).optional(),
 });
 
 /** 非空字符串数组：`nameserver: []` 没有意义，写出来只会让客户端以为「配了但全是空」。 */

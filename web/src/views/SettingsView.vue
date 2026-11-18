@@ -18,6 +18,7 @@ import {
   Cloud,
   Database,
   DownloadCloud,
+  Globe,
   HardDriveDownload,
   Info,
   KeyRound,
@@ -30,6 +31,7 @@ import {
   Sun,
   Trash2,
 } from 'lucide-vue-next';
+import { formatTraffic } from '../format';
 import { UI_CORE_VERSION } from '../version';
 import CapabilitiesView from './CapabilitiesView.vue';
 import DiagnosticsView from './DiagnosticsView.vue';
@@ -42,6 +44,8 @@ import {
   clearCache,
   disconnect,
   fetchDefaultsSettings,
+  geoStatus,
+  geoUpdating,
   notify,
   notifySettings,
   ops,
@@ -55,6 +59,7 @@ import {
   settingsSection,
   state,
   themeMode,
+  updateGeoDatabase,
   webdavSettings,
   type Palette as PaletteId,
 } from '../workspace';
@@ -539,14 +544,16 @@ onMounted(() => {
 onActivated(() => {
   void (async () => {
     try {
-      const [notify, webdav, fetchDefs] = await Promise.all([
+      const [notify, webdav, fetchDefs, geo] = await Promise.all([
         api.notifySettings(),
         api.webdavSettings(),
         api.fetchDefaults(),
+        api.geoStatus(),
       ]);
       notifySettings.value = notify;
       webdavSettings.value = webdav;
       fetchDefaultsSettings.value = fetchDefs;
+      geoStatus.value = geo;
       if (!notifyDirty.value) loadNotifyForm();
       if (!webdavDirty.value) loadWebdavForm();
       if (!fetchDirty.value) loadFetchForm();
@@ -753,6 +760,37 @@ onUnmounted(() => {
                 </template>
                 将清空全部上游缓存，确认执行？
               </n-popconfirm>
+            </div>
+
+            <div class="setting-row">
+              <Globe :size="16" class="text-3" />
+              <div class="da-text">
+                <div class="da-title">离线 IP 与 ASN 库</div>
+                <div class="da-sub">
+                  <template v-if="geoStatus?.available">
+                    已就绪（{{ formatTraffic(geoStatus.bytes) }} · 国家
+                    {{ (geoStatus.counts.countryV4 + geoStatus.counts.countryV6).toLocaleString() }}
+                    条 · ASN
+                    {{ (geoStatus.counts.asnV4 + geoStatus.counts.asnV6).toLocaleString() }} 条<template
+                      v-if="geoStatus.updatedAt"
+                    >
+                      · 更新于 {{ geoStatus.updatedAt.slice(0, 10) }}</template
+                    >）
+                  </template>
+                  <template v-else>
+                    未下载 · 仅作节点名缺失时的兜底识别（手动覆盖与节点名始终优先，数据来自 {{ geoStatus?.source ?? 'sapics/ip-location-db' }}）
+                  </template>
+                </div>
+              </div>
+              <n-button
+                size="small"
+                secondary
+                :loading="geoUpdating"
+                :disabled="geoUpdating || busy > 0"
+                @click="updateGeoDatabase"
+              >
+                {{ geoStatus?.available ? '更新库' : '下载离线库' }}
+              </n-button>
             </div>
           </div>
         </section>

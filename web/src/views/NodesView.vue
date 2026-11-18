@@ -2,7 +2,7 @@
 import { computed, nextTick, ref } from 'vue';
 import type { InputInst } from 'naive-ui';
 import { NButton, NEmpty, NInput, NRadioButton, NRadioGroup, NSelect, NSwitch, NTag, NTooltip } from 'naive-ui';
-import { Activity, ArrowDown, ArrowUp, ChevronDown, Copy, LayoutGrid, Pencil, Search, Server } from 'lucide-vue-next';
+import { Activity, ArrowDown, ArrowUp, ChevronDown, Copy, Globe, List, Pencil, Search, Server } from 'lucide-vue-next';
 import { regionOf as inferRegion } from '@core/collections/index.ts';
 import type { NodeView } from '../api';
 import RegionMap from '../components/RegionMap.vue';
@@ -31,8 +31,15 @@ const expanded = ref<string[]>([]);
 const editing = ref('');
 const aliasDraft = ref('');
 const aliasInputRef = ref<InputInst | null>(null);
-const showRegionMap = ref(false);
+const VIEW_MODE_KEY = 'startrails_region_view';
+const storedViewMode = typeof window !== 'undefined' ? localStorage.getItem(VIEW_MODE_KEY) : null;
+const nodeViewMode = ref<'map' | 'list'>(storedViewMode === 'list' ? 'list' : 'map');
 const regionFilter = ref('');
+
+function setNodeViewMode(mode: 'map' | 'list'): void {
+  nodeViewMode.value = mode;
+  localStorage.setItem(VIEW_MODE_KEY, mode);
+}
 
 function setAliasInputRef(el: unknown): void {
   aliasInputRef.value = (el as InputInst | null) ?? null;
@@ -62,7 +69,7 @@ const kindOptions = computed(() => [
   ...kinds.value.map((entry) => ({ label: `${entry[0]} · ${entry[1]}`, value: entry[0] })),
 ]);
 
-const filtered = computed(() => {
+const preRegionFiltered = computed(() => {
   const needle = search.value.trim().toLowerCase();
   return nodes.value.filter((node) => {
     const annotation = annotationMap.value.get(node.nodeKey);
@@ -70,7 +77,6 @@ const filtered = computed(() => {
     if (scope.value === 'active' && isExcluded) return false;
     if (scope.value === 'excluded' && !isExcluded) return false;
     if (kind.value !== '' && node.kind !== kind.value) return false;
-    if (regionFilter.value !== '' && effectiveRegion(node) !== regionFilter.value) return false;
     if (needle.length === 0) return true;
     const alias = annotation?.alias ?? '';
     return (
@@ -80,6 +86,12 @@ const filtered = computed(() => {
     );
   });
 });
+
+const filtered = computed(() =>
+  regionFilter.value === ''
+    ? preRegionFiltered.value
+    : preRegionFiltered.value.filter((node) => effectiveRegion(node) === regionFilter.value),
+);
 
 const hiddenCount = computed(() => nodes.value.length - filtered.value.length);
 const sortable = computed(
@@ -99,7 +111,15 @@ const regionLabel = (code: string): string => REGION_OPTIONS.find((item) => item
 function effectiveRegion(node: NodeView): string {
   const override = regionOf(node);
   if (override !== '') return override;
-  return inferRegion(node.name) ?? 'OTHER';
+  return inferRegion(node.name) ?? node.geo?.country ?? 'OTHER';
+}
+
+function geoSourceText(node: NodeView): string {
+  if (regionOf(node) !== '') return '手动覆盖';
+  if (inferRegion(node.name) !== undefined) return '节点名识别';
+  if (node.geo?.conflict) return '多 IP 地区不一致，已跳过';
+  if (node.geo?.source === 'ip' && node.geo.country) return `离线 IP 库（${node.geo.country}）`;
+  return '未识别';
 }
 
 function latencyMs(node: NodeView): number | null {
@@ -181,15 +201,6 @@ async function commitAlias(node: NodeView): Promise<void> {
           <div class="spacer"></div>
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" quaternary :type="showRegionMap ? 'primary' : 'default'" @click="showRegionMap = !showRegionMap">
-                <template #icon><LayoutGrid :size="14" /></template>
-                地区分布
-              </n-button>
-            </template>
-            按地区聚合节点，分段宽度即节点占比
-          </n-tooltip>
-          <n-tooltip trigger="hover">
-            <template #trigger>
               <n-button size="small" quaternary :loading="probing" @click="probeLatency()">
                 <template #icon><Activity :size="14" /></template>
                 测延迟
@@ -197,13 +208,34 @@ async function commitAlias(node: NodeView): Promise<void> {
             </template>
             TCP 握手往返（主控机 → 节点服务器），不是代理链路测速
           </n-tooltip>
+          <div class="view-mode-switch" role="group" aria-label="节点视图切换">
+            <button
+              type="button"
+              class="vm-btn"
+              :class="{ on: nodeViewMode === 'map' }"
+              title="世界点阵视图（不展示表格）"
+              @click="setNodeViewMode('map')"
+            >
+              <Globe :size="13" />
+              <span>点阵</span>
+            </button>
+            <button
+              type="button"
+              class="vm-btn"
+              :class="{ on: nodeViewMode === 'list' }"
+              title="地区筛选 + 节点清单表格"
+              @click="setNodeViewMode('list')"
+            >
+              <List :size="13" />
+              <span>列表</span>
+            </button>
+          </div>
         </div>
-        <div class="row filters-sub" style="width: 100%">
-          <n-input v-model:value="search" size="small" placeholder="搜索名称、别名或地址" clearable style="flex: 1; min-width: 150px; max-width: 300px">
+        <div class="row filters-sub" style="width: 100%; gap: 8px; flex-wrap: wrap">
+          <n-input v-model:value="search" size="small" placeholder="搜索名称、别名或地址" clearable style="flex: 1; min-width: 150px; max-width: 280px">
             <template #prefix><Search :size="14" /></template>
           </n-input>
           <n-select v-model:value="kind" :options="kindOptions" size="small" style="width: 148px" />
-          <div class="spacer hide-narrow"></div>
           <n-radio-group v-model:value="scope" size="small">
             <n-radio-button value="all">全部 {{ nodes.length }}</n-radio-button>
             <n-radio-button value="active">参与构建</n-radio-button>
@@ -212,14 +244,20 @@ async function commitAlias(node: NodeView): Promise<void> {
         </div>
       </div>
 
-      <div v-if="showRegionMap && nodes.length > 0" class="region-map-card">
+      <div
+        v-if="preRegionFiltered.length > 0"
+        class="region-map-card"
+        :style="nodeViewMode === 'map' ? { borderBottom: '0' } : undefined"
+      >
         <RegionMap
-          :nodes="nodes"
+          :nodes="preRegionFiltered"
+          :mode="nodeViewMode"
           :region-of="effectiveRegion"
           :latency-of="latencyMs"
           :selected="regionFilter"
           @select="regionFilter = $event"
           @clear="regionFilter = ''"
+          @open-list="setNodeViewMode('list')"
         />
       </div>
 
@@ -247,7 +285,8 @@ async function commitAlias(node: NodeView): Promise<void> {
         </template>
       </n-empty>
 
-      <div v-else class="tbl-wrap">
+      <template v-else-if="nodeViewMode === 'list'">
+        <div class="tbl-wrap">
         <table class="tbl">
           <thead>
             <tr>
@@ -367,16 +406,27 @@ async function commitAlias(node: NodeView): Promise<void> {
                       </div>
                     </div>
                     <div class="field" style="min-width: 200px">
-                      <label>地区（手动覆盖优先于名字识别）</label>
+                      <label>地区（手动覆盖 &gt; 节点名 &gt; 离线 IP 库）</label>
                       <n-select
                         :value="regionOf(node)"
                         size="small"
-                        :options="[{ label: '跟随名字识别', value: '' }, ...REGION_OPTIONS]"
+                        :options="[{ label: '自动识别（名字 / IP 库）', value: '' }, ...REGION_OPTIONS]"
                         :disabled="nodeBusy"
-                        style="width: 180px"
+                        style="width: 200px"
                         @update:value="(value: string) => saveRegion(node, value)"
                       />
-                      <span v-if="regionOf(node)" class="text-3" style="font-size: 11px">已覆盖为 {{ regionLabel(regionOf(node)) }}</span>
+                      <span class="text-3" style="font-size: 11px">
+                        {{ regionOf(node) ? `已覆盖为 ${regionLabel(regionOf(node))}` : `识别来源：${geoSourceText(node)}` }}
+                      </span>
+                    </div>
+                    <div class="field" style="min-width: 210px">
+                      <label>IP 网络归属（ASN）</label>
+                      <span v-if="node.geo?.asn !== undefined" class="mono text-2" style="font-size: 12px">
+                        AS{{ node.geo.asn }}{{ node.geo.org ? ` · ${node.geo.org}` : '' }}
+                      </span>
+                      <span v-else class="text-3" style="font-size: 12px">
+                        {{ node.geo?.conflict ? '域名解析到多个不同国家 IP' : '暂无 ASN 数据（需启用离线 IP 库）' }}
+                      </span>
                     </div>
                     <div class="row tight" style="gap: 8px; align-items: center">
                       <div v-if="sortable" class="row tight show-narrow" style="gap: 6px">
@@ -400,11 +450,47 @@ async function commitAlias(node: NodeView): Promise<void> {
             </template>
           </tbody>
         </table>
-      </div>
+        </div>
 
-      <div class="card-foot text-3" style="font-size: 11.5px">
-        开关切换立即生效；排序需清除筛选后使用，顺序会写入标注并随构建生效。
-      </div>
+        <div class="card-foot text-3" style="font-size: 11.5px">
+          开关切换立即生效；排序需清除筛选后使用，顺序会写入标注并随构建生效。
+        </div>
+      </template>
     </section>
   </div>
 </template>
+
+<style scoped>
+.view-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  gap: 2px;
+}
+.vm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.vm-btn:hover {
+  color: var(--text-2);
+}
+.vm-btn.on {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+</style>

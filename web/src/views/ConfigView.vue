@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { NButton, NDropdown, NEmpty, NPopconfirm, NSelect, NTabPane, NTabs, NTag, NTooltip } from 'naive-ui';
-import { AlertTriangle, ArrowDown, ArrowUp, Info, Plus, Trash2, X } from 'lucide-vue-next';
+import { NButton, NDropdown, NEmpty, NPopconfirm, NTabPane, NTabs, NTag, NTooltip } from 'naive-ui';
+import { AlertTriangle, ArrowDown, ArrowUp, Plus, Trash2, X } from 'lucide-vue-next';
 import type { ProfileEntryView } from '../api';
 import NodesView from './NodesView.vue';
 import RulesView from './RulesView.vue';
@@ -18,10 +18,8 @@ import {
   discardProfileDraft,
   moveProfileEntry,
   notify,
-  onProfileChange,
   profileDirty,
   profileEntries,
-  profileOptions,
   profiles,
   removeProfile,
   removeProfileEntry,
@@ -40,15 +38,6 @@ import {
  */
 const sources = computed(() => state.value?.sources ?? []);
 const createOpen = ref(false);
-
-const SCOPE_NOTE = {
-  composition: '这份配置按顺序合并下列订阅；顺序即合并顺序，换一份配置可以引用完全不同的订阅。',
-  nodes: '排除、别名、地区与排序只作用于这份配置；换一份配置，这些取舍各自独立。',
-  rules: '规则和策略组各自选择继承订阅、整份替换，或和订阅组合。策略名要能在组或内置策略里找到。',
-  runtime: '只作用于当前配置：手机要 fake-ip + TUN、路由器要 redir-host，各配各的。',
-} as const;
-
-const note = computed(() => SCOPE_NOTE[configSection.value as keyof typeof SCOPE_NOTE] ?? '');
 
 /* ---------------- 配置构成 ---------------- */
 
@@ -117,44 +106,30 @@ const derivedNodes = computed(() =>
 
 <template>
   <div class="page config-page">
-    <!-- 配置的「增删」收在这一条上：切换在桌面归侧栏品牌下方，窄屏没有侧栏，才落到这里。 -->
-    <div class="config-bar">
-      <span class="text-3" style="font-size: 12px">当前配置</span>
-      <n-tag size="small" :bordered="false" class="mono hide-narrow">{{ activeProfileName }}</n-tag>
-      <n-select
-        class="profile-switch show-narrow"
-        size="small"
-        aria-label="切换配置"
-        :value="activeProfileName"
-        :options="profileOptions"
-        :consistent-menu-width="false"
-        @update:value="onProfileChange"
-      />
-      <div class="spacer"></div>
-      <div class="head-actions">
-        <n-button size="small" quaternary @click="createOpen = true">
-          <template #icon><Plus :size="14" /></template>
-          新建配置
-        </n-button>
-        <n-popconfirm v-if="profiles.length > 1" @positive-click="removeProfile(activeProfileName)">
-          <template #trigger>
-            <n-tooltip trigger="hover">
-              <template #trigger>
-                <n-button aria-label="删除当前配置" quaternary circle size="small" type="error">
-                  <template #icon><Trash2 :size="14" /></template>
-                </n-button>
-              </template>
-              删除当前配置
-            </n-tooltip>
-          </template>
-          删除配置「{{ activeProfileName }}」？绑定它的订阅地址会一并撤销，其余配置不受影响。
-        </n-popconfirm>
-      </div>
-    </div>
-
     <n-tabs v-model:value="configSection" type="line" size="small" animated class="pane-tabs">
+      <template #suffix>
+        <div class="head-actions" style="padding-bottom: 4px">
+          <n-button size="small" quaternary @click="createOpen = true">
+            <template #icon><Plus :size="14" /></template>
+            新建配置
+          </n-button>
+          <n-popconfirm v-if="profiles.length > 1" @positive-click="removeProfile(activeProfileName)">
+            <template #trigger>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-button aria-label="删除当前配置" quaternary circle size="small" type="error">
+                    <template #icon><Trash2 :size="14" /></template>
+                  </n-button>
+                </template>
+                删除当前配置
+              </n-tooltip>
+            </template>
+            删除配置「{{ activeProfileName }}」？绑定它的订阅地址会一并撤销，其余配置不受影响。
+          </n-popconfirm>
+        </div>
+      </template>
+
       <n-tab-pane name="composition" tab="构成">
-        <div class="scope-note"><Info :size="13" />{{ note }}</div>
 
         <section class="card">
           <div class="card-head">
@@ -255,18 +230,15 @@ const derivedNodes = computed(() =>
       </n-tab-pane>
 
       <n-tab-pane name="nodes" tab="节点">
-        <div class="scope-note"><Info :size="13" />{{ note }}</div>
         <NodeTransformsPane />
         <NodesView class="embed" />
       </n-tab-pane>
 
       <n-tab-pane name="rules" tab="规则与策略">
-        <div class="scope-note"><Info :size="13" />{{ note }}</div>
         <RulesView class="embed" />
       </n-tab-pane>
 
       <n-tab-pane name="runtime" tab="DNS/TUN">
-        <div class="scope-note"><Info :size="13" />{{ note }}</div>
         <RuntimePane />
       </n-tab-pane>
     </n-tabs>

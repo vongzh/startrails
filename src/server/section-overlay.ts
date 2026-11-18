@@ -22,6 +22,7 @@ export function effectiveModes(
     rules: stored?.rules ?? (hasRules ? 'merge' : 'inherit'),
     rulePlacement: stored?.rulePlacement ?? 'after',
     dns: stored?.dns ?? (profile.runtime?.dns !== undefined ? 'replace' : 'inherit'),
+    groupIcons: stored?.groupIcons === 'auto' ? 'auto' : 'off',
   };
 }
 
@@ -74,6 +75,7 @@ export function expandGroup(
     ...(group.tolerance === undefined ? {} : { tolerance: group.tolerance }),
     ...(group.lazy === true ? { lazy: true } : {}),
     ...(group.hidden === true ? { hidden: true } : {}),
+    ...(group.icon === undefined ? {} : { icon: group.icon }),
   };
 }
 

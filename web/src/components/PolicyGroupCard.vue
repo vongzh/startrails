@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { NAutoComplete, NButton, NInput, NInputNumber, NSelect, NSwitch, NTag } from 'naive-ui';
+import { NAutoComplete, NButton, NInput, NInputNumber, NSelect, NSwitch, NTag, NTooltip } from 'naive-ui';
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Trash2 } from 'lucide-vue-next';
+import { flagEmojiOf, iconUrlForEmoji, resolveGroupEmoji } from '@core/groups/icons.ts';
 import {
   addGroupMember,
   annotationMap,
   baseGroups,
+  groupIcons,
   groupMode,
   groups,
   moveGroup,
@@ -112,11 +114,41 @@ function selectRefMember(value: string | number): void {
   if (text !== '') addGroupMember(props.group, { kind: 'ref', value: text });
   pending.value = { ...pending.value, value: '' };
 }
+
+const previewEmoji = computed(() =>
+  resolveGroupEmoji({
+    name: props.group.name,
+    strategy: props.group.strategy,
+    members: props.group.members
+      .map((member) =>
+        member.kind === 'region'
+          ? (flagEmojiOf(member.value) ?? member.value)
+          : member.kind === 'ref'
+            ? member.value
+            : '',
+      )
+      .filter((item) => item.length > 0),
+  }),
+);
+
+const previewIconUrl = computed(() =>
+  props.group.icon.trim() !== ''
+    ? props.group.icon.trim()
+    : groupIcons.value === 'auto'
+      ? (iconUrlForEmoji(previewEmoji.value) ?? '')
+      : '',
+);
 </script>
 
 <template>
   <div class="stack" style="gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border)">
     <div class="row group-head">
+      <n-tooltip v-if="groupIcons === 'auto' || group.icon.trim() !== ''" trigger="hover">
+        <template #trigger>
+          <span class="group-emoji-badge" :title="previewEmoji">{{ previewEmoji }}</span>
+        </template>
+        {{ group.icon.trim() !== '' ? `自定义图标：${group.icon.trim()}` : `自动匹配图标：${previewIconUrl || previewEmoji}` }}
+      </n-tooltip>
       <span class="strong" style="font-size: 13px">{{ group.name }}</span>
       <n-select
         :value="group.strategy"
@@ -140,6 +172,15 @@ function selectRefMember(value: string | number): void {
       <n-button aria-label="删除策略组" quaternary circle size="tiny" type="error" @click="removeGroup(group.name)">
         <template #icon><Trash2 :size="13" /></template>
       </n-button>
+    </div>
+    <div v-if="groupIcons === 'auto' || group.icon.trim() !== ''" class="row" style="gap: 6px">
+      <n-input
+        :value="group.icon"
+        size="tiny"
+        clearable
+        :placeholder="`图标 URL（留空自动使用 ${previewEmoji} 图标）`"
+        @update:value="(value: string) => patchGroup(group.name, { icon: value })"
+      />
     </div>
     <div v-if="group.strategy !== 'select'" class="stack" style="gap: 4px">
       <div class="row">
@@ -273,6 +314,18 @@ function selectRefMember(value: string | number): void {
   margin: 0;
   font-size: 11.5px;
   color: var(--text-3);
+}
+.group-emoji-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1;
 }
 .member-adder-row {
   display: inline-flex;

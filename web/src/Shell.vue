@@ -11,6 +11,7 @@ import {
 import {
   Boxes,
   ChevronRight,
+  Info,
   Layers,
   Inbox,
   LayoutDashboard,
@@ -35,6 +36,7 @@ import {
   activeProfileName,
   busy,
   checkSetup,
+  configSection,
   connect,
   connecting,
   connected,
@@ -205,6 +207,16 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('beforeunload', onBeforeUnload);
 });
+const CONFIG_SCOPE_NOTES: Readonly<Record<string, string>> = {
+  composition: '这份配置按顺序合并下列订阅；顺序即合并顺序，换一份配置可以引用完全不同的订阅。',
+  nodes: '排除、别名、地区与排序只作用于这份配置；换一份配置，这些取舍各自独立。',
+  rules: '规则和策略组各自选择继承订阅、整份替换，或和订阅组合。策略名要能在组或内置策略里找到。',
+  runtime: '只作用于当前配置：手机要 fake-ip + TUN、路由器要 redir-host，各配各的。',
+};
+
+const configScopeNote = computed(() =>
+  tab.value === 'config' ? (CONFIG_SCOPE_NOTES[configSection.value] ?? '') : '',
+);
 </script>
 
 <template>
@@ -340,7 +352,17 @@ onUnmounted(() => {
       <div class="page-intro">
         <div class="pi-text">
           <div class="pi-eyebrow"><span class="pi-eyebrow-line"></span>{{ navGroup }}</div>
-          <h1>{{ title }}</h1>
+          <div class="pi-title-row">
+            <h1>{{ title }}</h1>
+            <n-tooltip v-if="configScopeNote" trigger="hover">
+              <template #trigger>
+                <span class="pi-scope-info" tabindex="0" aria-label="配置作用域说明">
+                  <Info :size="15" />
+                </span>
+              </template>
+              {{ configScopeNote }}
+            </n-tooltip>
+          </div>
           <p>{{ pageSummary }}</p>
         </div>
         <div v-if="subtitle" class="pi-status" aria-label="当前状态">

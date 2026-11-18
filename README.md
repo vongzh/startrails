@@ -5,32 +5,99 @@
   <img src="web/public/brand/logo-on-light.svg" alt="Startrails · 星迹" width="224">
 </picture>
 
-**一份订阅，扇出成 19 个客户端各自能吃的订阅地址。** 自托管的常驻服务，不把订阅交给第三方转换。
+**把多份代理订阅整理为强类型中间表示，按客户端官方文档严格校验后，扇出成 19 个客户端可用的自托管订阅服务（原生支持桌面端与手机端浏览器控制台）。**
 
 ![控制台概览](docs/screenshots/overview.png)
+
+| 节点分布（世界点阵） | 产物预览（19 客户端） |
+| --- | --- |
+| ![节点世界点阵](docs/screenshots/nodes-map.png) | ![客户端产物预览](docs/screenshots/output.png) |
 
 [![CI](https://github.com/vongzh/startrails/actions/workflows/ci.yml/badge.svg)](https://github.com/vongzh/startrails/actions/workflows/ci.yml)
 [![Docker](https://github.com/vongzh/startrails/actions/workflows/docker.yml/badge.svg)](https://github.com/vongzh/startrails/actions/workflows/docker.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f6f4f.svg)](LICENSE)
 
-## 它做什么
+---
 
+## 核心能力
+
+```text
+订阅源 / 手动节点 ──解析──▶ 强类型 IR ──能力矩阵──▶ 方言发射器 ──▶ 19 个客户端订阅链接
 ```
-订阅 ──解析──▶ 强类型 IR ──能力矩阵──▶ 交付层 ──▶ 19 个客户端的订阅地址
+
+- **不静默降级**：基于各客户端官方文档建立三态能力矩阵（`support` 写出、`unverified` 跳过并附说明、`reject` 整条剔除）。缺少 Reality、obfs、SIP003 等关键参数时宁可剔除并写入诊断，也不生成无法连通的“半成品配置”。
+- **多端同源与快照回归**：19 个客户端共享一套中间模型与加工链，并由 `tests/golden.test.ts` 对每组 `IR × Target` 做逐字快照比对，避免改坏已有客户端格式。
+- **节点筛选、图标与地理识别**：
+  - 支持声明式加工链（`filter` / `rename` / `prefix` / `sort` / `dedupe` / `limit`）与按配置隔离的策略组、规则、DNS / TUN 参数。
+  - **策略组自动图标**：在策略组开启后自动按组名用途与国家地区匹配图标（Fluent Emoji 3D / Twemoji / Quantumult X SF Symbols），也可按组覆盖或关闭。
+  - **节点地区与 ASN 识别**：按 `手动标注 > 节点名关键词 > 本地离线 IP/ASN 库` 三级推断地区；内置世界点阵地图与 TCP 握手测速（支持识别本地 TUN 劫持与 UDP 节点跳过）。
+- **桌面与手机端自适应**：Web 控制台针对手机浏览器做了完整响应式适配——窄屏自动切换底部导航栏（概览 / 订阅 / 配置 / 产物预览 / 发布）与顶栏配置切换器，点阵地图、表单卡片与节点列表自适应竖排，触控设备采用 `40×40` 触控热区，随时可在手机上完成节点整理与扫码导入。
+- **自托管与密钥隔离**：全部业务状态保存在单个 SQLite 数据库（WAL 模式），订阅源正文与已签发 Token 使用 `AES-256-GCM` 字段级加密，不依赖任何第三方订阅转换服务。
+
+---
+
+## 客户端与协议支持
+
+目前支持 **7 种方言、19 个客户端**；新增客户端只需在 [`src/core/targets.ts`](src/core/targets.ts) 登记目标，并在 [`src/core/capabilities/verified.ts`](src/core/capabilities/verified.ts) 补充有官方依据的能力差异。
+
+| 方言 | 支持客户端 | 输出形态 |
+| --- | --- | --- |
+| `surge-ini` | Surge、Surge Mac | INI 完整配置（含策略组、规则与 DNS） |
+| `clash-yaml` | mihomo / Clash、Stash、Clash（Legacy）、Clash Verge、ClashMac、FlClash、Clash Party、Clash Mi、Karing | YAML 完整配置（含策略组图标、规则与 DNS/TUN） |
+| `sing-box-json` | sing-box、Hiddify | JSON 完整配置（`outbounds`、DNS、路由与入站） |
+| `quanx-ini` | Quantumult X | INI 完整配置（`[server_local]`、`[policy]`、`[filter_remote]` 等） |
+| `loon-ini` | Loon | INI `[Proxy]` 节点片段（未验证段显式提示用户自补） |
+| `egern-yaml` | Egern | YAML 多文档单节点片段 |
+| `uri-list` | Shadowrocket、V2Box、Anywhere | 节点分享 URI 列表 |
+
+- **协议与传输**：覆盖 `vless`、`vmess`、`trojan`、`shadowsocks`、`hysteria2`、`tuic`、`anytls`、`snell`，支持 `ws` / `grpc` / `h2` / `http` 传输以及 TLS、VLESS Reality、ShadowTLS / SIP003 插件、Hysteria2 `obfs` 与端口跳跃。
+- **四种订阅交付方式**：同一签发 Token 可通过以下形态访问：
+  - 托管链接：`GET /s/<token>[/<profile>/<target>]`（自动识别客户端 `User-Agent`，支持 `ETag` / `304`）
+  - 扫码导入：`GET /s/<token>/qr.svg`
+  - 下载文件：`GET /s/<token>?download=1`
+  - 临时参数筛选：`GET /s/<token>?include=HK&exclude=过期&limit=20`
+- **容灾反馈**：交付响应头附带 `X-Startrails-Summary: nodes=42 skipped=3 sources=2 stale=1`；上游短暂不可用时自动回退最近可用快照并标记 `stale=1`。
+
+---
+
+## 核心概念与工作流
+
+控制台围绕「**内容来源 → 组装加工 → 产物预览 → 签发交付**」展开：
+
+```text
+订阅（远端 / 文件）+ 我的节点（inline） ──▶ 组合订阅（可选复用） ──▶ 配置（发布作用域） ──▶ 预览与发布
 ```
 
-- **不会悄悄降级**。客户端表达不了的能力分三档：`support` 写出、`unverified` 不写、`reject` 剔除。reality / obfs / plugin 这类「缺了就永远连不上」的特性整条剔除，不拼一份看着对的配置。
-- **改动有回归**。`IR × 客户端` 由 19 份 golden 快照逐字锁死，改错立刻变红。
-- **数据在自己手里**。源正文在 SQLite 里字段级加密，备份就是一个文件。
+| 概念 | 说明 |
+| --- | --- |
+| **订阅** | 上游远端 URL 或本地上传的文件源。远端源支持独立 `User-Agent`、拉取代理（应对分流/限区机场）与刷新策略，可单独停用。 |
+| **我的节点** | 手工表单录入或批量粘贴分享链接生成的 `inline` 源，无上游刷新动作，直接参与后续筛选、改名、去重与组合引用。 |
+| **组合订阅** | 将多个「订阅 / 我的节点」合成为可复用的中间集合；成员可独立设置前缀、改名模板、过滤规则与节点上限，去重支持 `nodeKey` / `name` / `none`。 |
+| **配置** | 最终发布单元。按顺序引用若干订阅、我的节点与组合订阅（顺序即合并顺序），每份配置拥有独立的输出参数与订阅签发台账。 |
 
-## 快速开始
+- **两档作用域**：
+  - **实例级**（全局共享）：管理令牌、加密密钥、数据库备份与恢复、WebDAV、通知渠道、离线 IP 库与构建历史。
+  - **配置级**（随配置隔离）：配置构成、节点排除/别名/地区标注/排序、内联规则与规则集、策略组（含图标设置）、DNS / TUN 参数、以及已签发的订阅链接。
+- **声明式加工链**：按序执行 `filter`、`rename`、`prefix`、`sort`、`dedupe`、`limit` 等算子；模式字面量自动识别 `/re/flags`（正则）、含 `*` `?`（glob）或普通子串；内置 `useless` 过滤器自动剔除剩余流量、到期时间等说明性伪节点。
 
-需要 Docker（镜像方式）或 Node ≥ 22.18（源码方式）。
+---
+
+## 快速部署
+
+需要 **Docker**（推荐）或 **Node.js ≥ 22.18**。默认仅监听 `127.0.0.1:8787`；容器镜像内监听 `0.0.0.0:8787`，宿主机端口映射仍绑定在回环地址。
+
+### 方式一：Docker Compose（推荐）
 
 ```bash
-# 可选：预先生成加密密钥。不生成也行，首次打开 Web UI 时会要求设置。
-openssl rand -hex 32
+# 1. 使用 GitHub Container Registry 已发布镜像（无需源码和构建环境）
+docker compose -f docker-compose.release.yml up -d
+
+# 2. 或从当前仓库源码本地构建
+cp .env.example .env   # 可选：留空则首次访问 Web UI 时设置密钥与管理令牌
+docker compose up -d
 ```
+
+也可直接用单条 `docker run` 启动：
 
 ```bash
 docker run -d --name startrails \
@@ -40,72 +107,44 @@ docker run -d --name startrails \
   ghcr.io/vongzh/startrails:latest
 ```
 
-打开 `http://127.0.0.1:8787`，首次进入会要求设定管理令牌与数据加密密钥。想用环境变量预置密钥，在 `docker run` 里加一行 `-e STARTRAILS_TOKEN_SECRET=<上一步的值>`；不预置则密钥落盘到 `data/secret.key`。源码方式：
+### 方式二：源码运行
 
 ```bash
-npm ci && npm run build:ui
+npm ci
+npm run build:ui
 node src/server/index.ts
 ```
 
-三条要知道的：
+### 首次访问与密钥说明
 
-1. **`STARTRAILS_TOKEN_SECRET` 可选但长期不变**。它加密源正文与订阅令牌（台账要能重看链接与二维码）；优先级为环境变量 > `STARTRAILS_SECRET_FILE` 指向的文件（默认 `<data>/secret.key`）> 首次进入 UI 设置。已有数据的实例换密钥后旧正文解不开，必须继续用原密钥；订阅本身不受影响，客户端照常拉取。
-2. **管理令牌两种来源**：环境变量 `STARTRAILS_ADMIN_TOKEN`（优先级高、界面不可改）或首次访问时在界面设定。库里只存 hash。
-3. **默认只监听 `127.0.0.1`**。对外请配反向代理；镜像里已默认 `STARTRAILS_HOST=0.0.0.0`，安全边界交给「宿主机发布成哪个地址」。
+1. 启动后访问 `http://127.0.0.1:8787`，首次进入会引导设置 **管理令牌** 与 **数据加密密钥**。
+2. **数据加密密钥（`STARTRAILS_TOKEN_SECRET`）**：用于加密库内源正文和订阅 Token 明文，优先级为 `环境变量 > STARTRAILS_SECRET_FILE（默认 <data>/secret.key） > 首次在 Web UI 设置`。**已有数据的实例更换密钥会导致旧正文与台账地址无法解密**（已签发给客户端的哈希校验不受影响）。
+3. **管理令牌（`STARTRAILS_ADMIN_TOKEN`）**：环境变量优先级高于数据库哈希，若忘记令牌可通过设置环境变量临时接管或从备份恢复。
 
-## 镜像发布
+### 反向代理与数据备份
 
-镜像由 GitHub Actions 发布，本地不需要 Docker 环境，配置见 [`.github/workflows/docker.yml`](.github/workflows/docker.yml)。
-
-| 触发 | 结果 |
-| --- | --- |
-| `git tag v0.1.1 && git push origin v0.1.1` | 先跑完整 verify，再交叉构建 `linux/amd64` + `linux/arm64`，推 `ghcr.io/vongzh/startrails` 的 `0.1.1`、`latest`、`sha-xxxxxxx` |
-| Actions → Docker → Run workflow | 同上但不移动 `latest`；勾选 `push` 才真的推送 |
-
-- tag 与 `package.json` 版本不一致直接失败，不会产出半成品镜像。
-- 仓库是公开的，GHCR 包默认就是 public，`docker pull` 免登录（实测匿名 token 可列 tags）。只有仓库改成私有、又想让别人能拉时，才需要去 Packages → Package settings 手动改可见性。
-- 想同时推 Docker Hub：配 `DOCKERHUB_USERNAME`（Variable）与 `DOCKERHUB_TOKEN`（Secret，Read & write 的 PAT），工作流会自动追加 `docker.io/<账号>/startrails`。
-- 用 podman 本地构建要加 `--format docker`：默认 OCI 格式会**静默丢弃 `HEALTHCHECK`**，镜像看着正常但没有健康检查。CI 侧同理，工作流显式写了 `oci-mediatypes=false`，并因此必须同时 `provenance: false` —— attestation 只能挂在 OCI image index 上，两个一起开会直接报 `cannot export attestations with "oci-mediatypes=false"` 中断导出。
-
-## 部署
-
-两种入口，按需选一个：
-
-```bash
-# 用已发布镜像部署（不需要源码与构建环境）
-docker compose -f docker-compose.release.yml up -d
-```
-
-```bash
-# 从本地源码构建
-cp .env.example .env      # 可选：预填密钥 / 管理令牌；留空则首次进入 UI 设置
-docker compose up -d
-```
-
-`docker-compose.release.yml` 里 `TZ` 写的是 `CST-8` 而不是 `Asia/Shanghai`：alpine 基础镜像没有 zoneinfo，写时区名会静默退回 UTC。
-
-反代的关键是这两句；走 TLS 时**必须设** `STARTRAILS_PUBLIC_BASE_URL=https://sub.example.com`，否则二维码与规则集改写里的地址会按请求 Host 拼，容易出错。
+对外提供 HTTPS 访问时，**务必配置 `STARTRAILS_PUBLIC_BASE_URL=https://sub.example.com`**，确保二维码、规则集镜像改写与客户端导入链接使用正确域名：
 
 ```nginx
 location / {
   proxy_pass http://127.0.0.1:8787;
   proxy_set_header Host $host;
   proxy_set_header X-Forwarded-Proto $scheme;
-  client_max_body_size 16m;    # 上传订阅文件
+  client_max_body_size 16m;
 }
 ```
 
-备份与恢复（本机快照、WebDAV 远端、换机迁移）见 [`docs/BACKUP.md`](docs/BACKUP.md)。服务不自带定时备份，要定时请交给 cron / systemd timer。
+> 备份直接使用 SQLite `VACUUM INTO` 热快照，支持本机导出与 WebDAV 远端上传；切勿在运行中直接 `cp` 拷贝 WAL 模式数据库文件。完整步骤见 [`docs/BACKUP.md`](docs/BACKUP.md)。
 
 <details>
-<summary>裸机 systemd</summary>
+<summary>裸机 systemd 部署示例</summary>
 
 ```bash
 sudo useradd -r -s /usr/sbin/nologin startrails
 sudo install -d -o startrails -g startrails /opt/startrails /var/lib/startrails
 sudo -u startrails git clone https://github.com/vongzh/startrails.git /opt/startrails
 cd /opt/startrails && sudo -u startrails npm ci && sudo -u startrails npm run build:ui
-sudo -u startrails npm prune --omit=dev    # vite 在 devDependencies 里，构建完再裁
+sudo -u startrails npm prune --omit=dev
 ```
 
 ```ini
@@ -129,99 +168,87 @@ ReadWritePaths=/var/lib/startrails
 WantedBy=multi-user.target
 ```
 
-`/etc/startrails.env` 写 `STARTRAILS_DATA_DIR=/var/lib/startrails`、`STARTRAILS_ADMIN_TOKEN=`，权限 `600`；`STARTRAILS_TOKEN_SECRET` 可留空（首次在 UI 设置并落盘到 `<data>/secret.key`），也可在这里预置。
+在 `/etc/startrails.env`（权限 `600`）中至少配置 `STARTRAILS_DATA_DIR=/var/lib/startrails`。
 
 </details>
 
-## 三个概念
+<details>
+<summary>镜像发布与构建说明（维护者参考）</summary>
 
-```
-订阅 + 我的节点（采集）→ 组合订阅（合并 / 过滤 / 去重）→ 配置（发布作用域）
-```
+- 工作流位于 [`.github/workflows/docker.yml`](.github/workflows/docker.yml)，推送 `v*` 标签（需与 `package.json` 版本一致）会自动执行完整 `verify` 后交叉构建 `linux/amd64` 与 `linux/arm64` 镜像至 GHCR。
+- 若需同步推送至 Docker Hub，在仓库设置中添加 `DOCKERHUB_USERNAME`（Variable）与 `DOCKERHUB_TOKEN`（Secret）。
+- 使用 Podman 本地构建请加 `--format docker`，避免默认 OCI 格式丢弃 `HEALTHCHECK` 指令；`docker-compose.release.yml` 默认使用 `TZ: CST-8` 以兼容无 `tzdata` 的 Alpine 基础镜像。
 
-- **订阅**：从上游拿回来的一整份节点清单——远端 URL 或上传文件。可单独停用。远端源可配刷新策略、拉取代理（解决机场按出口 IP 限区）与 User-Agent（拿对格式）；这两种才有「更新订阅」这个动作。
-- **我的节点**：自己手填的几条——表单填一条，或多行粘贴一批分享链接。没有上游、没有刷新，只有名称与正文可改。落库为 `inline` 源，正文就是一行一条 URI，因此和订阅享受同一套筛选 / 改名 / 去重，也能被组合订阅与配置构成引用。
-- **组合订阅**：多个订阅合并成可复用单元，成员可配前缀 / 改名模板 / 保留 / 排除 / 上限，或改用**加工链**；去重按 `nodeKey` / `name` / `none`。
-- **配置**：有序引用若干订阅、我的节点与组合订阅，顺序即合并顺序，在侧栏底部的页脚栏切换，每份配置有自己的一组订阅地址与订阅地址台账。构成、节点取舍、规则与策略组、DNS/TUN 都在**配置页**的四段里维护，订阅页只管「内容从哪来」。
+</details>
 
-界面按「内容 → 产物 → 交付」三段组织：订阅页（内容从哪来）、配置页（这份产物怎么组装）、产物预览页（会生成什么：各客户端实际产物）、发布页（接入点 + 已签发）。
+---
 
-**作用域**：只有两档。**实例级**只放「跟哪份产物无关」的东西——管理令牌、备份、通知、WebDAV、构建历史；**其余全部跟着配置走**：构成、排除、别名、地区、排序、内联规则、策略组、DNS/TUN，以及签发的订阅地址（每条地址只对签发它的那份配置生效，发布页只列当前配置的）。订阅与组合订阅本身是共享内容（多份配置可以引用同一份），但「引不引用、怎么取舍」由每份配置自己决定。配置页每个分区顶部都标了这一行。
+## 离线 IP 库与世界点阵地图
 
-**加工链**是一串有序算子（`filter` / `rename` / `prefix` / `sort` / `dedupe` / `limit`），顺序即语义——「先改名再去重」和「先去重再改名」是两件事。匹配写法按字面自动判定：`/re/flags` 正则、含 `*` `?` 是 glob、其余按子串；`filter` 的 `useless` 会把「剩余流量 / 到期时间」这类广告伪节点剔掉。删源或删组合时，指向它的引用在**同一个请求**里清理干净；加源时若目标配置构成是空的会自动挂进去，非空只提示「N 个源还没加入构成」并给一键补挂。
+- **离线 IP 国家与 ASN 库（可选）**：
+  - 数据源来自 `sapics/ip-location-db`，在控制台 **设置 → 备份与缓存** 页面点击「下载 / 更新」，或执行 `npm run geo:update` 即可将 CSV 编译为本地只读二进制索引（存于 `<dataDir>/geo/`）。
+  - 支持 IPv4 / IPv6、自动跳过私网地址、单飞 DNS 并发合并，以及多 A/AAAA 解析跨国家冲突保护（存在地区冲突时不误判国家）。
+- **世界点阵地图**：
+  - 节点页默认以世界点阵展示节点地理分布（点阵视图下隐藏明细表格），并在右上角支持切换 `点阵 | 列表`；静态网格模块位于 [`web/src/data/world-dot-map.ts`](web/src/data/world-dot-map.ts)，如需从 Natural Earth 重建可运行 `npm run worldmap:update`。
 
-## 客户端支持
-
-19 个客户端、7 种方言。新增客户端只需在 `src/core/targets.ts` 加一行，再到 `src/core/capabilities/verified.ts` 登记能力差异与官方依据。
-
-| 方言 | 客户端 | 输出 |
-| --- | --- | --- |
-| `surge-ini` | Surge、Surge Mac | INI 完整配置 |
-| `clash-yaml` | mihomo/Clash、Stash、Clash Verge、ClashMac、FlClash、Clash Party、Clash Mi、Karing | YAML 完整配置 |
-| `sing-box-json` | sing-box、Hiddify | JSON outbounds 片段 |
-| `loon-ini` | Loon | INI `[Proxy]` 片段 |
-| `quanx-ini` | Quantumult X | INI 完整配置 |
-| `egern-yaml` | Egern | YAML 单节点片段 |
-| `uri-list` | Shadowrocket、V2Box、Anywhere | 节点分享 URI 列表 |
-
-协议覆盖 `vless` / `vmess` / `trojan` / `shadowsocks` / `hysteria2` / `tuic` / `anytls` / `snell`，传输含 `ws` / `grpc` / `h2` / `http`，并建模 TLS、VLESS Reality、SS SIP003 插件、Hysteria2 obfs 与端口跳跃。
-
-判定依据只取**客户端官方文档**，逐条记在「设置 → 能力矩阵」里可查；没有依据的一律 `unverified` 不写，而不是套用别的客户端的模板。所以 Loon 只输出 `[Proxy]` 片段、Surge 的 VLESS 直接剔除。
-
-同一个订阅有四种拿法：托管地址 `GET /s/<token>[/<profile>/<target>]`（按 UA 自适应，支持 ETag / 304）、二维码 `/qr.svg`、附件下载 `?download=1`、参数化 `/s/<token>?include=HK&exclude=过期&limit=20`。每个响应带 `X-Startrails-Summary: nodes=42 skipped=3 sources=2 stale=1`；`stale=1` 表示这次真的回退了旧快照——上游挂了但客户端照常可用。
+---
 
 ## 环境变量
 
-| 变量 | 默认 | 说明 |
+完整注释模板见 [`.env.example`](.env.example)。
+
+| 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `STARTRAILS_TOKEN_SECRET` | 空 | 加密源正文与订阅令牌的密钥；环境变量优先，未设置时用 `<data>/secret.key`，都没有则首次 UI 设置。换了密钥后旧数据解不开 |
-| `STARTRAILS_SECRET_FILE` | `<data>/secret.key` | UI 设置的密钥落盘位置 |
-| `STARTRAILS_ADMIN_TOKEN` | 空 | 管理令牌；留空则首次访问在界面设定并存库 |
-| `STARTRAILS_DATA_DIR` | `./data` | 数据目录（库文件 + 规则集缓存 + 可选 `secret.key`） |
-| `STARTRAILS_DB_PATH` | `<data>/startrails.db` | 库文件位置 |
-| `STARTRAILS_HOST` / `STARTRAILS_PORT` | `127.0.0.1` / `8787` | 监听地址 |
-| `STARTRAILS_PUBLIC_BASE_URL` | 空 | 对外基地址，TLS 反代时必设 |
-| `STARTRAILS_WEBDAV_URL` / `_USER` / `_PASS` | 空 | 远端备份目标（建议私有目录） |
-| `STARTRAILS_TG_BOT_TOKEN` / `_CHAT_ID`、`STARTRAILS_BARK_URL` | 空 | 运维通知渠道 |
-| `STARTRAILS_ALLOW_PRIVATE` | `0` | **危险**：放行内网订阅地址，仅本机测试 |
-| `STARTRAILS_ALLOW_STATELESS` | `0` | **危险**：开放无状态转换 `GET /sub?url=` |
+| `STARTRAILS_TOKEN_SECRET` | 空 | 字段级加密密钥（优先于 `secret.key`） |
+| `STARTRAILS_SECRET_FILE` | `<data>/secret.key` | Web UI 设置密钥时的落盘路径 |
+| `STARTRAILS_ADMIN_TOKEN` | 空 | 控制台管理令牌（覆盖库内哈希） |
+| `STARTRAILS_DATA_DIR` | `./data` | 数据目录（SQLite 库、缓存、离线 Geo 库） |
+| `STARTRAILS_DB_PATH` | `<data>/startrails.db` | 数据库文件路径 |
+| `STARTRAILS_HOST` / `STARTRAILS_PORT` | `127.0.0.1` / `8787` | 服务端监听地址与端口 |
+| `STARTRAILS_PUBLIC_BASE_URL` | 空 | 对外访问基地址（TLS 反代时必设） |
+| `STARTRAILS_WEBDAV_URL` / `_USER` / `_PASS` | 空 | WebDAV 远端备份目录与凭据 |
+| `STARTRAILS_TG_BOT_TOKEN` / `_CHAT_ID`、`STARTRAILS_BARK_URL` | 空 | 构建与异常通知渠道（Telegram / Bark） |
+| `STARTRAILS_ALLOW_PRIVATE` | `0` | **慎用**：放行内网订阅地址，仅本机调试使用 |
+| `STARTRAILS_ALLOW_STATELESS` | `0` | **慎用**：开放无状态转换接口 `GET /sub?url=` |
 
-完整模板见 [`.env.example`](.env.example)。
+---
 
-## 开发
+## 开发与架构
 
 ```bash
-npm run serve         # 构建前端 + 起服务（http://127.0.0.1:8787）
-npm run dev:ui        # 只跑前端 dev server（后端另开 dev:server）
-npm test              # 173 个用例
-npm run verify        # 提交前跑这个：版本一致 → tsc → 绑定检查 → 构建 → 用例 → 备份演练
+npm run serve         # 构建前端并启动完整服务（http://127.0.0.1:8787）
+npm run dev:ui        # 启动 Vite 前端开发服务器
+npm run dev:server    # 启动后端服务
+npm test              # 运行全量测试（当前 213 个用例）
+npm run verify        # 提交前完整检查：版本一致 → tsc → UI 绑定 → 前端构建 → 全量测试 → 备份演练
 ```
 
-- `src/core` 零 IO、零 `node:` 依赖，可同构跑在浏览器里；Plan 只做决策、Emit 只做表达、IR 全程只读。
-- 能力差异是**数据**（`src/core/capabilities/verified.ts`），不是 `if (target === …)`。
-- 每个 `IR × Target` 由 `tests/golden.test.ts` 逐字比对，新增 Target 必须补 golden。
-- 界面文案中文，失败态用带 `reason` 的诊断而不是裸报错。
+### 目录结构
 
-目录：`src/core`（IR / 解析 / 能力 / 交付）、`src/server`（HTTP / 调度 / 备份）、`src/store`（SQLite）、`web/`（Vue 3 控制台）、`tests/`。
+- `src/core/`：零 IO、零 `node:` 依赖的同构核心（IR 定义与校验、订阅解析、三态能力矩阵、加工算子、策略组图标匹配、7 种方言发射器与诊断）。
+- `src/server/`：HTTP 服务、管理与交付路由、上游拉取调度、离线 Geo 编译检索、节点测速、WebDAV 备份与通知。
+- `src/store/`：SQLite 存储层与 AES-GCM 加解密适配。
+- `web/`：Vue 3 + Vite + Naive UI 控制台前端。
+- `scripts/`：版本校验、UI 绑定静态检查、备份演练、Geo 与世界地图生成脚本。
+- `tests/`：能力矩阵、协议往返、golden 快照、加工链、Geo 与全栈管理流程测试。
+
+---
 
 ## 常见问题
 
-**节点数是 0？** 先看订阅是否加进了配置页「构成」段（构成卡会提示「N 个订阅还没加入构成」），再看订阅是否被停用，最后看「设置 → 诊断」里的 `reason`（`profile-empty` / `source-payload-empty` / `source-unavailable`）。
+- **为什么某个客户端输出的节点比控制台里少？**
+  这不是丢节点，而是能力矩阵判定结果。可在控制台 **设置 → 能力矩阵** 查看该客户端对目标协议或传输特性的官方文档依据及 `unverified` / `reject` 状态。
+- **节点数是 0 怎么排查？**
+  依次检查：1）当前「配置」是否已把订阅或我的节点加入构成列表；2）订阅源是否处于停用状态；3）**设置 → 诊断** 中的 `reason` 字段（如 `profile-empty`、`source-unavailable`）。
+- **客户端迟迟拉不到最新配置？**
+  交付接口默认启用 `ETag / 304` 协商缓存。可先在 **产物预览** 页切换对应客户端重新构建确认内容已变更，再检查反代或客户端自身刷新间隔。
+- **支持多副本部署吗？**
+  不支持。SQLite WAL 要求同一主机本地卷单实例独占写入，不能挂载 NFS/CIFS 网络存储或同时启动多个写副本。
 
-**客户端拉不到新配置？** 服务端支持 ETag / 304，缓存生效时不会有下载动作。先在「产物预览」页选同一客户端点「重新构建」看内容是否变化，再用 `curl -I <订阅地址>` 看 `ETag` 与 `X-Startrails-Summary`。
+---
 
-**某个客户端少节点？** 这是判定结果，不是 bug。去「设置 → 能力矩阵」看该客户端对这条特性是 `unverified` 还是 `reject`。
+## 合规、致谢与许可证
 
-**容器起来了但界面打不开？** 多半是卷的属主不是 uid 1000，或 `data/secret.key` 不可写。密钥没设置不会导致启动失败：首次进入 UI 设置即可。
-
-**能多副本吗？** 不能。SQLite WAL 要求所有进程在同一主机。
-
-**忘了管理令牌？** 设环境变量 `STARTRAILS_ADMIN_TOKEN` 覆盖（优先级高于库里的），或从备份恢复。
-
-## 合规与免责
-
-本项目只做格式转换与配置生成，不提供、不代理、不分发任何网络接入服务。请遵守所在地法律法规与所订阅服务的条款。字段映射依据只取各客户端官方文档与公开格式规范。
-
-## 许可证
-
-[MIT](LICENSE) © 2026 vongzh
+- **合规与免责**：本项目仅提供代理配置解析、整理与格式转换能力，不提供、不代理、不分发任何网络接入服务。请遵守当地法律法规与上游服务条款；协议字段映射仅依据公开文档与格式规范。
+- **第三方致谢**：设计借鉴、图标 CDN 与开源地理数据集归属详见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
+- **许可证**：[MIT](LICENSE) © 2026 vongzh

@@ -9,6 +9,7 @@ import type {
   DiagnosticView,
   EvidenceView,
   FetchDefaultsView,
+  GeoStatusView,
   GroupMemberView,
   GroupView,
   HistoryEntry,
@@ -77,6 +78,7 @@ export interface GroupDraft {
   tolerance: number | null;
   lazy: boolean;
   hidden: boolean;
+  icon: string;
   members: GroupMemberDraft[];
 }
 
@@ -149,6 +151,9 @@ export const sourceUpdating = ref<string[]>([]);
 
 /** 运维能力状态（通知 / WebDAV / 调度器）；登录后拉一次，避免每屏都问。 */
 export const ops = ref<{ notify: { enabled: boolean; channels: string[] }; webdav: { configured: boolean }; scheduler: { intervalMs: number } } | null>(null);
+/** 离线 IP 国家与 ASN 库状态。 */
+export const geoStatus = ref<GeoStatusView | null>(null);
+export const geoUpdating = ref(false);
 /** 通知渠道的界面配置（界面覆盖值 + 环境变量默认值 + 生效值）。 */
 export const notifySettings = ref<{
   value: NotifyConfigView | null;
@@ -174,6 +179,7 @@ export const ruleMode = ref<OverlayMode>('inherit');
 export const rulePlacement = ref<'before' | 'after'>('after');
 export const groups = ref<GroupDraft[]>([]);
 export const groupMode = ref<OverlayMode>('inherit');
+export const groupIcons = ref<'off' | 'auto'>('off');
 export const baseGroups = ref<PolicyGroupBaseView[]>([]);
 
 export type ThemeMode = 'system' | 'light' | 'dark';
@@ -309,7 +315,9 @@ export const rulesDirty = computed(
   () => JSON.stringify({ mode: ruleMode.value, placement: rulePlacement.value, rules: rules.value }) !== loadedRules.value,
 );
 export const groupsDirty = computed(
-  () => JSON.stringify({ mode: groupMode.value, groups: groups.value }) !== loadedGroups.value,
+  () =>
+    JSON.stringify({ mode: groupMode.value, groupIcons: groupIcons.value, groups: groups.value }) !==
+    loadedGroups.value,
 );
 
 export const previewMeta = computed(() => {
@@ -360,6 +368,7 @@ function messageOf(cause: unknown): string {
   if (text.includes('url-required')) return '订阅链接不能为空';
   if (text.includes('name-required')) return '名称不能为空';
   if (text.includes('404') && text.includes('profile-not-found')) return '配置不存在，请在配置页新建';
+  if (text.includes('geo-update-failed')) return '离线 IP 库下载或编译失败，请检查服务端网络连接';
   return text.length > 240 ? `${text.slice(0, 240)}…` : text;
 }
 
@@ -492,9 +501,14 @@ async function loadRuleState(force = false): Promise<void> {
   const groupData = await api.policyGroups();
   if (force || !groupsDirty.value) {
     groupMode.value = groupData.mode;
+    groupIcons.value = groupData.groupIcons === 'auto' ? 'auto' : 'off';
     baseGroups.value = groupData.base;
     groups.value = groupData.groups.map(groupDraftOf);
-    loadedGroups.value = JSON.stringify({ mode: groupMode.value, groups: groups.value });
+    loadedGroups.value = JSON.stringify({
+      mode: groupMode.value,
+      groupIcons: groupIcons.value,
+      groups: groups.value,
+    });
   }
 }
 
@@ -558,6 +572,7 @@ export async function loadAll(force = false): Promise<void> {
   evidence.value = (await api.capabilities()).evidence;
   history.value = (await api.diagnostics()).reports;
   ops.value = await api.ops();
+  geoStatus.value = await api.geoStatus();
   notifySettings.value = await api.notifySettings();
   webdavSettings.value = await api.webdavSettings();
   fetchDefaultsSettings.value = await api.fetchDefaults();
@@ -695,6 +710,7 @@ export function disconnect(): void {
   rulePlacement.value = 'after';
   groups.value = [];
   groupMode.value = 'inherit';
+  groupIcons.value = 'off';
   baseGroups.value = [];
   profileEntries.value = [];
   loadedEntries.value = '[]';
@@ -706,6 +722,7 @@ export function disconnect(): void {
   sourceStats.value = {};
   buildReport.value = null;
   history.value = [];
+  geoStatus.value = null;
   activeProfileName.value = 'default';
   setActiveProfile('default');
 }
@@ -1346,6 +1363,7 @@ function groupDraftOf(group: GroupView): GroupDraft {
     tolerance: group.tolerance ?? null,
     lazy: group.lazy === true,
     hidden: group.hidden === true,
+    icon: group.icon ?? '',
     members: group.members.map(memberDraftOf),
   };
 }
@@ -1361,12 +1379,14 @@ export function addGroup(input: string | GroupDraft): boolean {
           tolerance: null,
           lazy: false,
           hidden: false,
+          icon: '',
           members: [],
         }
       : {
           ...input,
           name: input.name.trim(),
           testUrl: input.testUrl.trim(),
+          icon: input.icon.trim(),
           members: input.members.map((member) => ({ ...member })),
         };
   if (draft.name.length === 0 || groups.value.some((item) => item.name === draft.name)) return false;
@@ -1432,6 +1452,7 @@ export function adoptBaseGroups(): void {
       tolerance: strategy === 'url-test' ? (group.tolerance ?? 50) : null,
       lazy: group.lazy === true,
       hidden: group.hidden === true,
+      icon: group.icon ?? '',
       members: group.members.map((member) => ({ kind: 'ref' as const, value: member })),
     };
   });
@@ -1459,6 +1480,7 @@ export async function saveGroups(): Promise<boolean> {
       ...(group.tolerance === null ? {} : { tolerance: group.tolerance }),
       ...(group.lazy ? { lazy: true } : {}),
       ...(group.hidden ? { hidden: true } : {}),
+      ...(group.icon.trim().length === 0 ? {} : { icon: group.icon.trim() }),
       members: group.members.map((member) =>
         member.kind === 'match'
           ? { kind: 'match' as const, pattern: member.value }
@@ -1469,8 +1491,16 @@ export async function saveGroups(): Promise<boolean> {
               : { kind: 'ref' as const, name: member.value },
       ),
     }));
-    await api.savePolicyGroups({ mode: groupMode.value, groups: payload });
-    loadedGroups.value = JSON.stringify({ mode: groupMode.value, groups: groups.value });
+    await api.savePolicyGroups({
+      mode: groupMode.value,
+      groupIcons: groupIcons.value,
+      groups: payload,
+    });
+    loadedGroups.value = JSON.stringify({
+      mode: groupMode.value,
+      groupIcons: groupIcons.value,
+      groups: groups.value,
+    });
     invalidateTrace();
     await refreshPreview();
     notify('ok', '策略组已保存');
@@ -1482,9 +1512,11 @@ export function discardGroups(): void {
   try {
     const parsed = JSON.parse(loadedGroups.value) as {
       mode: OverlayMode;
+      groupIcons?: 'off' | 'auto';
       groups: GroupDraft[];
     };
     groupMode.value = parsed.mode;
+    groupIcons.value = parsed.groupIcons === 'auto' ? 'auto' : 'off';
     groups.value = parsed.groups;
     notify('ok', '已恢复为上次保存的策略组');
   } catch {
@@ -1606,6 +1638,25 @@ export async function probeLatency(): Promise<void> {
     notify('error', `探测失败：${messageOf(cause)}`);
   } finally {
     probing.value = false;
+  }
+}
+
+/** 下载并编译服务端离线 IP 国家 / ASN 库，完成后重拉节点归属与预览。 */
+export async function updateGeoDatabase(): Promise<boolean> {
+  if (geoUpdating.value) return false;
+  geoUpdating.value = true;
+  try {
+    return await run(async () => {
+      const outcome = await api.updateGeo();
+      geoStatus.value = outcome.status;
+      await loadNodeState();
+      notify(
+        'ok',
+        `离线 IP 库已更新（国家 ${outcome.status.counts.countryV4 + outcome.status.counts.countryV6} 条 · ASN ${outcome.status.counts.asnV4 + outcome.status.counts.asnV6} 条）`,
+      );
+    });
+  } finally {
+    geoUpdating.value = false;
   }
 }
 

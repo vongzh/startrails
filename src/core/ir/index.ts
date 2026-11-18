@@ -241,6 +241,8 @@ export interface PolicyGroup {
   readonly tolerance?: number | undefined;
   readonly lazy?: boolean | undefined;
   readonly hidden?: boolean | undefined;
+  /** 策略组图标地址（或 QuanX `.system` 符号）；由自动匹配或用户覆盖填入。 */
+  readonly icon?: string | undefined;
 }
 
 /** 解析产物，可重建、不落盘；用户意图只存在 Annotation 里。 */
