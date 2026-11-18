@@ -21,7 +21,7 @@ import { mapConcurrent } from './async.ts';
 import { parseWebDavUrl, probeWebDav, uploadToWebDav } from './backup.ts';
 import type { WebDavConfig } from './backup.ts';
 import type { BuildCache } from './build-cache.ts';
-import type { Builder, PreparedState } from './builder.ts';
+import type { Builder } from './builder.ts';
 import { HttpError, absoluteUrlOf, readJson, sendJson } from './http.ts';
 import {
   EMPTY_FETCH_DEFAULTS,
@@ -46,7 +46,7 @@ import type { FetchDefaults } from './input.ts';
 import { sendTestNotify } from './notify.ts';
 import type { NotifyConfig } from './notify.ts';
 import { probeAll } from './probe.ts';
-import type { ProbeTarget } from './probe.ts';
+import type { ProbeSample, ProbeTarget } from './probe.ts';
 import { hasRedactionMarkers, redact } from './redact.ts';
 import {
   MIN_TOKEN_SECRET_LENGTH,
@@ -247,7 +247,7 @@ export function createAdminHandler(deps: AdminDeps) {
                   req,
                   token.target === 'auto'
                     ? `/s/${token.token}`
-                    : `/s/${token.token}/${token.profile}/${token.target}`,
+                    : `/s/${token.token}/${encodeURIComponent(token.profile)}/${token.target}`,
                   '',
                   publicBaseUrl,
                 ),
@@ -280,9 +280,17 @@ export function createAdminHandler(deps: AdminDeps) {
         return;
       }
       const composed = builder.composeProfile(definition, state.snapshots);
+      const orderByKey = new Map<string, number>();
+      for (const annotation of store.listAnnotations(definition.id)) {
+        if (annotation.order !== undefined) orderByKey.set(annotation.nodeKey, annotation.order);
+      }
+      const orderedNodes = composed.profile.nodes
+        .map((node, index) => ({ node, sortOrder: orderByKey.get(nodeKey(node)) ?? index }))
+        .sort((left, right) => left.sortOrder - right.sortOrder)
+        .map((entry) => entry.node);
       sendJson(res, 200, {
         configVersion: state.configVersion,
-        nodes: composed.profile.nodes.map((node) => ({
+        nodes: orderedNodes.map((node) => ({
           nodeKey: nodeKey(node),
           kind: node.kind,
           name: node.name,
@@ -406,7 +414,11 @@ export function createAdminHandler(deps: AdminDeps) {
         return;
       }
       if (method === 'GET') {
-        const state = (await builder.prepareState(profileName)) as PreparedState;
+        const state = await builder.prepareState(profileName);
+        if (state === null) {
+          sendJson(res, 404, { error: 'profile-not-found' });
+          return;
+        }
         const base = builder.composeProfile(definition, state.snapshots).profile;
         const overrides = store.listGroupOverrides(definition.id);
         const modes = effectiveModes(definition, overrides.length > 0, store.listRules(definition.id).length > 0);
@@ -873,7 +885,9 @@ export function createAdminHandler(deps: AdminDeps) {
         createdAt: new Date().toISOString(),
       });
       const path =
-        resolvedTarget === 'auto' ? `/s/${token}` : `/s/${token}/${profileName}/${resolvedTarget}`;
+        resolvedTarget === 'auto'
+          ? `/s/${token}`
+          : `/s/${token}/${encodeURIComponent(profileName)}/${resolvedTarget}`;
       sendJson(res, 201, {
         id,
         token,
@@ -943,22 +957,64 @@ export function createAdminHandler(deps: AdminDeps) {
         return;
       }
       const built = await builder.buildFromSnapshots(probeState, 'surge', undefined, false);
-      const seen = new Set<string>();
+      const groups = new Map<
+        string,
+        {
+          readonly target: ProbeTarget;
+          readonly members: {
+            readonly nodeKey: string;
+            readonly name: string;
+            readonly server: string;
+            readonly port: number;
+          }[];
+        }
+      >();
       const targets: ProbeTarget[] = [];
       for (const node of built.profile.nodes) {
         const id = `${node.kind}:${node.server}:${node.port}`;
-        if (seen.has(id)) continue;
-        seen.add(id);
-        targets.push({
-          nodeKey: nodeKey(node),
+        const key = nodeKey(node);
+        const existing = groups.get(id);
+        if (existing !== undefined) {
+          existing.members.push({ nodeKey: key, name: node.name, server: node.server, port: node.port });
+          continue;
+        }
+        if (targets.length >= 200) continue;
+        const target: ProbeTarget = {
+          nodeKey: key,
           name: node.name,
           server: node.server,
           port: node.port,
           kind: node.kind,
+        };
+        groups.set(id, {
+          target,
+          members: [{ nodeKey: key, name: node.name, server: node.server, port: node.port }],
         });
-        if (targets.length >= 200) break;
+        targets.push(target);
       }
-      const samples = await probeAll(targets, { timeoutMs: 1_000, attempts: 2, concurrency: 16 });
+      const probed = await probeAll(targets, { timeoutMs: 1_000, attempts: 2, concurrency: 16 });
+      const sampleById = new Map<string, ProbeSample>();
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index];
+        const sample = probed[index];
+        if (target !== undefined && sample !== undefined) {
+          sampleById.set(`${target.kind}:${target.server}:${target.port}`, sample);
+        }
+      }
+      const samples: ProbeSample[] = [];
+      for (const [id, group] of groups) {
+        const sample = sampleById.get(id);
+        if (sample === undefined) continue;
+        for (const member of group.members) {
+          samples.push({
+            ...sample,
+            nodeKey: member.nodeKey,
+            name: member.name,
+            server: member.server,
+            port: member.port,
+          });
+        }
+      }
       sendJson(res, 200, {
         note: 'TCP 握手延迟（主控机 → 节点 server:port），不是代理链路测速，也不代表落地出口质量',
         samples,

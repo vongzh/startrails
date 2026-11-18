@@ -142,6 +142,27 @@ export const parseProcesses = (raw: unknown): Process[] => {
       const count = record['count'];
       if (typeof count !== 'number' || count <= 0) continue;
       steps.push({ type: 'limit', count: Math.floor(count) });
+      continue;
+    }
+    if (type === 'set-property') {
+      const key = asString(record['key']);
+      if (key === 'udp' || key === 'skip-cert-verify') {
+        const rawValue = record['value'];
+        if (typeof rawValue === 'boolean') {
+          steps.push({ type: 'set-property', key, value: rawValue });
+        } else if (rawValue === 'true' || rawValue === 'false') {
+          steps.push({ type: 'set-property', key, value: rawValue === 'true' });
+        }
+        continue;
+      }
+      if (key === 'alpn' && typeof record['value'] === 'string') {
+        steps.push({ type: 'set-property', key: 'alpn', value: record['value'].trim() });
+      }
+      continue;
+    }
+    if (type === 'flag') {
+      const value = asString(record['value']);
+      if (value !== undefined) steps.push({ type: 'flag', value });
     }
   }
   return steps;

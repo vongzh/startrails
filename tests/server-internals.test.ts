@@ -3,6 +3,7 @@ import test from 'node:test';
 import { parseProfile } from '../src/core/ir/validate.ts';
 import { mapConcurrent } from '../src/server/async.ts';
 import { BuildCache } from '../src/server/build-cache.ts';
+import { parseProcesses } from '../src/server/input.ts';
 
 test('mapConcurrent：有界并发且严格按输入顺序返回结果', async () => {
   assert.deepEqual(await mapConcurrent([], 4, async (x: number) => x), []);
@@ -37,4 +38,23 @@ test('BuildCache：L3 命中时刷新 LRU 顺序，淘汰最久未用的条目',
   assert.equal(cache.getL3('k1'), p1);
   assert.equal(cache.getL3('k2'), undefined);
   assert.equal(cache.getL3('k3'), p3);
+});
+
+test('parseProcesses：保留 set-property（含清空 alpn 的空串）与 flag 算子', () => {
+  const steps = parseProcesses([
+    { type: 'set-property', key: 'udp', value: true },
+    { type: 'set-property', key: 'skip-cert-verify', value: false },
+    { type: 'set-property', key: 'alpn', value: 'h2,http/1.1' },
+    { type: 'set-property', key: 'alpn', value: '' },
+    { type: 'flag', value: '|VIP' },
+    { type: 'flag', value: '   ' },
+    { type: 'set-property', key: 'unknown', value: true },
+  ]);
+  assert.deepEqual(steps, [
+    { type: 'set-property', key: 'udp', value: true },
+    { type: 'set-property', key: 'skip-cert-verify', value: false },
+    { type: 'set-property', key: 'alpn', value: 'h2,http/1.1' },
+    { type: 'set-property', key: 'alpn', value: '' },
+    { type: 'flag', value: '|VIP' },
+  ]);
 });

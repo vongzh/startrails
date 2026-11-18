@@ -34,7 +34,7 @@ import type {
 import { mapConcurrent } from './async.ts';
 import type { BuildCache } from './build-cache.ts';
 import type { SnapshotCache } from './cache.ts';
-import { describeAge, fetchDefaults } from './input.ts';
+import { describeAge, fetchDefaults, isSourceFormat } from './input.ts';
 import type { Notifier } from './notify.ts';
 import { redactDiagnostic } from './redact.ts';
 import type { RuleSetCache } from './ruleset.ts';
@@ -433,7 +433,8 @@ export function createBuilder(deps: BuilderDeps): Builder {
       if (cached !== undefined) return cached;
       const body = bodies.get(sourceId);
       if (body === undefined) return undefined;
-      const result = ingest(body);
+      const fmt = store.getSource(sourceId)?.format;
+      const result = ingest(body, fmt !== undefined && isSourceFormat(fmt) ? fmt : undefined);
       parsed.set(sourceId, result.profile.nodes);
       for (const node of result.profile.nodes) {
         if (!originalNames.has(nodeKey(node))) originalNames.set(nodeKey(node), node.name);
@@ -857,7 +858,8 @@ export function createBuilder(deps: BuilderDeps): Builder {
         sample: [],
       };
     }
-    const result = ingest(body);
+    const fmt = source.format;
+    const result = ingest(body, fmt !== undefined && isSourceFormat(fmt) ? fmt : undefined);
     return {
       id: source.id,
       enabled: true,
@@ -883,7 +885,8 @@ export function createBuilder(deps: BuilderDeps): Builder {
           ? cache.lastGood(sourceId)?.body
           : store.readSourcePayload(sourceId);
       if (payload === undefined) return undefined;
-      const nodes = ingest(payload).profile.nodes;
+      const fmt = source.format;
+      const nodes = ingest(payload, fmt !== undefined && isSourceFormat(fmt) ? fmt : undefined).profile.nodes;
       seen.set(sourceId, nodes);
       return nodes;
     };

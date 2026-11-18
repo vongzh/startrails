@@ -63,7 +63,13 @@ export class RuleSetCache {
   }
 
   get(key: string): RuleSetEntry | undefined {
-    return this.entries.get(key);
+    const cached = this.entries.get(key);
+    if (cached !== undefined) return cached;
+    if (!/^[0-9a-f]{16}$/i.test(key)) return undefined;
+    const fromDisk = this.readDisk(key);
+    if (fromDisk === null) return undefined;
+    this.entries.set(key, fromDisk);
+    return fromDisk;
   }
 
   /**

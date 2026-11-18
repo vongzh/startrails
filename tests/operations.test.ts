@@ -175,8 +175,11 @@ test('规则集缓存：磁盘落盘、TTL 内不回源、上游失败回退旧�
   assert.equal(second?.body, first?.body);
   assert.equal(hits, 1, 'TTL 内直接命中，不再打上游');
 
-  // 新实例（模拟重启）应能直接读磁盘。
+  // 新实例（模拟重启）应能直接读磁盘：包括 get(key)（给 /rules/<key> 路由用）与 resolve(url)。
   const reopened = new RuleSetCache(join(dir, 'rulesets'), undefined, true);
+  assert.equal(reopened.get('../escape'), undefined, '非法 key 不得穿透读盘');
+  const gotFromDisk = reopened.get(key);
+  assert.match(gotFromDisk?.body ?? '', /ads\.example\.invalid/, '重启后 get(key) 必须命中磁盘缓存');
   const fromDisk = await reopened.resolve(url);
   assert.match(fromDisk?.body ?? '', /ads\.example\.invalid/);
 

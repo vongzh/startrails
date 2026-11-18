@@ -5,7 +5,7 @@ import { Globe } from 'lucide-vue-next';
 import { api } from '../api';
 import type { FallbackFilterView, OverlayMode, RuntimeCapabilityView, RuntimePolicyView } from '../api';
 import ClientIcon from './ClientIcon.vue';
-import { activeProfileName, notify, runtimeDirty } from '../workspace';
+import { activeProfileName, invalidateTrace, notify, refreshPreview, runtimeDirty } from '../workspace';
 
 /**
  * DNS 与 TUN 是这份配置的产物内容：客户端拿到订阅后按它解析域名、按它决定要不要接管整机流量。
@@ -203,10 +203,10 @@ async function saveRuntime(): Promise<void> {
     const fallback = splitLines(dnsForm.fallback);
     const nameserverPolicy: Record<string, string> = {};
     for (const line of splitLines(dnsForm.nameserverPolicy)) {
-      const splitAt = line.indexOf(' ');
-      if (splitAt <= 0) continue;
-      const domain = line.slice(0, splitAt).trim();
-      const server = line.slice(splitAt + 1).trim();
+      const matched = /^(\S+)\s+(.+)$/.exec(line);
+      if (matched === null) continue;
+      const domain = matched[1]?.trim() ?? '';
+      const server = matched[2]?.trim() ?? '';
       if (domain.length > 0 && server.length > 0) nameserverPolicy[domain] = server;
     }
     const defaultNameserver = splitLines(dnsForm.defaultNameserver);
@@ -289,6 +289,8 @@ async function saveRuntime(): Promise<void> {
         : '已保存；客户端下次拉取产物时生效',
     );
     await loadRuntime();
+    invalidateTrace();
+    await refreshPreview();
   } catch (error) {
     notify('error', error instanceof Error ? error.message : '保存 DNS / TUN 设置失败');
   } finally {
@@ -302,6 +304,8 @@ async function clearRuntime(): Promise<void> {
     await api.saveRuntime(null, activeProfileName.value, 'inherit');
     notify('ok', '已清空：这份配置的产物不再写 DNS / TUN 段');
     await loadRuntime();
+    invalidateTrace();
+    await refreshPreview();
   } catch (error) {
     notify('error', error instanceof Error ? error.message : '保存 DNS / TUN 设置失败');
   } finally {

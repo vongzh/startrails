@@ -4,7 +4,7 @@ import { NAlert, NButton, NInput, NModal, NPopconfirm, NSelect, NTag } from 'nai
 import { ArrowDown, ArrowUp, Plus, SlidersHorizontal, Trash2 } from 'lucide-vue-next';
 import { api } from '../api';
 import type { NodeTransformView } from '../api';
-import { activeProfileName, nodes, notify } from '../workspace';
+import { activeProfileName, invalidateTrace, nodes, notify, refreshPreview } from '../workspace';
 import { compileMatcher } from '@core/collections/index.ts';
 
 /**
@@ -165,6 +165,8 @@ async function save(): Promise<void> {
       }));
     const saved = await api.saveNodeTransforms(transforms, activeProfileName.value);
     await load();
+    invalidateTrace();
+    await refreshPreview();
     editorOpen.value = false;
     notify('ok', `已保存 ${saved.transforms.length} 条规则；产物预览与订阅下次拉取时生效`);
   } catch (error) {

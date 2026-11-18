@@ -450,6 +450,10 @@ export function downloadPreview(): void {
  *    旧响应不得覆盖新状态——否则卡头是新客户端、正文还是旧产物；
  * ② 失败时清空旧内容并提示（比如配置为空），而不是继续展示上一个 target 的产物。
  */
+export function invalidateTrace(): void {
+  traceSteps.value = [];
+}
+
 let previewSeq = 0;
 export async function refreshPreview(): Promise<void> {
   const seq = ++previewSeq;
@@ -755,6 +759,7 @@ export async function updateSource(
 
   const ok = await run(async () => {
     await api.updateSource(id, patch);
+    invalidateTrace();
     await reloadAfterSave();
   });
   if (!ok && enabled !== undefined && before !== undefined) flip(before);
@@ -766,6 +771,7 @@ export async function removeSource(id: string): Promise<boolean> {
   const name = sourceLabel(id);
   return run(async () => {
     const result = await api.removeSource(id);
+    invalidateTrace();
     await loadAll();
     // 引用是工具写进去的，删掉时说清顺手收回了什么，用户才知道自己的组合订阅变了。
     const cleaned = result.detached;
@@ -841,6 +847,7 @@ export async function saveCollection(input: {
 }): Promise<boolean> {
   return run(async () => {
     await api.saveCollection(input);
+    invalidateTrace();
     await loadAll();
     notify('ok', `组合订阅「${input.name}」已保存`);
   });
@@ -849,6 +856,7 @@ export async function saveCollection(input: {
 export async function removeCollection(id: string): Promise<boolean> {
   return run(async () => {
     const result = await api.removeCollection(id);
+    invalidateTrace();
     await loadAll();
     notify(
       'ok',
@@ -1004,6 +1012,7 @@ export async function saveProfile(): Promise<boolean> {
     await api.saveProfile(profileEntries.value);
     // 先把基线对齐，再走统一的状态映射：否则草稿保护会把刚保存的构成当成「未保存改动」跳过。
     loadedEntries.value = JSON.stringify(profileEntries.value);
+    invalidateTrace();
     applyStateSnapshot(await api.state());
     await loadNodeState();
     await refreshPreview();
@@ -1038,6 +1047,7 @@ export async function toggleExcluded(node: NodeView): Promise<boolean> {
   nodeBusy.value = true;
   try {
     await api.saveAnnotation(payload);
+    invalidateTrace();
     schedulePreviewRefresh();
     return true;
   } catch (cause) {
@@ -1059,6 +1069,7 @@ export async function saveAlias(node: NodeView, value: string): Promise<boolean>
   nodeBusy.value = true;
   try {
     await api.saveAnnotation(payload);
+    invalidateTrace();
     schedulePreviewRefresh();
     notify('ok', trimmed.length > 0 ? `已重命名为 ${trimmed}` : '已恢复原名');
     return true;
@@ -1081,6 +1092,7 @@ export async function saveRegion(node: NodeView, code: string): Promise<boolean>
   nodeBusy.value = true;
   try {
     await api.saveAnnotation(payload);
+    invalidateTrace();
     schedulePreviewRefresh();
     notify('ok', code === '' ? '已清除地区覆盖' : `地区已改为 ${code}`);
     return true;
@@ -1099,26 +1111,42 @@ export async function moveNode(index: number, direction: number): Promise<boolea
   const current = nodes.value[index];
   const other = nodes.value[next];
   if (current === undefined || other === undefined) return false;
-  const prevCurrent = annotationOf(current);
-  const prevOther = annotationOf(other);
   const prevNodes = [...nodes.value];
-  const left = { ...prevCurrent, order: next };
-  const right = { ...prevOther, order: index };
   const reordered = [...nodes.value];
   reordered[index] = other;
   reordered[next] = current;
+
+  // 显式固定顺序到「本次交换位置与历史上已设 order 的最大位置」：
+  // 避免未设 order 的前序节点在源节点增删后按原索引落入相同 order 造成冲突。
+  let upperBound = Math.max(index, next);
+  for (let i = reordered.length - 1; i > upperBound; i -= 1) {
+    const item = reordered[i];
+    if (item !== undefined && annotationMap.value.get(item.nodeKey)?.order !== undefined) {
+      upperBound = i;
+      break;
+    }
+  }
+
+  const updates: { prev: AnnotationView; next: AnnotationView }[] = [];
+  for (let i = 0; i <= upperBound; i += 1) {
+    const item = reordered[i];
+    if (item === undefined) continue;
+    const prev = annotationOf(item);
+    if (prev.order === i) continue;
+    updates.push({ prev, next: { ...prev, order: i } });
+  }
+
   nodes.value = reordered;
-  upsertAnnotation(left);
-  upsertAnnotation(right);
+  for (const entry of updates) upsertAnnotation(entry.next);
   nodeBusy.value = true;
   try {
-    await Promise.all([api.saveAnnotation(left), api.saveAnnotation(right)]);
+    await Promise.all(updates.map((entry) => api.saveAnnotation(entry.next)));
+    invalidateTrace();
     schedulePreviewRefresh();
     return true;
   } catch (cause) {
     nodes.value = prevNodes;
-    upsertAnnotation(prevCurrent);
-    upsertAnnotation(prevOther);
+    for (const entry of updates) upsertAnnotation(entry.prev);
     notify('error', messageOf(cause));
     return false;
   } finally {
@@ -1277,6 +1305,7 @@ export async function saveRules(): Promise<boolean> {
       placement: rulePlacement.value,
       rules: rules.value,
     });
+    invalidateTrace();
     await refreshPreview();
     notify('ok', '规则已保存');
   });
@@ -1442,6 +1471,7 @@ export async function saveGroups(): Promise<boolean> {
     }));
     await api.savePolicyGroups({ mode: groupMode.value, groups: payload });
     loadedGroups.value = JSON.stringify({ mode: groupMode.value, groups: groups.value });
+    invalidateTrace();
     await refreshPreview();
     notify('ok', '策略组已保存');
   });
@@ -1554,7 +1584,7 @@ export async function probeLatency(): Promise<void> {
   if (probing.value) return;
   probing.value = true;
   try {
-    const result = await api.probe();
+    const result = await api.probe(activeProfileName.value);
     latencies.value = Object.fromEntries(
       result.samples.map((item) => [
         item.nodeKey,

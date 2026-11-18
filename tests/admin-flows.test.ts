@@ -672,3 +672,146 @@ test('源编辑：脱敏值全形态拒绝、代理同样受保护、坏链接�
   assert.equal(stillBroken.status, 400);
   assert.equal(await errorOf(stillBroken), 'redacted-url-rejected');
 });
+
+test('回归守护：source.format 透传、nodes 按标注排序、probe 复用同端口结果、含空格 profile 链接编码', async (t) => {
+  const { createServer } = await import('node:http');
+  const tcpTarget = createServer((_req, res) => res.end('ok'));
+  await new Promise<void>((done) => tcpTarget.listen(0, '127.0.0.1', done));
+  const tcpPort = (tcpTarget.address() as AddressInfo).port;
+
+  const harness = await boot({ adminToken: 'reg-admin', allowPrivate: true });
+  t.after(async () => {
+    await new Promise<void>((done) => tcpTarget.close(() => done()));
+    await harness.close();
+  });
+
+  // 1. source.format：一份标准 uri-lines 内容被强制指定为 clash-yaml 时，inspect / compose / collection 均须按 clash-yaml 解析（0 节点），而不是静默自动识别成 uri-lines。
+  assert.equal(
+    (
+      await harness.call('/api/sources', 'POST', {
+        id: 'fmt-forced',
+        kind: 'inline',
+        format: 'clash-yaml',
+        content: singleNode,
+      })
+    ).status,
+    201,
+  );
+  const inspected = (await (await harness.call('/api/sources/inspect', 'GET')).json()) as {
+    sources: { id: string; format?: string; nodes: number }[];
+  };
+  const forcedInspect = inspected.sources.find((item) => item.id === 'fmt-forced');
+  assert.equal(forcedInspect?.format, 'clash-yaml');
+  assert.equal(forcedInspect?.nodes, 0, 'inspectSource 必须尊重 source.format');
+
+  assert.equal(
+    (
+      await harness.call('/api/collections', 'POST', {
+        id: 'fmt-col',
+        name: '格式检验',
+        members: [{ sourceId: 'fmt-forced' }],
+      })
+    ).status,
+    201,
+  );
+  const collections = (await (await harness.call('/api/collections', 'GET')).json()) as {
+    collections: { id: string; previewCount: number }[];
+  };
+  assert.equal(
+    collections.collections.find((item) => item.id === 'fmt-col')?.previewCount,
+    0,
+    'offlineNodesOf 必须尊重 source.format',
+  );
+
+  // 2. 同协议同 host:port 的两个节点（不同凭据 → 不同 nodeKey）+ 自定义 profile（名字带空格）：
+  //    - GET /api/nodes 应遵守 annotation.order；
+  //    - POST /api/probe 传入 profile 时应选中该 profile 且为同端口两节点都返回 sample；
+  //    - 签发 URL 与 /api/state 应对含空格 profile 正确 URL 编码，可直接拉取。
+  const twinA = `trojan://pw-a@127.0.0.1:${tcpPort}#NodeA`;
+  const twinB = `trojan://pw-b@127.0.0.1:${tcpPort}#NodeB`;
+  assert.equal(
+    (
+      await harness.call('/api/sources', 'POST', {
+        id: 'twins',
+        kind: 'inline',
+        content: `${twinA}\n${twinB}`,
+      })
+    ).status,
+    201,
+  );
+  const spacedProfile = 'my daily';
+  assert.equal(
+    (
+      await harness.call('/api/profiles', 'POST', {
+        id: spacedProfile,
+        name: spacedProfile,
+        entries: [{ kind: 'source', id: 'twins' }],
+      })
+    ).status,
+    201,
+  );
+
+  const initialNodes = (await (
+    await harness.call(`/api/nodes?profile=${encodeURIComponent(spacedProfile)}`, 'GET')
+  ).json()) as { nodes: { nodeKey: string; name: string }[] };
+  assert.deepEqual(
+    initialNodes.nodes.map((node) => node.name),
+    ['NodeA', 'NodeB'],
+  );
+
+  // 反转顺序写入 annotation.order：NodeB -> 0, NodeA -> 1
+  const keyA = initialNodes.nodes[0]!.nodeKey;
+  const keyB = initialNodes.nodes[1]!.nodeKey;
+  assert.equal(
+    (
+      await harness.call(`/api/annotations?profile=${encodeURIComponent(spacedProfile)}`, 'POST', {
+        nodeKey: keyB,
+        order: 0,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await harness.call(`/api/annotations?profile=${encodeURIComponent(spacedProfile)}`, 'POST', {
+        nodeKey: keyA,
+        order: 1,
+      })
+    ).status,
+    200,
+  );
+  const reorderedNodes = (await (
+    await harness.call(`/api/nodes?profile=${encodeURIComponent(spacedProfile)}`, 'GET')
+  ).json()) as { nodes: { nodeKey: string; name: string }[] };
+  assert.deepEqual(
+    reorderedNodes.nodes.map((node) => node.name),
+    ['NodeB', 'NodeA'],
+    'GET /api/nodes 必须按 annotation.order 排序',
+  );
+
+  const probeRes = await harness.call('/api/probe', 'POST', { profile: spacedProfile });
+  assert.equal(probeRes.status, 200);
+  const probed = (await probeRes.json()) as {
+    samples: { nodeKey: string; latencyMs: number | null; intercepted: boolean }[];
+  };
+  assert.equal(probed.samples.length, 2, '同端口的两个节点都必须得到探测样本');
+  assert.deepEqual(
+    probed.samples.map((s) => s.nodeKey).sort(),
+    [keyA, keyB].sort(),
+  );
+  assert.ok(probed.samples.every((s) => s.latencyMs !== null && s.intercepted === true));
+
+  const issued = await harness.call('/api/tokens', 'POST', { profile: spacedProfile, target: 'surge' });
+  assert.equal(issued.status, 201);
+  const issuedBody = (await issued.json()) as { url: string; path: string };
+  assert.match(issuedBody.path, /my%20daily/, '签发路径必须对 profile 做 URL 编码');
+  const delivered = await fetch(issuedBody.url);
+  assert.equal(delivered.status, 200);
+  const st = await stateOf(harness);
+  const listed = st.tokens.find((tok) => tok.profile === spacedProfile);
+  assert.match(listed?.url ?? '', /my%20daily/, '/api/state 返回的订阅 URL 也必须编码 profile');
+
+  // 404 防御：不存在的 profile 查策略组不崩 500
+  const missingGroups = await harness.call('/api/policy-groups?profile=missing-profile', 'GET');
+  assert.equal(missingGroups.status, 404);
+});

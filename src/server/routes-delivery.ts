@@ -61,7 +61,7 @@ export function createDeliveryRoutes(deps: DeliveryDeps): DeliveryRoutes {
       send(res, 404, 'unknown-rule-set', { 'content-type': 'text/plain; charset=utf-8' });
       return;
     }
-    const resolved = await ruleSets.resolve(entry.url);
+    const resolved = entry.url.length > 0 ? await ruleSets.resolve(entry.url) : entry;
     const body = resolved?.body ?? entry.body;
     if (body.length === 0) {
       send(res, 502, 'rule-set-unavailable', { 'content-type': 'text/plain; charset=utf-8' });
