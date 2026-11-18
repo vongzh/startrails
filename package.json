@@ -58,7 +58,9 @@
     "vue-tsc": "^3.3.14"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.9",
     "better-sqlite3": "^13.0.3",
+    "hono": "^4.13.19",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   }

@@ -1,6 +1,8 @@
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
+import { getRequestListener } from '@hono/node-server';
+import { Hono } from 'hono';
 import { CORE_VERSION } from '../core/index.ts';
 import { hashToken } from '../store/crypto.ts';
 import type { Store } from '../store/port.ts';
@@ -11,13 +13,14 @@ import { createBuilder } from './builder.ts';
 import { SnapshotCache } from './cache.ts';
 import { createGeoService } from './geo.ts';
 import type { GeoService } from './geo.ts';
-import { HttpError, send, sendJson, serveStatic } from './http.ts';
+import type { AppEnv } from './http.ts';
+import { HttpError, SECURITY_HEADERS, serveStaticAsset } from './http.ts';
 import { describeAge } from './input.ts';
 import { createNotifier } from './notify.ts';
 import type { NotifyConfig } from './notify.ts';
 import { redact } from './redact.ts';
-import { ADMIN_TOKEN_SETTING_KEY, SETTING_NOTIFY, SETTING_WEBDAV, createAdminHandler } from './routes-admin.ts';
-import { createDeliveryRoutes } from './routes-delivery.ts';
+import { ADMIN_TOKEN_SETTING_KEY, SETTING_NOTIFY, SETTING_WEBDAV, createAdminApp } from './routes-admin.ts';
+import { createDeliveryApp } from './routes-delivery.ts';
 import { RuleSetCache } from './ruleset.ts';
 import { dueSourceIds } from './schedule.ts';
 
@@ -121,7 +124,7 @@ export function createApp(options: AppOptions): App {
     geo,
   });
 
-  const handleApi = createAdminHandler({
+  const adminApp = createAdminApp({
     store,
     buildCache,
     builder,
@@ -145,7 +148,7 @@ export function createApp(options: AppOptions): App {
     }),
   });
 
-  const delivery = createDeliveryRoutes({
+  const deliveryApp = createDeliveryApp({
     store,
     buildCache,
     ruleSets,
@@ -161,49 +164,43 @@ export function createApp(options: AppOptions): App {
     return builder.refreshSources(due);
   };
 
+  const hono = new Hono<AppEnv>();
+
+  hono.use('*', async (c, next) => {
+    await next();
+    for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+      c.res.headers.set(key, value);
+    }
+  });
+
+  hono.onError((error, c) => {
+    if (error instanceof HttpError) {
+      return c.json({ error: error.message }, error.status as 400 | 413 | 500);
+    }
+    if (error instanceof URIError) {
+      return c.json({ error: 'invalid-url-encoding' }, 400);
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    return c.json({ error: 'internal-error', reason: redact(reason) }, 500);
+  });
+
+  hono.get('/health', (c) =>
+    c.json({ ok: true, version: builder.instanceVersion(), coreVersion: CORE_VERSION }),
+  );
+  hono.route('/', deliveryApp);
+  hono.route('/api', adminApp);
+  hono.all('*', (c) => serveStaticAsset(options.webRoot, c));
+
+  const requestListener = getRequestListener(hono.fetch, { overrideGlobalObjects: false });
   const server = createServer((req, res) => {
     // URL 解析器会先把 %2e%2e 规范化掉，所以要在解析前检查原始路径。
     const rawPath = (req.url ?? '/').split('?')[0] ?? '/';
     if (/%2e%2e|\.\./i.test(rawPath)) {
-      send(res, 403, 'forbidden', { 'content-type': 'text/plain; charset=utf-8' });
+      res.writeHead(403, { ...SECURITY_HEADERS, 'content-type': 'text/plain; charset=utf-8' });
+      res.end('forbidden');
       return;
     }
-    let url: URL;
-    try {
-      url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-    } catch {
-      sendJson(res, 400, { error: 'invalid-request-url' });
-      return;
-    }
-    const pathname = url.pathname;
-    void (async () => {
-      try {
-        if (pathname === '/health') {
-          sendJson(res, 200, { ok: true, version: builder.instanceVersion(), coreVersion: CORE_VERSION });
-        } else if (pathname.startsWith('/rules/')) {
-          await delivery.serveRuleSet(res, pathname.slice('/rules/'.length));
-        } else if (pathname.startsWith('/api/')) {
-          await handleApi(req, res, pathname, url);
-        } else if (pathname.startsWith('/s/')) {
-          await delivery.renderSubscription(req, res, url);
-        } else if (pathname === '/sub') {
-          await delivery.renderStateless(req, res, url);
-        } else {
-          serveStatic(options.webRoot, pathname, res);
-        }
-      } catch (error) {
-        if (error instanceof HttpError) {
-          sendJson(res, error.status, { error: error.message });
-          return;
-        }
-        if (error instanceof URIError) {
-          sendJson(res, 400, { error: 'invalid-url-encoding' });
-          return;
-        }
-        const reason = error instanceof Error ? error.message : String(error);
-        sendJson(res, 500, { error: 'internal-error', reason: redact(reason) });
-      }
-    })();
+    void requestListener(req, res);
   });
 
   /**

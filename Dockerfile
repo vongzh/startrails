@@ -1,4 +1,4 @@
-# 两阶段构建：UI 在阶段一编译，运行镜像只装 3 个运行时依赖（better-sqlite3 / yaml / zod）。
+# 两阶段构建：UI 在阶段一编译，运行镜像只装精简运行时依赖（better-sqlite3 / yaml / zod / hono）。
 # vite、vue、naive-ui、echarts、lucide 只在阶段一存在，不进运行镜像。
 
 # ---------- 阶段一：构建 Web UI ----------
