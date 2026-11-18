@@ -10,6 +10,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY tsconfig.json ./
+COPY src/core ./src/core
 COPY web ./web
 RUN npm run build:ui
 

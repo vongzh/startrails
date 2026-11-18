@@ -1,6 +1,6 @@
 {
   "name": "startrails",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "type": "module",
   "description": "把订阅源扇出成多个客户端订阅 URL 的常驻服务：IR + 能力矩阵 + 诊断，不依赖第三方订阅转换。",
