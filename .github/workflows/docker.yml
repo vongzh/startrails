@@ -64,7 +64,7 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             VERSION="${GITHUB_REF_NAME#v}"
             if [ "$VERSION" != "$PKG" ]; then
-              echo "::error::git tag ${GITHUB_REF_NAME} 与 package.json 的 ${PKG} 不一致；先改版本号（三处）再打 tag"
+              echo "::error::git tag ${GITHUB_REF_NAME} 与 package.json 的 ${PKG} 不一致；请先更新 package.json 的 version 再打 tag"
               exit 1
             fi
             echo "is_tag=true" >> "$GITHUB_OUTPUT"

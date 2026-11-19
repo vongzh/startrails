@@ -1,2 +1,4 @@
-/** 内核契约版本：改动 IR / 能力表 / Emit 语义时递增，UI 必须同步（CI 校验）。 */
-export const CORE_VERSION = '0.1.10';
+import pkg from '../../package.json' with { type: 'json' };
+
+/** 内核契约版本：唯一配置源为 package.json 的 version 字段。 */
+export const CORE_VERSION: string = pkg.version;
