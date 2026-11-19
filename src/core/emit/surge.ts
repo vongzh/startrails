@@ -9,7 +9,7 @@ import { makeDiagnostic } from '../diagnostics/index.ts';
 import type { Diagnostic } from '../diagnostics/index.ts';
 import { descriptorOf } from '../targets.ts';
 import type { EmitResult } from './index.ts';
-import { partitionServers } from './runtime.ts';
+import { formatHostPort, partitionServers, sanitizeIniName } from './runtime.ts';
 
 /** 依据 profile/format.html：含逗号的值用双引号包裹，转义 \ 与 "。 */
 const quote = (value: string): string =>
@@ -25,7 +25,7 @@ const SURGE_VMESS_CIPHERS = new Set(['aes-128-gcm', 'chacha20-ietf-poly1305']);
  * 同名节点各自成段（Surge 每段一个 peer），故直接用节点名派生即可、无碰撞风险。
  */
 function sectionNameFor(nodeName: string): string {
-  const sanitized = nodeName.replace(/[ ,=]/g, '-');
+  const sanitized = sanitizeIniName(nodeName).replace(/[ ,=]/g, '-');
   return `Startrails-${sanitized || 'wg'}`;
 }
 
@@ -51,7 +51,7 @@ function surgeLine(
   diagnostics: Diagnostic[],
   target: EmissionPlan['target'],
 ): string | null {
-  const name = quote(node.name);
+  const name = quote(sanitizeIniName(node.name));
   const options = node.options;
   const usable = (feature: NodeFeature): boolean => !dropped.includes(feature);
 
@@ -178,7 +178,7 @@ function surgeWireguardSection(
   const peer: string[] = [`public-key = ${node.peerPublicKey}`];
   const allowedIps = node.allowedIps ?? ['0.0.0.0/0', '::/0'];
   peer.push(`allowed-ips = "${allowedIps.join(', ')}"`);
-  peer.push(`endpoint = ${node.server}:${node.port}`);
+  peer.push(`endpoint = ${formatHostPort(node.server, node.port)}`);
   if (node.preSharedKey !== undefined) peer.push(`preshared-key = ${node.preSharedKey}`);
   lines.push(`peer = (${peer.join(', ')})`);
 
@@ -260,7 +260,7 @@ export const surgeEmitter = (
       const upper = member.toUpperCase();
       if (upper === 'DIRECT' || upper === 'REJECT') return [upper];
       if (included.includes(member) || (member !== group.name && groupNames.has(member))) {
-        return [quote(member)];
+        return [quote(sanitizeIniName(member))];
       }
       if (SURGE_BUILTIN_POLICIES.has(upper)) return [upper];
       return [];
@@ -273,10 +273,10 @@ export const surgeEmitter = (
       group.icon !== undefined && group.icon.length > 0 && !skipRedundantFlag
         ? `, icon-url=${group.icon}`
         : '';
-    lines.push(`${quote(group.name)} = select, ${members.join(', ') || 'DIRECT'}${iconSuffix}`);
+    lines.push(`${quote(sanitizeIniName(group.name))} = select, ${members.join(', ') || 'DIRECT'}${iconSuffix}`);
   }
   if (profile.policyGroups.length === 0 && included.length > 0) {
-    lines.push(`PROXY = select, ${included.map(quote).join(', ')}`);
+    lines.push(`PROXY = select, ${included.map((item) => quote(sanitizeIniName(item))).join(', ')}`);
   }
 
   lines.push('', '[Rule]');
@@ -299,7 +299,7 @@ export const surgeEmitter = (
       diagnostics.push(makeDiagnostic('emit', target, source.url, 'external-ruleset-without-policy'));
       continue;
     }
-    lines.push(`RULE-SET,${source.url},${source.policy}`);
+    lines.push(`RULE-SET,${source.url},${sanitizeIniName(source.policy)}`);
   }
   lines.push('FINAL,DIRECT', '');
 

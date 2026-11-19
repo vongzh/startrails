@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import {
   dedupeNodes,
+  encodeUriSubscriptionBase64,
   ingest,
   parseProfile,
   renderQrSvg,
@@ -16,7 +17,7 @@ import type { BuildCache } from './build-cache.ts';
 import type { Builder } from './builder.ts';
 import type { AppContext, AppEnv } from './http.ts';
 import { CONTENT_TYPE_BY_FORMAT, absoluteUrlOf, ifNoneMatch } from './http.ts';
-import { guessTargetByUa, isTarget } from './input.ts';
+import { guessTargetByUa, isUriShareClientUa, resolveTargetSpec } from './input.ts';
 import { redact } from './redact.ts';
 import type { RuleSetCache } from './ruleset.ts';
 import { fetchSnapshot } from './url-guard.ts';
@@ -92,14 +93,16 @@ export function createDeliveryApp(deps: DeliveryDeps): Hono<AppEnv> {
       });
     }
 
+    const userAgent = c.req.header('user-agent') ?? '';
     let profileName: string;
     let target: ClientTarget;
+    let explicitBase64Links = false;
     if (params.profileParam === undefined || params.targetParam === undefined) {
       profileName = record.profile;
       if (record.target !== 'auto') {
         target = record.target;
       } else {
-        const guessed = guessTargetByUa(c.req.header('user-agent') ?? '');
+        const guessed = guessTargetByUa(userAgent);
         if (guessed === undefined) {
           return c.json(
             {
@@ -113,14 +116,23 @@ export function createDeliveryApp(deps: DeliveryDeps): Hono<AppEnv> {
       }
     } else {
       profileName = params.profileParam;
-      if (!isTarget(params.targetParam)) {
+      const spec = resolveTargetSpec(params.targetParam);
+      if (spec === undefined) {
         return c.json({ error: 'unknown-target' }, 400);
       }
-      target = params.targetParam;
+      target = spec.target;
+      explicitBase64Links = spec.base64Links;
       if (record.profile !== profileName || (record.target !== 'auto' && record.target !== target)) {
         return c.json({ error: 'token-invalid-or-revoked' }, 404);
       }
     }
+
+    const formatParam = (url.searchParams.get('format') ?? url.searchParams.get('encoding') ?? '').trim().toLowerCase();
+    const wantsBase64Links =
+      target === 'v2box' &&
+      (explicitBase64Links ||
+        formatParam === 'base64' ||
+        (formatParam !== 'plain' && formatParam !== 'raw' && isUriShareClientUa(userAgent)));
 
     const state = await builder.prepareState(profileName);
     if (state === null) {
@@ -153,6 +165,7 @@ export function createDeliveryApp(deps: DeliveryDeps): Hono<AppEnv> {
       JSON.stringify({
         state: state.etag,
         target,
+        encoding: wantsBase64Links ? 'base64' : 'plain',
         suffix: params.suffix ?? 'subscription',
         filter: queryFilter ?? null,
       }),
@@ -245,7 +258,8 @@ export function createDeliveryApp(deps: DeliveryDeps): Hono<AppEnv> {
         : `attachment; filename="${`${profileName}-${outputFilename(target)}`
             .replace(/[^A-Za-z0-9._-]+/g, '_')
             .slice(0, 80)}"`;
-    return c.body(output.content, 200, {
+    const body = wantsBase64Links ? encodeUriSubscriptionBase64(output.content) : output.content;
+    return c.body(body, 200, {
       ...headers,
       'content-type': contentType,
       ...(disposition === null ? {} : { 'content-disposition': disposition }),
@@ -304,10 +318,12 @@ export function createDeliveryApp(deps: DeliveryDeps): Hono<AppEnv> {
     if (rawUrl.length === 0) {
       return c.json({ error: 'missing-url' }, 400);
     }
+    const userAgent = c.req.header('user-agent') ?? '';
     const rawTarget = (c.req.query('target') ?? 'auto').trim();
     let target: ClientTarget;
+    let explicitBase64Links = false;
     if (rawTarget.length === 0 || rawTarget === 'auto') {
-      const guessed = guessTargetByUa(c.req.header('user-agent') ?? '');
+      const guessed = guessTargetByUa(userAgent);
       if (guessed === undefined) {
         return c.json(
           { error: 'unknown-target', hint: 'pass ?target=<client> or use a known client UA' },
@@ -315,11 +331,21 @@ export function createDeliveryApp(deps: DeliveryDeps): Hono<AppEnv> {
         );
       }
       target = guessed;
-    } else if (isTarget(rawTarget)) {
-      target = rawTarget;
     } else {
-      return c.json({ error: 'unknown-target', target: rawTarget }, 400);
+      const spec = resolveTargetSpec(rawTarget);
+      if (spec === undefined) {
+        return c.json({ error: 'unknown-target', target: rawTarget }, 400);
+      }
+      target = spec.target;
+      explicitBase64Links = spec.base64Links;
     }
+
+    const formatParam = (c.req.query('format') ?? c.req.query('encoding') ?? '').trim().toLowerCase();
+    const wantsBase64Links =
+      target === 'v2box' &&
+      (explicitBase64Links ||
+        formatParam === 'base64' ||
+        (formatParam !== 'plain' && formatParam !== 'raw' && isUriShareClientUa(userAgent)));
 
     let body: string;
     try {
@@ -341,10 +367,12 @@ export function createDeliveryApp(deps: DeliveryDeps): Hono<AppEnv> {
       }),
     );
     const output = buildOne(profile, target);
-    return c.body(output.content, 200, {
+    const bodyText = wantsBase64Links ? encodeUriSubscriptionBase64(output.content) : output.content;
+    return c.body(bodyText, 200, {
       'content-type': CONTENT_TYPE_BY_FORMAT[verifiedCapabilityTables.output[target].format],
       'x-startrails-stateless': '1',
       'x-startrails-summary': `nodes=${output.report.passed} skipped=${output.report.skipped} sources=1 stale=0`,
+      vary: 'User-Agent',
       'cache-control': 'no-store',
     });
   });

@@ -68,3 +68,26 @@ export const tunFields = (tun: TunPolicy): Record<string, unknown> => ({
   ...(tun.strictRoute === undefined ? {} : { 'strict-route': tun.strictRoute }),
   ...(tun.mtu === undefined ? {} : { mtu: tun.mtu }),
 });
+
+/**
+ * 清洗 INI 方言（Surge / Loon / Quantumult X）里的节点名与策略组名：
+ *  - `//`（Surge 行内/行首注释符）、`#`、`;` 会把同一行节点与策略组成员截断；
+ *  - `[` / `]` 在 INI 里开启新段，会把后续节点孤立；
+ *  - `=` 与换行符会破坏 `Name = Proto, ...` 的键值分割。
+ * 转成全角字符与连字符以保语义可读且不断行、不截断。
+ */
+export const sanitizeIniName = (value: string): string =>
+  value
+    .replace(/\r\n|\r|\n/g, ' ')
+    .replace(/=/g, '－')
+    .replace(/#/g, '＃')
+    .replace(/;/g, '；')
+    .replace(/\/\//g, '／／')
+    .replace(/\[/g, '［')
+    .replace(/\]/g, '］')
+    .trim();
+
+export const formatHostPort = (host: string, port: number): string => {
+  const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `${bracketed}:${port}`;
+};

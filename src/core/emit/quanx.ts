@@ -3,7 +3,7 @@ import type { Profile, ProxyNode } from '../ir/index.ts';
 import { assertNever } from '../ir/index.ts';
 import type { NodeFeature } from '../capabilities/index.ts';
 import { descriptorOf } from '../targets.ts';
-import { partitionServers, schemeOf } from './runtime.ts';
+import { formatHostPort, partitionServers, sanitizeIniName, schemeOf } from './runtime.ts';
 import { renderRule } from '../rules/index.ts';
 import type { EmissionPlan, PlanItem } from '../plan/index.ts';
 import { acceptedItems } from '../plan/index.ts';
@@ -36,21 +36,24 @@ function quanxLine(node: ProxyNode, dropped: readonly NodeFeature[]): string | n
   }
   if (options?.udp !== undefined && usable('udp')) tail.push(`udp-relay=${options.udp}`);
 
+  const tag = comma(sanitizeIniName(node.name));
+  const endpoint = formatHostPort(node.server, node.port);
+
   switch (node.kind) {
     case 'shadowsocks': {
       const method = options?.cipher !== undefined && usable('cipher') ? options.cipher : node.method;
-      return `shadowsocks=${node.server}:${node.port}, method=${method}, password=${comma(node.password)}${tail.length > 0 ? `, ${tail.join(', ')}` : ''}, tag=${comma(node.name)}`;
+      return `shadowsocks=${endpoint}, method=${method}, password=${comma(node.password)}${tail.length > 0 ? `, ${tail.join(', ')}` : ''}, tag=${tag}`;
     }
     case 'vmess': {
       const method = options?.cipher !== undefined && usable('cipher') ? options.cipher : 'none';
-      return `vmess=${node.server}:${node.port}, method=${method}, password=${node.uuid}${tail.length > 0 ? `, ${tail.join(', ')}` : ''}, tag=${comma(node.name)}`;
+      return `vmess=${endpoint}, method=${method}, password=${node.uuid}${tail.length > 0 ? `, ${tail.join(', ')}` : ''}, tag=${tag}`;
     }
     case 'vless': {
       const flow = options?.flow !== undefined && usable('flow') ? `, vless-flow=${options.flow}` : '';
-      return `vless=${node.server}:${node.port}, method=none, password=${node.uuid}${flow}${tail.length > 0 ? `, ${tail.join(', ')}` : ''}, tag=${comma(node.name)}`;
+      return `vless=${endpoint}, method=none, password=${node.uuid}${flow}${tail.length > 0 ? `, ${tail.join(', ')}` : ''}, tag=${tag}`;
     }
     case 'trojan':
-      return `trojan=${node.server}:${node.port}, password=${comma(node.password)}${tail.length > 0 ? `, ${tail.join(', ')}` : ''}, tag=${comma(node.name)}`;
+      return `trojan=${endpoint}, password=${comma(node.password)}${tail.length > 0 ? `, ${tail.join(', ')}` : ''}, tag=${tag}`;
     // 能力表判 reject/unverified：sample.conf 的 [server_local] 无这些协议。
     case 'hysteria2':
     case 'tuic':
@@ -141,7 +144,7 @@ export const quanxEmitter = (
       const terminal = QUANX_TERMINAL_POLICIES[upper];
       if (terminal !== undefined) return [terminal];
       if (included.includes(member) || (member !== group.name && groupNames.has(member))) {
-        return [comma(member)];
+        return [comma(sanitizeIniName(member))];
       }
       if (upper === 'PROXY') return ['proxy'];
       return [];
@@ -151,7 +154,7 @@ export const quanxEmitter = (
         ? resolveGroupIcon(group, profile.ruleSources).quanx
         : undefined;
     const iconSuffix = quanxIcon !== undefined && quanxIcon.length > 0 ? `, img-url=${quanxIcon}` : '';
-    lines.push(`static = ${comma(group.name)}, ${members.join(', ') || 'direct'}${iconSuffix}`);
+    lines.push(`static = ${comma(sanitizeIniName(group.name))}, ${members.join(', ') || 'direct'}${iconSuffix}`);
   }
 
   lines.push('', '[filter_local]');

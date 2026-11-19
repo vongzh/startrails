@@ -5,7 +5,7 @@ import { makeDiagnostic } from '../diagnostics/index.ts';
 
 /**
  * 组合订阅 = 「多个数据源 + 每条源的加工规则 + 合并去重」，是一个可被多个 Profile 复用的单元。
- * 与 Sub-Store 的组合订阅同构，但规则是声明式的：不执行用户脚本，因此没有沙箱逃逸面。
+ * 加工规则全部是声明式的：不执行用户脚本，因此没有沙箱逃逸面。
  */
 /**
  * 单个加工算子。数组顺序即语义，同一算子可重复——这是与「固定五个字段」的本质区别：
@@ -29,12 +29,12 @@ export type Process =
   | { readonly type: 'dedupe'; readonly strategy: DedupeStrategy }
   | { readonly type: 'limit'; readonly count: number }
   /**
-   * 批量改写节点属性（Sub-Store 的 Set property 算子的声明式等价）。
+   * 批量改写节点属性（声明式属性覆写算子）。
    * 只接受 IR 里真实存在、且 emitter 会写出的字段，避免设置一个没人消费的死属性。
    * `key` 取值：`udp`（布尔）、`skip-cert-verify`（布尔 → options.insecure）、`alpn`（逗号分隔字符串）。
    */
   | { readonly type: 'set-property'; readonly key: 'udp' | 'skip-cert-verify' | 'alpn'; readonly value: boolean | string }
-  /** 加 / 删节点名后缀标记（Sub-Store 的 Flag 算子）；`value` 为空则删除该标记。 */
+  /** 加 / 删节点名后缀标记；`value` 为空则删除该标记。 */
   | { readonly type: 'flag'; readonly value: string };
 
 export interface MemberFilter {

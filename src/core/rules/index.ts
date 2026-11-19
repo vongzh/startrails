@@ -2,6 +2,7 @@ import type { ClientTarget, InlineRule, RuleCondition } from '../ir/index.ts';
 import { assertNever } from '../ir/index.ts';
 import { dialectOf } from '../targets.ts';
 import type { CapabilityValue } from '../capabilities/index.ts';
+import { sanitizeIniName } from '../emit/runtime.ts';
 
 export * from './shape.ts';
 
@@ -111,13 +112,14 @@ const quanxPolicy = (policy: string): string => QUANX_POLICY[policy.toUpperCase(
 
 const renderQuanxRule = (rule: InlineRule): string | null => {
   const condition = rule.condition;
+  const policy = quanxPolicy(sanitizeIniName(rule.policy));
   switch (condition.type) {
     case 'domain':
-      return `host, ${condition.value}, ${quanxPolicy(rule.policy)}`;
+      return `host, ${condition.value}, ${policy}`;
     case 'domainSuffix':
-      return `host-suffix, ${condition.value}, ${quanxPolicy(rule.policy)}`;
+      return `host-suffix, ${condition.value}, ${policy}`;
     case 'ipCidr':
-      return `ip-cidr, ${condition.value}, ${quanxPolicy(rule.policy)}`;
+      return `ip-cidr, ${condition.value}, ${policy}`;
     case 'ipCidr6':
     case 'domainKeyword':
     case 'geosite':
@@ -141,7 +143,12 @@ const renderQuanxRule = (rule: InlineRule): string | null => {
 export function renderRule(target: ClientTarget, rule: InlineRule): string | null {
   const dialect = dialectOf(target);
   switch (dialect) {
-    case 'surge-ini':
+    case 'surge-ini': {
+      const noResolve =
+        (rule.condition.type === 'ipCidr' || rule.condition.type === 'ipCidr6' || rule.condition.type === 'geoip') &&
+        rule.condition.noResolve === true;
+      return `${renderCondition(rule.condition)},${sanitizeIniName(rule.policy)}${noResolve ? ',no-resolve' : ''}`;
+    }
     case 'clash-yaml': {
       const noResolve =
         (rule.condition.type === 'ipCidr' || rule.condition.type === 'ipCidr6' || rule.condition.type === 'geoip') &&

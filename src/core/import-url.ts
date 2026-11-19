@@ -27,7 +27,7 @@ function appendQuery(rawUrl: string, key: string, value: string): string {
 /**
  * 生成各客户端的一键导入 URL Scheme（纯函数，零 IO）。
  *
- * 依据与 Tower（MIT）核实过的官方 / 公开客户端路由一致：
+ * 各客户端公开路由与导入规范说明：
  * - egern 使用单斜杠 `egern:/profiles/new?...`；
  * - hiddify 需要 authority（`hiddify://import/...`）；
  * - karing 会跳过重复 URL / 备注，需要附带本次导出标识；

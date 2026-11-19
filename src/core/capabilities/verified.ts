@@ -84,7 +84,12 @@ const DIALECT_BASE: Readonly<Record<Dialect, DialectBase>> = {
     feature: row(NODE_FEATURES, 'support', { shadowTls: 'unverified' }),
     rule: row(RULE_CONDITION_KINDS, 'support'),
     runtime: row(RUNTIME_FEATURES, 'support', { ecs: 'unverified' }),
-    output: { format: 'yaml', allowsComments: true, allowsExternalRuleSet: false },
+    output: {
+      format: 'yaml',
+      allowsComments: true,
+      allowsExternalRuleSet: false,
+      snell: { minVersion: 1, maxVersion: 5, defaultVersion: 4 },
+    },
   },
   'sing-box-json': {
     // WireGuard outbound 自 1.11 起 deprecated、1.13 移除，写法迁至 endpoints 模型；
@@ -232,6 +237,7 @@ interface TargetOverride {
   readonly feature?: Partial<Record<NodeFeature, CapabilityValue>>;
   readonly rule?: Partial<Record<RuleConditionKind, CapabilityValue>>;
   readonly runtime?: Partial<Record<RuntimeFeature, CapabilityValue>>;
+  readonly output?: Partial<OutputCapability>;
 }
 
 const OVERRIDES: Partial<Record<ClientTarget, TargetOverride>> = {
@@ -245,20 +251,31 @@ const OVERRIDES: Partial<Record<ClientTarget, TargetOverride>> = {
     // Stash 的 fake-ip 是默认行为，官方示例里没有 enhanced-mode 这个键；写进去只会被忽略。
     // TUN 是 App 内设置，配置里没有 tun 段。
     runtime: { enhancedMode: 'reject', tun: 'reject', ecs: 'unverified' },
+    output: { snell: { minVersion: 1, maxVersion: 3, defaultVersion: 1 } },
   },
-  // Clash Premium（clash-apple）无 hysteria2 / tuic / anytls / snell / reality。
+  // Clash App（clash-apple）自 1.0.18 起搭载 mihomo 1.19.34 并文档化 Snell v1–v6；
+  // 其余新协议与 Reality 在此能力表中仍保守维持 unverified，直到各字段独立核实。
   'clash-apple': {
     node: {
       hysteria2: 'unverified',
       tuic: 'unverified',
       anytls: 'unverified',
-      snell: 'unverified',
     },
     feature: { reality: 'unverified' },
-    // Clash Premium 的 TUN 同样是 App 内设置。
+    // Clash 的 TUN 同样是 App 内设置。
     runtime: { tun: 'reject', ecs: 'unverified' },
+    output: {
+      snell: {
+        minVersion: 1,
+        maxVersion: 6,
+        defaultVersion: 4,
+        disallowObfsOnV6: true,
+        minPskBytesOnV6: 12,
+        maxPskBytesOnV6: 255,
+      },
+    },
   },
-  // Karing 对 ShadowTLS 等实验能力有撤回记录（Tower CLIENT-COMPATIBILITY.md），
+  // Karing 对实验性插件能力支持尚不固定，
   // 这里把未独立核实的插件能力显式标为 unverified。
   karing: { feature: { plugin: 'unverified' } },
   // mihomo 官方 ss 页明确支持 plugin: shadow-tls + plugin-opts{host,password,version}。
@@ -305,18 +322,22 @@ const buildTables = (): CapabilityTables => {
     ]),
   ) as CapabilityTables['runtime'];
   const output = Object.fromEntries(
-    CLIENT_TARGETS.map((target) => [target, DIALECT_BASE[dialectOf(target)].output]),
+    CLIENT_TARGETS.map((target) => [
+      target,
+      Object.freeze({
+        ...DIALECT_BASE[dialectOf(target)].output,
+        ...(OVERRIDES[target]?.output ?? {}),
+      }),
+    ]),
   ) as CapabilityTables['output'];
   return { node, feature, rule, runtime, output };
 };
 
 /**
  * 核实日期：2026-11-11。
- * 依据只用各客户端官方文档与公开配置格式规范，不引用 AGPL 项目的转换器代码。
+ * 依据只用各客户端官方文档与公开配置格式规范。
  * 未核实项保持 unverified：协议级 → 拒绝节点；特性级 → 降级（丢弃该字段并产出诊断），
  * 其中 reality / obfs / plugin 属认证级，丢弃后必然连不上，因此改判「拒绝节点」。
- * 客户端清单与格式族划分参考 Tower（MIT）的 ClientTarget 与 CLIENT-COMPATIBILITY.md，
- * 但不作为字段映射依据，也未复制其生成器代码。
  */
 export const CAPABILITY_EVIDENCE: readonly CapabilityEvidence[] = [
   {
@@ -474,10 +495,18 @@ export const CAPABILITY_EVIDENCE: readonly CapabilityEvidence[] = [
   {
     target: 'clash-apple',
     scope: 'node',
-    subject: 'hysteria2 / tuic / anytls / snell / reality',
+    subject: 'hysteria2 / tuic / anytls / reality',
     value: 'unverified',
     source: 'https://clash.md/guide/config/',
-    note: 'Clash Premium 内核只覆盖 ss / vmess / trojan / socks5 / http / snell；新协议与 Reality 属 mihomo 扩展，标 unverified',
+    note: 'Hysteria2 / TUIC / AnyTLS / Reality 专属字段在本能力表尚未逐项核实，暂标 unverified',
+  },
+  {
+    target: 'clash-apple',
+    scope: 'node',
+    subject: 'snell (v1-v6)',
+    value: 'support',
+    source: 'https://clash.md/zh/guide/config/outbound/snell',
+    note: 'Clash App 自 1.0.18 起内置 mihomo 1.19.34 支持 Snell v1–v6；v6 禁用 HTTP/TLS obfs 且 PSK 须为 12–255 字节',
   },
   {
     target: 'sing-box',

@@ -53,7 +53,7 @@ const rebuild = (profile: Readonly<Profile>, nodes: readonly ProxyNode[]): Proce
 });
 
 /**
- * 塔台的优点：用户意图单独存 Annotation，以稳定 nodeKey 关联，刷新后不污染解析结果。
+ * 用户意图单独存 Annotation，以稳定 nodeKey 关联，刷新后不污染解析结果。
  * 排除 / 别名 / 排序都在这里以纯函数完成，绝不改写上游节点对象。
  */
 export function applyAnnotations(annotations: readonly Annotation[]): Processor {

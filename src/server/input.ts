@@ -27,6 +27,8 @@ import { hasRedactionMarkers } from './redact.ts';
 /** 实例级拉取默认的设置键；值存 JSON，header 值回显掩码。 */
 export const SETTING_FETCH_DEFAULTS = 'fetch.defaults';
 
+const URI_BASE64_CLIENT_UA = /v2box|v2rayng|v2rayn|v2ray/i;
+
 /** 一个链接喂所有客户端：按 UA 猜不出时明确拒绝，不静默给错格式。具体客户端优先于通用内核名。 */
 export const UA_TARGETS: readonly { readonly pattern: RegExp; readonly target: ClientTarget }[] = [
   { pattern: /surfboard/i, target: 'surge' },
@@ -44,14 +46,34 @@ export const UA_TARGETS: readonly { readonly pattern: RegExp; readonly target: C
   { pattern: /clash-?mi/i, target: 'clash-mi' },
   { pattern: /(?:mihomo|clash)-?party/i, target: 'mihomo-party' },
   { pattern: /openclash|nikki|clash|mihomo|verge/i, target: 'mihomo' },
-  { pattern: /v2box|v2rayn/i, target: 'v2box' },
+  { pattern: URI_BASE64_CLIENT_UA, target: 'v2box' },
 ];
+
+export const isUriShareClientUa = (ua: string): boolean => URI_BASE64_CLIENT_UA.test(ua);
 
 export const guessTargetByUa = (ua: string): ClientTarget | undefined =>
   UA_TARGETS.find((item) => item.pattern.test(ua))?.target;
 
 export const isTarget = (value: string): value is ClientTarget =>
   (CLIENT_TARGETS as readonly string[]).includes(value);
+
+export interface ResolvedTargetSpec {
+  readonly target: ClientTarget;
+  readonly base64Links: boolean;
+}
+
+const URI_BASE64_ALIASES = new Set(['v2ray', 'v2rayng', 'v2rayn']);
+
+/**
+ * 解析显式 target 参数：除标准 ClientTarget 外，兼容 v2ray / v2rayng / v2rayn 别名
+ * （映射至 v2box 方言并默认输出 Base64 分享链接列表）。
+ */
+export const resolveTargetSpec = (raw: string): ResolvedTargetSpec | undefined => {
+  if (isTarget(raw)) return { target: raw, base64Links: false };
+  const lower = raw.trim().toLowerCase();
+  if (URI_BASE64_ALIASES.has(lower)) return { target: 'v2box', base64Links: true };
+  return undefined;
+};
 
 export const isSourceFormat = (value: string): value is SourceFormat =>
   (SOURCE_FORMATS as readonly string[]).includes(value);

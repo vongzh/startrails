@@ -11,6 +11,8 @@ import { quanxEmitter } from './quanx.ts';
 import { egernEmitter } from './egern.ts';
 import { uriListEmitter } from './uri-list.ts';
 
+export { encodeUriSubscriptionBase64 } from './uri-list.ts';
+
 export interface EmitResult {
   readonly content: string;
   readonly diagnostics: readonly Diagnostic[];

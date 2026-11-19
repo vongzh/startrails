@@ -90,7 +90,7 @@ export interface SourceUserinfo {
   readonly expire?: number;
 }
 
-const parseUserinfo = (raw: string | null): SourceUserinfo | null => {
+export const parseUserinfo = (raw: string | null): SourceUserinfo | null => {
   if (raw === null || raw.trim().length === 0) return null;
   const fields: Record<string, number> = {};
   for (const part of raw.split(';')) {
@@ -107,7 +107,60 @@ const parseUserinfo = (raw: string | null): SourceUserinfo | null => {
     ...(fields['total'] === undefined ? {} : { total: fields['total'] }),
     ...(fields['expire'] === undefined ? {} : { expire: fields['expire'] }),
   };
+  // 部分在线订阅转换服务未透传机场额度头时，会固定回填 `upload=0; download=1; total=1;`（无到期时间）。
+  // 这种 1 字节占位额度不是真实套餐，按无效头丢弃，否则会阻碍后续额度探测并误显「已用尽」。
+  if (userinfo.total === 1 && userinfo.expire === undefined) return null;
   return Object.keys(userinfo).length === 0 ? null : userinfo;
+};
+
+export const hasPlanDetail = (info: SourceUserinfo | null | undefined): boolean =>
+  info !== null && info !== undefined && (info.total !== undefined || info.expire !== undefined);
+
+/**
+ * 提取在线订阅转换链接中包裹的单一机场源地址（形如 `…?target=clash&url=<airport>`）。
+ * 含多个地址（`|` 分隔）、缺 `target` 或非 http(s) 地址一律返回 null。
+ */
+export const convertedSubscriptionURL = (raw: string): string | null => {
+  let outer: URL;
+  try {
+    outer = new URL(raw);
+  } catch {
+    return null;
+  }
+  let hasTarget = false;
+  let wrappedRaw: string | null = null;
+  for (const [key, value] of outer.searchParams) {
+    const lower = key.toLowerCase();
+    if (lower === 'target' && value.trim().length > 0) hasTarget = true;
+    if (lower === 'url' && wrappedRaw === null) wrappedRaw = value.trim();
+  }
+  if (!hasTarget || wrappedRaw === null || wrappedRaw.length === 0 || wrappedRaw.includes('|')) {
+    return null;
+  }
+  let wrapped: URL;
+  try {
+    wrapped = new URL(wrappedRaw);
+  } catch {
+    return null;
+  }
+  const scheme = wrapped.protocol.toLowerCase();
+  if ((scheme !== 'http:' && scheme !== 'https:') || wrapped.hostname.length === 0) {
+    return null;
+  }
+  return wrapped.toString();
+};
+
+/**
+ * 为在线订阅转换链接构造机场额度探测地址（补充 `flag=clash` 以便面板下发 `subscription-userinfo`）。
+ * 非转换链接返回 null，避免对普通上游多发一次请求。
+ */
+export const quotaProbeUrl = (raw: string): string | null => {
+  const wrapped = convertedSubscriptionURL(raw);
+  if (wrapped === null) return null;
+  const probe = new URL(wrapped);
+  const hasFlag = [...probe.searchParams.keys()].some((key) => key.toLowerCase() === 'flag');
+  if (!hasFlag) probe.searchParams.append('flag', 'clash');
+  return probe.toString();
 };
 
 export interface FetchedSnapshot {

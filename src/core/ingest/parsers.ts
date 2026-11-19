@@ -586,17 +586,146 @@ function parseSsUri(text: string, diagnostics: Diagnostic[]): ProxyNode | null {
   );
 }
 
-/** Clash / mihomo YAML：proxies / proxy-groups / rule-providers。 */
+const TLS_CLASH_TYPES = new Set(['trojan', 'hysteria2', 'tuic', 'anytls']);
+
+const unbracketHost = (value: string): string =>
+  value.startsWith('[') && value.endsWith(']') && value.length > 2 ? value.slice(1, -1) : value;
+
+const isIPv4 = (value: string): boolean => {
+  const parts = value.split('.');
+  if (parts.length !== 4) return false;
+  return parts.every((part) => /^(?:0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255);
+};
+
+const isIPv6 = (value: string): boolean => {
+  const host = unbracketHost(value);
+  if (!host.includes(':')) return false;
+  try {
+    return new URL(`http://[${host}]`).hostname.startsWith('[');
+  } catch {
+    return false;
+  }
+};
+
+function clashHostsTarget(raw: string): string | null {
+  const host = unbracketHost(raw.trim()).toLowerCase();
+  if (host.length === 0) return null;
+  if (isIPv4(host) || isIPv6(host)) return host;
+  if (host.length <= 253 && host.includes('.') && !host.startsWith('.') && !host.startsWith('-') && /^[a-z0-9.-]+$/.test(host)) {
+    return host;
+  }
+  return null;
+}
+
+/** 解析 Clash / mihomo 顶层 `hosts:` 表，接受精确与通配域名到主机名/IP（数组取首个有效目标）。 */
+export function parseClashHosts(rawHosts: unknown): ReadonlyMap<string, string> {
+  const table = new Map<string, string>();
+  if (!isRecord(rawHosts)) return table;
+  for (const [rawKey, rawValue] of Object.entries(rawHosts)) {
+    const key = rawKey.trim().toLowerCase();
+    if (key.length === 0 || key.startsWith('#')) continue;
+    let resolved: string | null = null;
+    if (typeof rawValue === 'string') {
+      resolved = clashHostsTarget(rawValue);
+    } else if (Array.isArray(rawValue)) {
+      for (const item of rawValue) {
+        if (typeof item !== 'string') continue;
+        resolved = clashHostsTarget(item);
+        if (resolved !== null) break;
+      }
+    }
+    if (resolved !== null) table.set(key, resolved);
+  }
+  return table;
+}
+
+/** mihomo hosts 匹配顺序：精确域名 → `+.domain` → 按标签逐级尝试 `*.parent`、`+.parent`、`.parent`。 */
+export function hostsLookup(name: string, table: ReadonlyMap<string, string>): string | undefined {
+  const exact = table.get(name);
+  if (exact !== undefined) return exact;
+  const plusSelf = table.get(`+.${name}`);
+  if (plusSelf !== undefined) return plusSelf;
+  const labels = name.split('.');
+  for (let i = 1; i < labels.length; i += 1) {
+    const parent = labels.slice(i).join('.');
+    if (i === 1) {
+      const star = table.get(`*.${parent}`);
+      if (star !== undefined) return star;
+    }
+    const plus = table.get(`+.${parent}`);
+    if (plus !== undefined) return plus;
+    const dot = table.get(`.${parent}`);
+    if (dot !== undefined) return dot;
+  }
+  return undefined;
+}
+
+function applyClashHosts(hosts: ReadonlyMap<string, string>, entry: unknown): unknown {
+  if (hosts.size === 0 || !isRecord(entry)) return entry;
+  const rawServer = str(entry['server']);
+  if (rawServer === undefined) return entry;
+  const original = unbracketHost(rawServer.trim()).toLowerCase();
+  if (original.length === 0 || isIPv4(original) || isIPv6(original)) return entry;
+
+  let target = original;
+  const seen = new Set<string>([original]);
+  for (;;) {
+    if (isIPv4(target) || isIPv6(target)) break;
+    const next = hostsLookup(target, hosts);
+    if (next === undefined || seen.has(next)) break;
+    seen.add(next);
+    target = next;
+  }
+  if (target === original) return entry;
+
+  const updated: Record<string, unknown> = { ...entry, server: target };
+  const nodeType = str(updated['type'])?.toLowerCase();
+  const usesTls = truthy(updated['tls']) || (nodeType !== undefined && TLS_CLASH_TYPES.has(nodeType));
+  if (usesTls && str(updated['servername']) === undefined && str(updated['sni']) === undefined) {
+    updated['sni'] = original;
+    if (nodeType === 'trojan' && updated['tls'] === undefined) updated['tls'] = true;
+  }
+
+  const network = str(updated['network'])?.toLowerCase();
+  if (network === 'ws') {
+    const wsOpts = isRecord(updated['ws-opts']) ? updated['ws-opts'] : undefined;
+    const wsHeaders = wsOpts !== undefined && isRecord(wsOpts['headers']) ? wsOpts['headers'] : undefined;
+    if (str(wsHeaders?.['Host']) === undefined && str(wsHeaders?.['host']) === undefined) {
+      updated['ws-opts'] = {
+        ...(wsOpts ?? {}),
+        headers: { ...(wsHeaders ?? {}), Host: original },
+      };
+    }
+  } else if (network === 'h2' || network === 'http2' || network === 'http') {
+    const h2Opts = isRecord(updated['h2-opts']) ? updated['h2-opts'] : undefined;
+    const h2HostRaw = h2Opts?.['host'];
+    const h2Host = Array.isArray(h2HostRaw) ? str(h2HostRaw[0]) : str(h2HostRaw);
+    const httpOpts = isRecord(updated['http-opts']) ? updated['http-opts'] : undefined;
+    const httpHeaders = httpOpts !== undefined && isRecord(httpOpts['headers']) ? httpOpts['headers'] : undefined;
+    const httpHostRaw = httpHeaders?.['Host'] ?? httpHeaders?.['host'];
+    const httpHost = Array.isArray(httpHostRaw) ? str(httpHostRaw[0]) : str(httpHostRaw);
+    if (h2Host === undefined && httpHost === undefined && str(updated['host']) === undefined) {
+      updated['h2-opts'] = {
+        ...(h2Opts ?? {}),
+        host: [original],
+      };
+    }
+  }
+  return updated;
+}
+
+/** Clash / mihomo YAML：proxies / hosts / proxy-groups / rule-providers。 */
 export function parseClashYaml(raw: string): ParseOutcome {
   const diagnostics: Diagnostic[] = [];
   const doc: unknown = YAML.parse(raw);
   if (!isRecord(doc) || !Array.isArray(doc['proxies'])) {
     return { ...emptyOutcome(), diagnostics: [makeDiagnostic('ingest', null, 'clash-yaml', 'missing-proxies-array')], skipped: 1 };
   }
+  const hosts = parseClashHosts(doc['hosts']);
   const nodes: ProxyNode[] = [];
   let skippedCount = 0;
   for (const entry of doc['proxies']) {
-    const node = clashNode(entry, diagnostics);
+    const node = clashNode(applyClashHosts(hosts, entry), diagnostics);
     if (node === null) skippedCount += 1;
     else nodes.push(node);
   }
@@ -832,6 +961,9 @@ function clashNode(value: unknown, diagnostics: Diagnostic[]): ProxyNode | null 
 
   const wsOpts = isRecord(value['ws-opts']) ? value['ws-opts'] : undefined;
   const wsHeaders = wsOpts !== undefined && isRecord(wsOpts['headers']) ? wsOpts['headers'] : undefined;
+  const h2Opts = isRecord(value['h2-opts']) ? value['h2-opts'] : undefined;
+  const h2HostRaw = h2Opts?.['host'];
+  const h2Host = Array.isArray(h2HostRaw) ? str(h2HostRaw[0]) : str(h2HostRaw);
   const grpcOpts = isRecord(value['grpc-opts']) ? value['grpc-opts'] : undefined;
   const realityOpts = isRecord(value['reality-opts']) ? value['reality-opts'] : undefined;
   const pluginOpts = isRecord(value['plugin-opts']) ? value['plugin-opts'] : undefined;
@@ -848,7 +980,7 @@ function clashNode(value: unknown, diagnostics: Diagnostic[]): ProxyNode | null 
       network === 'grpc'
         ? str(grpcOpts?.['grpc-service-name'])
         : (str(wsOpts?.['path']) ?? undefined),
-    host: str(wsHeaders?.['Host']) ?? str(wsHeaders?.['host']),
+    host: str(wsHeaders?.['Host']) ?? str(wsHeaders?.['host']) ?? h2Host ?? str(value['host']),
     flow: str(value['flow']),
     alterId: value['alterId'] === 0 ? 0 : typeof value['alterId'] === 'number' ? value['alterId'] : undefined,
     cipher: str(value['cipher']) ?? str(value['security']),

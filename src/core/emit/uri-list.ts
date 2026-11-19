@@ -7,6 +7,7 @@ import { acceptedItems } from '../plan/index.ts';
 import { makeDiagnostic } from '../diagnostics/index.ts';
 import type { Diagnostic } from '../diagnostics/index.ts';
 import type { EmitResult } from './index.ts';
+import { formatHostPort } from './runtime.ts';
 
 /**
  * 节点分享 URI 列表，依据公开格式规范：
@@ -26,6 +27,22 @@ const base64url = (text: string): string => {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
+
+const base64Standard = (text: string): string => {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+};
+
+/** 将 URI 列表产物去掉 `#` 头部注释后编码为标准 Base64（v2rayNG / v2rayN / V2Box 订阅格式）。 */
+export const encodeUriSubscriptionBase64 = (content: string): string => {
+  const links = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'));
+  return links.length === 0 ? '' : base64Standard(links.join('\n'));
 };
 
 const fragment = (name: string): string => `#${encodeURIComponent(name)}`;
@@ -78,7 +95,7 @@ function connectionParams(node: ProxyNode, usable: (feature: NodeFeature) => boo
 }
 
 function nodeUri(node: ProxyNode, usable: (feature: NodeFeature) => boolean): string | null {
-  const authority = `${node.server}:${node.port}`;
+  const authority = formatHostPort(node.server, node.port);
   switch (node.kind) {
     case 'shadowsocks': {
       const query: string[] = [];

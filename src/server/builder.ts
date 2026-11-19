@@ -49,7 +49,7 @@ import {
   applyRuleOverlay,
   effectiveModes,
 } from './section-overlay.ts';
-import { fetchSnapshot } from './url-guard.ts';
+import { fetchSnapshot, hasPlanDetail, quotaProbeUrl } from './url-guard.ts';
 
 const FETCH_CONCURRENCY = 4;
 
@@ -295,19 +295,36 @@ export function createBuilder(deps: BuilderDeps): Builder {
     // 源级优先、全局回退：单独给某个源配的 UA / 代理压过实例默认；
     // headers 目前只在全局配置（源级没有这个字段），整份透传。
     const defaults = fetchDefaults(store);
-    const fetched = await fetchSnapshot(source.url, cached?.etag ?? null, {
+    const requestOptions = {
       allowPrivate,
       ua: source.ua ?? defaults.ua ?? null,
       proxy: source.proxy ?? defaults.proxy ?? null,
       headers: defaults.headers,
-    });
+    };
+    const fetched = await fetchSnapshot(source.url, cached?.etag ?? null, requestOptions);
     const body = fetched.notModified ? cached?.body : fetched.body;
     if (body === undefined || body === null) throw new Error('upstream-empty-after-304');
+    // 在线订阅转换链接常漏传机场额度头或回填 total=1 占位值；节点正文仍以主地址为准，
+    // 仅当主响应未带有效套餐明细时，向内层机场地址补发一次额度头探测（带 flag=clash）。
+    let userinfo = fetched.userinfo;
+    if (!fetched.notModified && !hasPlanDetail(userinfo)) {
+      const probeUrl = quotaProbeUrl(source.url);
+      if (probeUrl !== null) {
+        try {
+          const probe = await fetchSnapshot(probeUrl, null, { ...requestOptions, timeoutMs: 8000 });
+          if (probe.userinfo !== null) {
+            userinfo = hasPlanDetail(probe.userinfo) ? probe.userinfo : (userinfo ?? probe.userinfo);
+          }
+        } catch {
+          // 额度探测是尽最大努力的元数据补全，失败不得拖垮主订阅拉取。
+        }
+      }
+    }
     cache.set(source.id, { body, etag: fetched.etag, fetchedAt: Date.now() });
     store.updateSourceState(source.id, {
       lastFetchedAt: new Date().toISOString(),
       lastError: null,
-      ...(fetched.userinfo === null ? {} : { userinfo: fetched.userinfo }),
+      ...(userinfo === null ? {} : { userinfo }),
       ...(fetched.suggestedRefreshHours === null
         ? {}
         : { suggestedRefreshHours: fetched.suggestedRefreshHours }),
@@ -799,7 +816,7 @@ export function createBuilder(deps: BuilderDeps): Builder {
     let seen = false;
     for (const source of sources) {
       const info = source.userinfo;
-      if (info === undefined) continue;
+      if (info === undefined || (info.total === 1 && info.expire === undefined)) continue;
       seen = true;
       upload += info.upload ?? 0;
       download += info.download ?? 0;

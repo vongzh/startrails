@@ -66,7 +66,7 @@ test('能力表按 19 个 Target × 全维度完整覆盖，无缺键', () => {
   }
 });
 
-test('格式族划分与 Tower 的 ClientTarget 清单一致', () => {
+test('格式族划分与 19 个 ClientTarget 清单一致', () => {
   assert.equal(CLIENT_TARGETS.length, 19);
   assert.equal(DIALECTS.length, 7);
   assert.equal(targetsOfDialect('surge-ini').length, 2);

@@ -1,4 +1,4 @@
-import type { ClientTarget, DnsPolicy, InlineRule, Profile, TunPolicy } from '../ir/index.ts';
+import type { ClientTarget, DnsPolicy, InlineRule, Profile, ProxyNode, TunPolicy } from '../ir/index.ts';
 import { nodeKey } from '../ir/index.ts';
 import type { Action, CapabilityTables, NodeFeature } from '../capabilities/index.ts';
 import { defaultCapabilityTables } from '../capabilities/index.ts';
@@ -177,6 +177,35 @@ function planRuntime(
   return { dns, tun, explicitFakeIpMode: table.enhancedMode === 'support' };
 }
 
+const SNELL_TEXT_ENCODER = new TextEncoder();
+
+function rejectSnellReason(
+  node: Extract<ProxyNode, { kind: 'snell' }>,
+  snellCap: NonNullable<CapabilityTables['output'][ClientTarget]['snell']>,
+): string | null {
+  const version = node.options?.version ?? snellCap.defaultVersion;
+  if (!Number.isInteger(version) || version < snellCap.minVersion || version > snellCap.maxVersion) {
+    return `snell-version-unsupported:${version}`;
+  }
+  if (version === 6) {
+    if (snellCap.disallowObfsOnV6 && node.options?.obfs !== undefined) {
+      return 'snell-v6-obfs-unsupported';
+    }
+    const minBytes = snellCap.minPskBytesOnV6;
+    const maxBytes = snellCap.maxPskBytesOnV6;
+    if (minBytes !== undefined || maxBytes !== undefined) {
+      const pskBytes = SNELL_TEXT_ENCODER.encode(node.psk).length;
+      if (
+        (minBytes !== undefined && pskBytes < minBytes) ||
+        (maxBytes !== undefined && pskBytes > maxBytes)
+      ) {
+        return 'snell-v6-psk-length';
+      }
+    }
+  }
+  return null;
+}
+
 export function plan(
   profile: Readonly<Profile>,
   target: ClientTarget,
@@ -197,6 +226,18 @@ export function plan(
         makeDiagnostic('plan', target, ref, `${target}/${node.kind} ${reason}: ${node.name}`),
       );
       continue;
+    }
+
+    const snellCap = caps.output[target].snell;
+    if (node.kind === 'snell' && snellCap !== undefined) {
+      const snellRejection = rejectSnellReason(node, snellCap);
+      if (snellRejection !== null) {
+        items.push({ ref, index, action: 'reject', reason: snellRejection, droppedFeatures: [] });
+        diagnostics.push(
+          makeDiagnostic('plan', target, ref, `${target}/snell ${snellRejection}: ${node.name}`),
+        );
+        continue;
+      }
     }
 
     const droppedFeatures = requiredFeatures(node).filter(

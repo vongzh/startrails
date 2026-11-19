@@ -3,12 +3,9 @@
  *
  * 设计要点：Target 是「身份 + 能力差异」，Dialect 是「输出方言」。
  * 一个 Emitter 服务一个 Dialect，多个 Target 共享它；新增客户端只需加一行 TARGETS，
- * 不需要改 Plan / Emit 的控制流。这与 Tower 的 usesClashFormat / usesSingBoxFormat
- * 分族思路一致，但差异用表表达，不用 switch。
+ * 不需要改 Plan / Emit 的控制流，差异用表表达，不用 switch。
  *
- * 合规：字段映射依据只取客户端官方文档与公开格式规范（见 basis）；
- * Tower（MIT）只用于确定客户端清单与格式族线索，不复制其生成器代码；
- * Sub-Store（AGPL-3.0）的 producer 不作为实现依据。
+ * 合规：字段映射依据只取客户端官方文档与公开格式规范（见 basis）。
  */
 
 export const CLIENT_TARGETS = [
@@ -94,7 +91,7 @@ export const TARGETS: readonly TargetDescriptor[] = [
   { id: 'loon', name: 'Loon', dialect: 'loon-ini', fileExtension: 'conf', contentMode: 'full', basis: LOON_BASIS, independentEvidence: true },
   { id: 'quanx', name: 'Quantumult X', dialect: 'quanx-ini', fileExtension: 'conf', contentMode: 'full', basis: QUANX_BASIS, independentEvidence: true },
   { id: 'egern', name: 'Egern', dialect: 'egern-yaml', fileExtension: 'yaml', contentMode: 'full', basis: EGERN_BASIS, independentEvidence: true },
-  // Shadowrocket 无官方配置格式参考（Tower CLIENT-COMPATIBILITY.md 亦如此注明），
+  // Shadowrocket 无公开完整配置格式规范参考，
   // 因此只提供有公开规范的节点分享 URI 列表，不宣称能生成完整配置。
   { id: 'shadowrocket', name: 'Shadowrocket', dialect: 'uri-list', fileExtension: 'txt', contentMode: 'nodes-only', basis: URI_BASIS, independentEvidence: false },
   { id: 'v2box', name: 'V2Box', dialect: 'uri-list', fileExtension: 'txt', contentMode: 'nodes-only', basis: URI_BASIS, independentEvidence: false },

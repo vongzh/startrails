@@ -57,10 +57,20 @@ export type FeatureCapabilityTable = Readonly<
   Record<ClientTarget, Readonly<Record<NodeFeature, CapabilityValue>>>
 >;
 
+export interface SnellCapability {
+  readonly minVersion: number;
+  readonly maxVersion: number;
+  readonly defaultVersion: number;
+  readonly disallowObfsOnV6?: boolean;
+  readonly minPskBytesOnV6?: number;
+  readonly maxPskBytesOnV6?: number;
+}
+
 export interface OutputCapability {
   readonly format: 'ini' | 'yaml' | 'json' | 'uri';
   readonly allowsComments: boolean;
   readonly allowsExternalRuleSet: boolean;
+  readonly snell?: SnellCapability;
 }
 
 export type OutputCapabilityTable = Readonly<Record<ClientTarget, OutputCapability>>;

@@ -2,7 +2,7 @@ import type { Profile, ProxyNode } from '../ir/index.ts';
 import { assertNever } from '../ir/index.ts';
 import type { NodeFeature } from '../capabilities/index.ts';
 import { descriptorOf } from '../targets.ts';
-import { partitionServers, schemeOf } from './runtime.ts';
+import { partitionServers, sanitizeIniName, schemeOf } from './runtime.ts';
 import type { EmissionPlan, PlanItem } from '../plan/index.ts';
 import { acceptedItems } from '../plan/index.ts';
 import { makeDiagnostic } from '../diagnostics/index.ts';
@@ -59,6 +59,7 @@ function realityParams(ctx: Ctx): string[] {
 
 function loonLine(ctx: Ctx): string | null {
   const node = ctx.node;
+  const name = sanitizeIniName(node.name).replace(/,/g, '，');
   const options = node.options;
   const usable = ctx.usable;
   const params: string[] = [];
@@ -74,21 +75,21 @@ function loonLine(ctx: Ctx): string | null {
   switch (node.kind) {
     case 'shadowsocks': {
       const method = options?.cipher !== undefined && usable('cipher') ? options.cipher : node.method;
-      return `${node.name} = Shadowsocks,${node.server},${node.port},${method},${quoteValue(node.password)}${params.length > 0 ? `,${params.join(',')}` : ''}`;
+      return `${name} = Shadowsocks,${node.server},${node.port},${method},${quoteValue(node.password)}${params.length > 0 ? `,${params.join(',')}` : ''}`;
     }
     case 'vmess': {
       const method = options?.cipher !== undefined && usable('cipher') ? options.cipher : 'auto';
       const tail = [...params];
       if (options?.alterId !== undefined && usable('alterId')) tail.push(`alterId=${options.alterId}`);
-      return `${node.name} = VMess,${node.server},${node.port},${method},${quoteValue(node.uuid)}${tail.length > 0 ? `,${tail.join(',')}` : ''}`;
+      return `${name} = VMess,${node.server},${node.port},${method},${quoteValue(node.uuid)}${tail.length > 0 ? `,${tail.join(',')}` : ''}`;
     }
     case 'vless': {
       const tail = [...params];
       if (options?.flow !== undefined && usable('flow')) tail.push(`flow=${options.flow}`);
-      return `${node.name} = VLESS,${node.server},${node.port},${quoteValue(node.uuid)}${tail.length > 0 ? `,${tail.join(',')}` : ''}`;
+      return `${name} = VLESS,${node.server},${node.port},${quoteValue(node.uuid)}${tail.length > 0 ? `,${tail.join(',')}` : ''}`;
     }
     case 'trojan':
-      return `${node.name} = Trojan,${node.server},${node.port},${quoteValue(node.password)}${params.length > 0 ? `,${params.join(',')}` : ''}`;
+      return `${name} = Trojan,${node.server},${node.port},${quoteValue(node.password)}${params.length > 0 ? `,${params.join(',')}` : ''}`;
     case 'hysteria2': {
       const tail = [...params];
       if (options?.obfs !== undefined && usable('obfs')) {
@@ -113,14 +114,14 @@ function loonLine(ctx: Ctx): string | null {
       if (options?.bandwidth?.down !== undefined && usable('bandwidth')) {
         tail.push(`download-bandwidth=${options.bandwidth.down}`);
       }
-      return `${node.name} = Hysteria2,${node.server},${node.port},${quoteValue(node.password)}${tail.length > 0 ? `,${tail.join(',')}` : ''}`;
+      return `${name} = Hysteria2,${node.server},${node.port},${quoteValue(node.password)}${tail.length > 0 ? `,${tail.join(',')}` : ''}`;
     }
     case 'anytls': {
       const tail = [...params];
       if (options?.idleSessionTimeout !== undefined && usable('idleSession')) {
         tail.push(`idle-session-timeout=${options.idleSessionTimeout}`);
       }
-      return `${node.name} = AnyTLS,${node.server},${node.port},${quoteValue(node.password)}${tail.length > 0 ? `,${tail.join(',')}` : ''}`;
+      return `${name} = AnyTLS,${node.server},${node.port},${quoteValue(node.password)}${tail.length > 0 ? `,${tail.join(',')}` : ''}`;
     }
     // 能力表判 unverified：Loon 官方 Node 页未覆盖 TUIC / Snell / WireGuard / SOCKS5 / HTTP 行格式。
     case 'tuic':
