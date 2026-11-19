@@ -5,13 +5,7 @@
   <img src="web/public/brand/logo-on-light.svg" alt="Startrails · 星迹" width="224">
 </picture>
 
-**把多份代理订阅整理为强类型中间表示，按客户端官方文档严格校验后，扇出成 19 个客户端可用的自托管订阅服务（原生支持桌面端与手机端浏览器控制台）。**
-
-![控制台概览](docs/screenshots/overview.png)
-
-| 节点分布（世界点阵） | 产物预览（19 客户端） |
-| --- | --- |
-| ![节点世界点阵](docs/screenshots/nodes-map.png) | ![客户端产物预览](docs/screenshots/output.png) |
+**把多份代理订阅整理为强类型中间表示，按客户端官方文档严格校验后，扇出成 19 个客户端可用的自托管订阅服务（支持桌面端、手机响应式网页控制台与[原生 iOS 客户端](https://github.com/vongzh/startrails-ios)）。**
 
 [![CI](https://github.com/vongzh/startrails/actions/workflows/ci.yml/badge.svg)](https://github.com/vongzh/startrails/actions/workflows/ci.yml)
 [![Docker](https://github.com/vongzh/startrails/actions/workflows/docker.yml/badge.svg)](https://github.com/vongzh/startrails/actions/workflows/docker.yml)
@@ -31,8 +25,20 @@
   - 支持声明式加工链（`filter` / `rename` / `prefix` / `sort` / `dedupe` / `limit`）与按配置隔离的策略组、规则、DNS / TUN 参数。
   - **策略组自动图标**：在策略组开启后自动按组名用途与国家地区匹配图标（Fluent Emoji 3D / Twemoji / Quantumult X SF Symbols），也可按组覆盖或关闭。
   - **节点地区与 ASN 识别**：按 `手动标注 > 节点名关键词 > 本地离线 IP/ASN 库` 三级推断地区；内置世界点阵地图与 TCP 握手测速（支持识别本地 TUN 劫持与 UDP 节点跳过）。
-- **桌面与手机端自适应**：Web 控制台针对手机浏览器做了完整响应式适配——窄屏自动切换底部导航栏（概览 / 订阅 / 配置 / 产物预览 / 发布）与顶栏配置切换器，点阵地图、表单卡片与节点列表自适应竖排，触控设备采用 `40×40` 触控热区，随时可在手机上完成节点整理与扫码导入。
+- **桌面端、手机网页与原生客户端**：
+  - Web 控制台针对手机浏览器做了完整响应式适配——窄屏自动切换底部导航栏与顶栏配置切换器，点阵地图、表单卡片与节点列表自适应竖排，触控设备采用 `40×40` 触控热区，随时可在手机上完成节点整理与扫码导入。
+  - **原生 iOS / iPadOS 客户端**：基于 SwiftUI + WidgetKit 构建，独立仓库维护于 [`vongzh/startrails-ios`](https://github.com/vongzh/startrails-ios)。
 - **自托管与密钥隔离**：全部业务状态保存在单个 SQLite 数据库（WAL 模式），订阅源正文与已签发 Token 使用 `AES-256-GCM` 字段级加密，不依赖任何第三方订阅转换服务。
+
+---
+
+## 界面预览
+
+![控制台概览](docs/screenshots/overview.png)
+
+| 节点分布（世界点阵） | 产物预览（19 客户端） |
+| --- | --- |
+| ![节点世界点阵](docs/screenshots/nodes-map.png) | ![客户端产物预览](docs/screenshots/output.png) |
 
 ---
 
@@ -183,6 +189,12 @@ WantedBy=multi-user.target
 
 ---
 
+## 原生 iOS 客户端
+
+原生 iOS / iPadOS 客户端（SwiftUI + WidgetKit 桌面小组件）独立维护于 [**vongzh/startrails-ios**](https://github.com/vongzh/startrails-ios)，支持多实例切换、离线世界点阵地图、本机 TCP 握手测速、策略组与分流规则编排以及 19 款客户端 URL Scheme 一键拉起导入。
+
+---
+
 ## 离线 IP 库与世界点阵地图
 
 - **离线 IP 国家与 ASN 库（可选）**：
@@ -219,7 +231,7 @@ WantedBy=multi-user.target
 npm run serve         # 构建前端并启动完整服务（http://127.0.0.1:8787）
 npm run dev:ui        # 启动 Vite 前端开发服务器
 npm run dev:server    # 启动后端服务
-npm test              # 运行全量测试（当前 213 个用例）
+npm test              # 运行全量测试（当前 219 个用例）
 npm run verify        # 提交前完整检查：版本一致 → tsc → UI 绑定 → 前端构建 → 全量测试 → 备份演练
 ```
 
